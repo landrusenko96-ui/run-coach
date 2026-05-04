@@ -24,6 +24,8 @@ export type TrainingAggressiveness =
   | "balanced"
   | "aggressive";
 
+export type RunningDaysPerWeek = 2 | 3 | 4 | 5 | 6;
+
 export type RaceDistance = "half_marathon" | "marathon";
 
 export type TargetPriority = "finish" | "personal_best" | "aggressive";
@@ -33,8 +35,20 @@ export type WorkoutType =
   | "long_run"
   | "tempo"
   | "interval"
+  | "marathon_pace"
+  | "recovery"
   | "rest"
+  | "strength_optional"
+  | "calibration"
   | "cross_training";
+
+export type TrainingPlanStatus = "active" | "archived";
+
+export type PlannedWorkoutStatus =
+  | "planned"
+  | "completed"
+  | "missed"
+  | "skipped";
 
 export type WorkoutIntensity = "rest" | "easy" | "moderate" | "hard";
 
@@ -64,6 +78,7 @@ export type Profile = {
   max_heart_rate: number | null;
   resting_heart_rate: number | null;
   available_training_days: TrainingDay[];
+  running_days_per_week: RunningDaysPerWeek | null;
   preferred_long_run_day: TrainingDay | null;
   terrain_available: TerrainAvailable[];
   training_aggressiveness: TrainingAggressiveness;
@@ -89,16 +104,60 @@ export type RaceGoal = {
 
 export type RunnerProfile = Profile;
 
+export type TrainingPlan = {
+  id: string;
+  profile_id: string;
+  race_goal_id: string;
+  name: string;
+  status: TrainingPlanStatus;
+  start_date: string;
+  end_date: string;
+  total_weeks: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type GeneratedTrainingPlanMetadata = Omit<
+  TrainingPlan,
+  "id" | "created_at" | "updated_at"
+> & {
+  assumptions: string[];
+  warnings: string[];
+  generated_by: "rule_based_v1";
+};
+
 export type PlannedWorkout = {
   id: string;
-  raceGoalId: string;
-  date: string;
-  type: WorkoutType;
+  training_plan_id: string;
+  profile_id: string;
+  race_goal_id: string;
+  workout_date: string;
+  week_number: number;
+  day_label: TrainingDay;
+  workout_type: WorkoutType;
   title: string;
-  intensity: WorkoutIntensity;
-  plannedDistanceKm?: number;
-  plannedDurationMinutes?: number;
-  notes?: string;
+  description: string | null;
+  distance_km: number | null;
+  duration_min: number | null;
+  target_pace_min_sec_per_km: number | null;
+  target_pace_max_sec_per_km: number | null;
+  target_hr_zone: string | null;
+  terrain: TerrainAvailable | null;
+  purpose: string | null;
+  instructions: string | null;
+  status: PlannedWorkoutStatus;
+  created_at: string;
+  updated_at: string;
+};
+
+export type GeneratedPlannedWorkout = Omit<
+  PlannedWorkout,
+  "id" | "training_plan_id" | "created_at" | "updated_at"
+>;
+
+export type GeneratedTrainingPlan = {
+  trainingPlan: GeneratedTrainingPlanMetadata;
+  plannedWorkouts: GeneratedPlannedWorkout[];
 };
 
 export type LoggedWorkout = {

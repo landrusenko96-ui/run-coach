@@ -6,6 +6,12 @@ import {
   saveProfile,
   type SaveProfileInput,
 } from "@/lib/db/profiles";
+import {
+  getDefaultRunningDaysPerWeek,
+  getEffectiveRunningDaysPerWeek,
+  parseRunningDaysPerWeek,
+  runningDaysPerWeekOptions,
+} from "@/lib/training/runningDays";
 import type {
   Profile,
   Sex,
@@ -76,6 +82,7 @@ type FormState = {
   max_heart_rate: string;
   resting_heart_rate: string;
   available_training_days: TrainingDay[];
+  running_days_per_week: string;
   preferred_long_run_day: TrainingDay | "";
   terrain_available: TerrainAvailable[];
   training_aggressiveness: TrainingAggressiveness;
@@ -98,6 +105,7 @@ const emptyForm: FormState = {
   max_heart_rate: "",
   resting_heart_rate: "",
   available_training_days: [],
+  running_days_per_week: "",
   preferred_long_run_day: "",
   terrain_available: [],
   training_aggressiveness: "balanced",
@@ -109,8 +117,8 @@ const inputClass =
 
 const labelClass = "text-sm font-medium text-slate-800";
 
-function numberToInput(value: number | null): string {
-  return value === null ? "" : String(value);
+function numberToInput(value: number | null | undefined): string {
+  return value === null || value === undefined ? "" : String(value);
 }
 
 function secondsToPaceInput(value: number | null): string {
@@ -143,6 +151,7 @@ function profileToForm(profile: Profile): FormState {
     max_heart_rate: numberToInput(profile.max_heart_rate),
     resting_heart_rate: numberToInput(profile.resting_heart_rate),
     available_training_days: profile.available_training_days,
+    running_days_per_week: numberToInput(profile.running_days_per_week),
     preferred_long_run_day: profile.preferred_long_run_day ?? "",
     terrain_available: profile.terrain_available,
     training_aggressiveness: profile.training_aggressiveness,
@@ -239,6 +248,20 @@ function buildProfileInput(form: FormState): SaveProfileInput {
     throw new Error("Display name is required.");
   }
 
+  const runningDaysPerWeek = parseRunningDaysPerWeek(
+    optionalInteger(form.running_days_per_week, "Running days per week"),
+  );
+  const effectiveRunningDaysPerWeek = getEffectiveRunningDaysPerWeek({
+    running_days_per_week: runningDaysPerWeek,
+    training_aggressiveness: form.training_aggressiveness,
+  });
+
+  if (form.available_training_days.length < effectiveRunningDaysPerWeek) {
+    throw new Error(
+      `Choose at least ${effectiveRunningDaysPerWeek} available training days, or lower Running days per week.`,
+    );
+  }
+
   return {
     username,
     display_name: displayName,
@@ -268,6 +291,7 @@ function buildProfileInput(form: FormState): SaveProfileInput {
       "Resting heart rate",
     ),
     available_training_days: form.available_training_days,
+    running_days_per_week: runningDaysPerWeek,
     preferred_long_run_day:
       form.preferred_long_run_day === "" ? null : form.preferred_long_run_day,
     terrain_available: form.terrain_available,
@@ -577,6 +601,31 @@ export function ProfileForm() {
         <h2 className="text-base font-medium text-slate-950">
           Training availability
         </h2>
+
+        <label className="mt-4 block text-sm font-medium text-slate-800">
+          Running days per week
+          <select
+            className={inputClass}
+            value={form.running_days_per_week}
+            onChange={(event) =>
+              setForm({
+                ...form,
+                running_days_per_week: event.target.value,
+              })
+            }
+          >
+            <option value="">
+              Not set ({getDefaultRunningDaysPerWeek(
+                form.training_aggressiveness,
+              )} by current plan style)
+            </option>
+            {runningDaysPerWeekOptions.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        </label>
 
         <div className="mt-4">
           <p className={labelClass}>Available training days</p>

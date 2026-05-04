@@ -16,6 +16,8 @@ The project owner is a beginner developer. Code should be simple, explicit, read
 
 Avoid over-engineering. Prefer boring, standard solutions.
 
+Everything developer does is first time ever. Explain every step accordingly. Do yourself as much as possible.
+
 ## Tech stack
 
 Use:
@@ -23,7 +25,7 @@ Use:
 - TypeScript
 - Tailwind CSS
 - shadcn/ui only where useful
-- Supabase later for database/auth
+- Supabase for database/auth
 - Vercel for deployment
 
 Do not introduce other frameworks, paid services, or major dependencies unless explicitly approved.
@@ -41,12 +43,13 @@ Current build priority:
 6. Workout scoring
 7. Plan adjustment
 8. Dashboard
-9. Strava import
-10. Gear tracking
-11. AI-generated feedback
+9. Intervals.icu planned-workout publishing
+10. Strava import
+11. Gear tracking
+12. AI-generated feedback
 
 Do not build these until explicitly requested:
-- Garmin API integration
+- Direct Garmin API integration
 - Spotify integration
 - Route generation
 - 3D avatar
@@ -71,6 +74,10 @@ Database utilities should live in:
 
 - `/lib/db`
 
+Intervals.icu planned-workout publishing logic should live in:
+
+- `/lib/intervals`
+
 Strava logic should live in:
 
 - `/lib/strava`
@@ -93,6 +100,10 @@ Do not rewrite completed workouts.
 
 Do not compensate for missed workouts by stacking extra intensity.
 
+Generated planned runs must have structured workout documents suitable for Intervals.icu and Garmin sync, not only freeform instructions.
+
+For Garmin compatibility, use pace or HR target ranges, keep step counts conservative with repeats, avoid RPE-only primary targets, and do not publish rest days as Garmin workouts.
+
 Be conservative with injury, fatigue, and high-effort signals.
 
 ## UI rules
@@ -107,11 +118,34 @@ Use clear layouts and placeholder copy.
 
 Do not store unnecessary sensitive health data.
 
-Never hardcode secrets, API keys, tokens, Supabase keys, Strava credentials, or passwords.
+Never hardcode secrets, API keys, tokens, Supabase keys, Intervals.icu credentials, Strava credentials, or passwords.
 
 Use environment variables for secrets.
 
 Do not commit `.env` files.
+
+## Supabase change rules
+
+Migration SQL files may be created or edited in the repo when a task needs database changes.
+
+Remote Supabase schema changes require a two-turn workflow. Never create or edit a migration SQL file and push/apply it to Supabase in the same assistant execution turn, no matter how the user phrased the request. A user request such as "push this migration", "apply it", or "delete this table" is not enough to skip this rule.
+
+After creating or editing a migration file, stop before any remote apply/push. Summarize the migration and ask for explicit approval to apply it in a later turn. Before asking for approval, explain:
+
+1. what tables, columns, policies, functions, or data will change;
+2. why the change is needed;
+3. whether the change can affect existing app functionality or data;
+4. how the change will be verified after applying.
+
+Only apply/push a Supabase migration when all of these are true:
+
+1. the migration file already existed before the current assistant execution turn started;
+2. the user has explicitly approved applying that migration in the current turn;
+3. the change is not critical, destructive, risky, or likely to break existing app functionality.
+
+If a Supabase change is critical, destructive, risky, or may break existing app functionality, do not apply it automatically. Ask the user to apply it manually instead, and provide the exact migration file plus clear manual steps.
+
+For tables in exposed schemas such as `public`, enable RLS by default unless there is a clear documented reason not to.
 
 ## Dependency rules
 

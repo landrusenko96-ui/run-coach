@@ -19,14 +19,15 @@ The correct strategy is not to build the full Run.B*tch.app vision immediately. 
 6. workout scoring;
 7. plan adjustment;
 8. dashboard;
-9. Strava import.
+9. Intervals.icu planned-workout publishing;
+10. Strava import.
 
-The app should prove the core loop before adding social features, avatars, routes, Spotify, global marathon databases, or Garmin workout publishing.
+The app should prove the core loop before adding social features, avatars, routes, Spotify, global marathon databases, or direct Garmin API integration. The MVP should publish planned workouts through Intervals.icu so they can sync onward to Garmin Connect and the Garmin Forerunner 265.
 
 **Core product loop:**
 
 ```text
-User profile -> Race goal -> Plan generation -> Workout completion -> Workout evaluation -> Plan adjustment -> Updated next workouts
+User profile -> Race goal -> Plan generation -> Intervals.icu workout publishing -> Workout completion -> Workout evaluation -> Plan adjustment -> Updated next workouts
 ```
 
 Everything else is secondary until this loop works reliably.
@@ -45,6 +46,7 @@ Everything else is secondary until this loop works reliably.
 | Plan generation | Yes | Start rule-based, not fully AI-based. |
 | Calibration workout | Yes | Build it as the first required workout. |
 | Workout calendar/list | Yes | Store generated workouts in database. |
+| Intervals.icu planned-workout publishing | Yes | Use Intervals.icu as the first device-sync bridge to Garmin Connect and the Forerunner 265. |
 | Manual workout logging | Yes | Build before Strava. |
 | Strava import | Yes | Use Strava OAuth and API. Start with manual refresh. |
 | Avoid duplicate imports | Yes | Store Strava activity ID and reject duplicates. |
@@ -57,7 +59,7 @@ Everything else is secondary until this loop works reliably.
 
 | Feature | Feasible? | Why postpone |
 |---|---:|---|
-| Garmin workout push | Maybe, but hard | Garmin Training API access may require developer program approval. |
+| Direct Garmin workout push | Maybe, but hard | Direct Garmin Training API access may require developer program approval. Use Intervals.icu first. |
 | Garmin direct activity import | Maybe, but hard | Strava is the simpler bridge from Garmin Connect. |
 | Global marathon database with prices | Partly | Dates are findable; prices, participants, and course metadata are inconsistent. |
 | Route generation | Hard | Requires maps, routing, and elevation data. Usually API-dependent. |
@@ -82,6 +84,7 @@ Everything else is secondary until this loop works reliably.
 | Styling | Tailwind CSS + shadcn/ui | Minimal, easy to change later. |
 | Charts | Recharts | Simple dashboard charts. |
 | Repository | GitHub | Version control and Vercel deployment. |
+| Planned-workout publishing | Intervals.icu API | First bridge from generated workouts to Garmin Connect and the Forerunner 265. |
 | Activity API | Strava | Best bridge from Garmin to the app. |
 | Background jobs | Avoid initially | Use manual refresh buttons first. |
 
@@ -99,10 +102,12 @@ The first MVP is a private web app that can:
 2. enter a marathon or half-marathon goal;
 3. generate a 12-20 week training plan;
 4. force the first session to be a calibration workout;
-5. log workouts manually;
-6. score workouts;
-7. adjust future workouts;
-8. show progress and a projected finish-time range.
+5. generate structured workout documents for planned runs;
+6. push planned run workouts to Intervals.icu so Intervals.icu can sync them to Garmin Connect and the Forerunner 265;
+7. log workouts manually;
+8. score workouts;
+9. adjust future workouts;
+10. show progress and a projected finish-time range.
 
 ### 4.1 Excluded from MVP
 
@@ -112,7 +117,7 @@ Do not include yet:
 - Spotify;
 - race marketplace;
 - route generation;
-- Garmin workout push;
+- direct Garmin API integration;
 - gear rewards;
 - social sharing;
 - price tracking;
@@ -162,6 +167,8 @@ planned_workouts
 logged_workouts
 workout_evaluations
 plan_adjustments
+intervals_connections
+intervals_workout_syncs
 strava_connections
 strava_activities
 gear_items
@@ -179,6 +186,10 @@ gear_usage
     workoutScoring.ts
     planAdjustment.ts
     racePrediction.ts
+  /intervals
+    client.ts
+    workoutDocuments.ts
+    publishWorkouts.ts
   /strava
     client.ts
     importActivities.ts
@@ -329,6 +340,7 @@ pace target
 heart rate target optional
 terrain suggestion
 purpose
+structured workout document for device sync
 ```
 
 **Workout types v1:**
@@ -372,7 +384,9 @@ Rules:
 - Include taper in final 2-3 weeks.
 - Avoid increasing weekly running volume too aggressively.
 - Store generated workouts in Supabase.
-Add unit tests for plan generation.
+- Store a structured workout document for each planned run, not only freeform instructions.
+- Use document steps that can map to Intervals.icu and Garmin: warmup, work steps, recoveries, cooldown, repeats, duration or distance targets, pace ranges, and optional HR zones.
+Add unit tests for plan generation and workout document generation.
 ```
 
 **Checkpoint:**
@@ -380,6 +394,7 @@ Add unit tests for plan generation.
 - plan generates without crashing;
 - workouts appear on a calendar/list;
 - every workout has purpose and target;
+- planned run workouts have structured documents ready for Intervals.icu publishing;
 - plan looks reasonable when inspected manually.
 
 ---
@@ -597,7 +612,70 @@ Prediction should return a range and confidence level, not a single false-precis
 
 ## 7. Integrations Roadmap
 
-### Phase 11 - Strava integration
+### Phase 11 - Intervals.icu planned-workout publishing
+
+Use Intervals.icu as the MVP bridge from generated planned workouts to Garmin Connect and the Garmin Forerunner 265. Do not use the direct Garmin API for MVP.
+
+**Required flow:**
+
+1. User stores Intervals.icu athlete/API credentials in server-only environment variables for the private MVP.
+2. User enables Intervals.icu planned-workout upload to Garmin Connect in Intervals.icu settings.
+3. App generates structured workout documents for future planned run workouts.
+4. App converts each planned run into an Intervals.icu calendar workout payload.
+5. App uses a stable `external_id` based on the local planned workout ID.
+6. App upserts future workouts to `POST /api/v1/athlete/0/events/bulk?upsert=true`.
+7. Intervals.icu syncs eligible planned workouts to Garmin Connect.
+8. Garmin Connect syncs the workout to the Forerunner 265.
+9. App records sync status and any Intervals.icu event IDs for later troubleshooting.
+
+**Compatibility rules:**
+
+- publish only Run workouts in the MVP;
+- skip rest days or publish them as Intervals.icu notes, not Garmin workouts;
+- avoid RPE-only targets as the primary Garmin target;
+- use pace or HR target ranges instead of exact single-value targets;
+- keep Garmin workout step count conservative by using repeat blocks instead of many individual steps;
+- never rewrite completed workouts during sync updates.
+
+**Codex prompt:**
+
+```text
+Add Intervals.icu planned-workout publishing.
+Create /lib/intervals/client.ts, /lib/intervals/workoutDocuments.ts, and /lib/intervals/publishWorkouts.ts.
+Create intervals_connections and intervals_workout_syncs tables if needed.
+Use server-only environment variables for the private MVP Intervals.icu athlete/API credentials.
+Generate structured workout documents for calibration, easy, long run, tempo, interval, and marathon-pace runs.
+Build Intervals.icu calendar event payloads with category WORKOUT, type Run, name, start_date_local, stable external_id, and structured description or supported workout file payload.
+Upsert future planned run workouts to Intervals.icu.
+Record sync status, Intervals.icu event ID, last synced time, and errors.
+Do not call Garmin APIs directly.
+Do not publish rest days as Garmin workouts.
+Add unit tests for workout document generation and payload generation.
+```
+
+**Checkpoint:**
+
+- one generated run workout appears in Intervals.icu;
+- the same workout syncs to Garmin Connect;
+- the workout reaches the Forerunner 265 training calendar or workout list;
+- sync can be repeated without creating duplicates;
+- sync errors are visible enough to troubleshoot.
+
+**Future expansion:**
+
+If the app grows beyond personal use, replace the personal API-key setup with Intervals.icu OAuth using `CALENDAR:WRITE`. Other watch brands should be added behind the same structured workout document layer.
+
+**References for later implementation:**
+
+- Intervals.icu Open API: https://www.intervals.icu/features/open-api/
+- Uploading planned workouts to Intervals.icu: https://forum.intervals.icu/t/uploading-planned-workouts-to-intervals-icu/63624
+- Intervals.icu OAuth support: https://forum.intervals.icu/t/intervals-icu-oauth-support/2759
+- Intervals.icu planned workouts to Garmin Connect: https://forum.intervals.icu/t/upload-planned-workouts-to-garmin-connect/1521
+- Garmin Forerunner 265 workouts manual: https://www8.garmin.com/manuals/webhelp/GUID-F41EAFB3-6CC9-42DE-9C6C-9E358DBB0671/EN-GB/GUID-54A017B7-95D1-4C96-A39F-AEA91B7ACE29.html
+
+---
+
+### Phase 12 - Strava integration
 
 Start with manual refresh, not webhooks.
 
@@ -643,7 +721,7 @@ Do not import cycling, swimming, strength, walking, or other activities.
 
 ---
 
-### Phase 12 - Strava webhooks
+### Phase 13 - Strava webhooks
 
 Only add after manual refresh works.
 
@@ -664,16 +742,16 @@ Keep the manual refresh button as a fallback.
 
 ---
 
-### Phase 13 - Garmin workout export helper
+### Phase 14 - Garmin workout export helper
 
-Official Garmin workout publishing may be difficult because Garmin Training API access may require developer approval. Use a manual helper first.
+Keep this as a fallback if Intervals.icu to Garmin sync is unavailable or a workout type does not transfer correctly. Direct Garmin workout publishing may still be difficult because Garmin Training API access may require developer approval.
 
 **Practical workaround:**
 
 1. show workout clearly in the app;
 2. format workout steps for easy Garmin Connect recreation;
 3. optionally generate text export;
-4. keep API integration for much later.
+4. keep direct Garmin API integration for much later.
 
 **Codex prompt:**
 
@@ -682,14 +760,14 @@ Add Garmin workout export helper.
 For each planned workout, show structured workout steps:
 warmup, intervals, recoveries, cooldown.
 Format them in a way that is easy to manually recreate in Garmin Connect.
-Do not attempt Garmin API integration yet.
+Do not attempt direct Garmin API integration yet.
 ```
 
 ---
 
 ## 8. Post-MVP Feature Roadmap
 
-### Phase 14 - Gear tracking
+### Phase 15 - Gear tracking
 
 **Fields:**
 
@@ -719,7 +797,7 @@ Show warnings at 300 km, 500 km, 700 km, and custom threshold.
 
 ---
 
-### Phase 15 - AI-generated workout feedback
+### Phase 16 - AI-generated workout feedback
 
 **Correct architecture:**
 
@@ -747,7 +825,7 @@ Cost note: ChatGPT Plus does not automatically make OpenAI API calls free. To av
 
 ---
 
-### Phase 16 - Trainer chat
+### Phase 17 - Trainer chat
 
 Build only after the app has enough internal data.
 
@@ -778,7 +856,7 @@ Specific question
 
 ---
 
-### Phase 17 - Race directory
+### Phase 18 - Race directory
 
 Start curated, not global.
 
@@ -809,7 +887,7 @@ Seed with a small curated list.
 
 ---
 
-### Phase 18 - Nutrition and fueling
+### Phase 19 - Nutrition and fueling
 
 Start rule-based.
 
@@ -845,7 +923,7 @@ Keep advice general and non-medical.
 
 ---
 
-### Phase 19 - Social sharing
+### Phase 20 - Social sharing
 
 Start simple.
 
@@ -870,7 +948,7 @@ Do not include Strava map yet.
 
 ---
 
-### Phase 20 - Runner score
+### Phase 21 - Runner score
 
 Do not start by comparing every user directly to the marathon world record. It can be fun, but it is easy to make misleading.
 
@@ -910,7 +988,7 @@ Show score history over time.
 
 ---
 
-### Phase 21 - Avatar and rewards
+### Phase 22 - Avatar and rewards
 
 Treat this as a separate product layer. Do not build it until the training app works.
 
@@ -999,7 +1077,7 @@ Use Perplexity for research, not as the main software architect.
 9. Build workout scoring.
 10. Build plan adjustment.
 
-Only after these 10 actions should Strava be added.
+Only after these 10 actions should Intervals.icu planned-workout publishing be added. Strava should come after that.
 
 ---
 
@@ -1050,7 +1128,17 @@ Strong trend updates paces
 Adjustment history visible
 ```
 
-### Milestone 6 - Strava import
+### Milestone 6 - Intervals.icu workout publishing
+
+```text
+Structured workout document generated
+Workout pushed to Intervals.icu
+Duplicate prevented by stable external_id
+Workout appears in Garmin Connect
+Workout reaches Forerunner 265
+```
+
+### Milestone 7 - Strava import
 
 ```text
 Strava connected
@@ -1060,7 +1148,7 @@ Run scored
 Plan adjusted
 ```
 
-### Milestone 7 - Useful personal app
+### Milestone 8 - Useful personal app
 
 ```text
 You can use it for a real training week
@@ -1104,6 +1192,7 @@ Workouts
 - evaluations
 
 Settings
+- Intervals.icu connection/status
 - Strava connection
 - data export
 - sign out
@@ -1141,6 +1230,20 @@ type PlannedWorkout = {
   terrain?: "flat" | "hilly" | "uphill" | "downhill" | "track" | "treadmill" | "trail";
   purpose: string;
   instructions: string[];
+  workoutDocument?: StructuredWorkoutDocument;
+};
+
+type StructuredWorkoutDocument = {
+  sport: "run";
+  targetType: "pace" | "heart_rate" | "open";
+  steps: Array<{
+    kind: "warmup" | "work" | "recovery" | "cooldown" | "repeat";
+    durationMin?: number;
+    distanceKm?: number;
+    targetPaceSecPerKm?: { min: number; max: number };
+    targetHrZone?: string;
+    repeatCount?: number;
+  }>;
 };
 ```
 
@@ -1202,8 +1305,9 @@ type PlanAdjustment = {
 |---|---|
 | App becomes too broad | Follow the milestone order and postpone non-core features. |
 | AI generates plausible but unsafe plans | Use deterministic plan logic first. Use AI only to explain. |
-| Beginner gets blocked by integrations | Build manual logging before Strava or Garmin. |
-| Garmin integration becomes impossible | Use Garmin workout export helper as workaround. |
+| Beginner gets blocked by integrations | Build manual logging before Intervals.icu, Strava, or Garmin. |
+| Intervals.icu to Garmin sync fails | Keep the Garmin workout export helper as a fallback. |
+| Garmin integration becomes impossible | Avoid direct Garmin API work; use Intervals.icu and manual export helper as workarounds. |
 | Training logic becomes untestable | Keep logic in /lib/training and add tests. |
 | UI becomes a distraction | Keep design blank/minimal until the engine works. |
 | Medical/health data creates privacy risk | Keep sensitive fields optional and postpone deep health tracking. |
@@ -1228,6 +1332,12 @@ The first target should be:
 
 ```text
 A private web app that generates a marathon plan, lets the user log workouts manually, scores them, adjusts the next 1-2 weeks, and shows projected marathon finish-time range.
+```
+
+Then add:
+
+```text
+Intervals.icu planned-workout publishing to Garmin Connect and Forerunner 265.
 ```
 
 Then add:
