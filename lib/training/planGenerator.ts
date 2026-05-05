@@ -198,8 +198,8 @@ export function generateTrainingPlan(
     trainingPlan: {
       profile_id: runnerProfile.id,
       race_goal_id: raceGoal.id,
-      name: buildPlanName(raceGoal),
-      status: "active",
+      name: buildDefaultTrainingPlanName(raceGoal),
+      status: "paused",
       start_date: formatDateOnly(startDate),
       end_date: raceGoal.race_date,
       total_weeks: totalWeeks,
@@ -1055,7 +1055,7 @@ function getTargetHeartRateZone(workoutType: WorkoutType): string | null {
   return zones[workoutType];
 }
 
-function buildPlanName(raceGoal: RaceGoal): string {
+export function buildDefaultTrainingPlanName(raceGoal: RaceGoal): string {
   const distanceLabel =
     raceGoal.distance === "marathon" ? "Marathon" : "Half Marathon";
   return `${raceGoal.race_name} ${distanceLabel} Plan`;

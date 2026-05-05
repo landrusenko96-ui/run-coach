@@ -42,7 +42,7 @@ export type WorkoutType =
   | "calibration"
   | "cross_training";
 
-export type TrainingPlanStatus = "active" | "archived";
+export type TrainingPlanStatus = "active" | "paused";
 
 export type PlannedWorkoutStatus =
   | "planned"

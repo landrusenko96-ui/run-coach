@@ -6,7 +6,7 @@ export default function PlanPage() {
     <>
       <PageHeader
         title="Plan"
-        description="This page will show the generated training plan and any conservative adjustments made over time."
+        description="Manage saved training plans, choose one active plan, and review the active plan schedule."
       />
       <TrainingPlanPanel />
     </>

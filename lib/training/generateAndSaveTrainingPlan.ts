@@ -1,7 +1,7 @@
 import { fetchFirstProfile } from "@/lib/db/profiles";
 import { fetchActiveRaceGoal } from "@/lib/db/raceGoals";
 import {
-  archiveTrainingPlan,
+  activateTrainingPlan,
   fetchActiveTrainingPlan,
   savePlannedWorkouts,
   saveTrainingPlan,
@@ -10,7 +10,8 @@ import { generateTrainingPlan } from "@/lib/training/planGenerator";
 import type { PlannedWorkout, TrainingPlan } from "@/types/training";
 
 type GenerateAndSaveTrainingPlanOptions = {
-  archiveExistingPlan?: boolean;
+  planName?: string;
+  replaceActivePlan?: boolean;
 };
 
 type GenerateAndSaveTrainingPlanResult = {
@@ -45,11 +46,11 @@ export async function generateAndSaveTrainingPlan(
 
     const existingActivePlan = await fetchActiveTrainingPlan(profile.id);
 
-    if (existingActivePlan && !options.archiveExistingPlan) {
+    if (existingActivePlan && !options.replaceActivePlan) {
       return {
         success: false,
         message:
-          "An active training plan already exists. Confirm that you want to archive it before generating a replacement.",
+          "An active training plan already exists. Confirm that you want to pause it before generating and activating a replacement.",
         needsConfirmation: true,
         plan: existingActivePlan,
         workouts: [],
@@ -59,10 +60,11 @@ export async function generateAndSaveTrainingPlan(
     }
 
     const generatedPlan = generateTrainingPlan(profile, raceGoal);
+    const customPlanName = normalizePlanName(options.planName);
     const trainingPlanInput = {
       profile_id: generatedPlan.trainingPlan.profile_id,
       race_goal_id: generatedPlan.trainingPlan.race_goal_id,
-      name: generatedPlan.trainingPlan.name,
+      name: customPlanName ?? generatedPlan.trainingPlan.name,
       status: generatedPlan.trainingPlan.status,
       start_date: generatedPlan.trainingPlan.start_date,
       end_date: generatedPlan.trainingPlan.end_date,
@@ -82,10 +84,9 @@ export async function generateAndSaveTrainingPlan(
     // Database write 2: insert all generated planned_workouts rows.
     const savedWorkouts = await savePlannedWorkouts(plannedWorkoutInputs);
 
-    if (existingActivePlan) {
-      // Database write 3: keep history by archiving the old active plan.
-      await archiveTrainingPlan(existingActivePlan.id);
-    }
+    // Database write 3: activate the new plan only after its workouts exist.
+    // The database function pauses any other active plan for this profile.
+    const activatedPlan = await activateTrainingPlan(savedPlan.id);
 
     return {
       success: true,
@@ -96,7 +97,7 @@ export async function generateAndSaveTrainingPlan(
         existingActivePlan?.name,
       ),
       needsConfirmation: false,
-      plan: savedPlan,
+      plan: activatedPlan,
       workouts: savedWorkouts,
       assumptions: generatedPlan.trainingPlan.assumptions,
       warnings: generatedPlan.trainingPlan.warnings,
@@ -108,6 +109,12 @@ export async function generateAndSaveTrainingPlan(
         : "Could not generate and save the training plan.",
     );
   }
+}
+
+function normalizePlanName(planName: string | undefined): string | null {
+  const trimmedPlanName = planName?.trim();
+
+  return trimmedPlanName ? trimmedPlanName : null;
 }
 
 function buildFailureResult(message: string): GenerateAndSaveTrainingPlanResult {
@@ -126,10 +133,10 @@ function buildSuccessMessage(
   workoutCount: number,
   assumptionCount: number,
   warningCount: number,
-  archivedPlanName?: string,
+  pausedPlanName?: string,
 ): string {
-  const archivedMessage = archivedPlanName
-    ? ` Archived previous plan: ${archivedPlanName}.`
+  const pausedMessage = pausedPlanName
+    ? ` Paused previous active plan: ${pausedPlanName}.`
     : "";
   const assumptionMessage =
     assumptionCount > 0
@@ -142,5 +149,5 @@ function buildSuccessMessage(
       ? ` ${warningCount} warning${warningCount === 1 ? " was" : "s were"} added.`
       : "";
 
-  return `Generated and saved ${workoutCount} planned workouts.${archivedMessage}${assumptionMessage}${warningMessage}`;
+  return `Generated, saved, and activated ${workoutCount} planned workouts.${pausedMessage}${assumptionMessage}${warningMessage}`;
 }

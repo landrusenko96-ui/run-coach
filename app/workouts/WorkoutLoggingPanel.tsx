@@ -548,7 +548,7 @@ export function WorkoutLoggingPanel() {
         setForm(emptyForm);
         setMessage(
           successMessage ??
-            "Generate an active training plan before logging workouts.",
+            "Generate or select an active training plan on the Plan page before logging workouts.",
         );
         setStatus("ready");
         return;
@@ -876,7 +876,7 @@ export function WorkoutLoggingPanel() {
 
       {profile && !plan ? (
         <section className="rounded-md border border-slate-200 bg-white p-6 text-sm text-slate-700">
-          Generate a training plan before logging workouts. 
+          Generate or select an active training plan before logging workouts.{" "}
           <Link className="font-medium text-slate-950 underline" href="/plan">
             Go to Plan
           </Link>

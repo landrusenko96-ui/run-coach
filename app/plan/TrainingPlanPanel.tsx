@@ -4,8 +4,17 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { fetchFirstProfile } from "@/lib/db/profiles";
 import { fetchActiveRaceGoal } from "@/lib/db/raceGoals";
-import { fetchActiveTrainingPlanWithWorkouts } from "@/lib/db/trainingPlans";
+import {
+  activateTrainingPlan,
+  deleteTrainingPlanAndRelatedData,
+  fetchPlannedWorkouts,
+  fetchTrainingPlanDeletePreview,
+  fetchTrainingPlans,
+  type DeleteTrainingPlanResult,
+  type TrainingPlanDeletePreview,
+} from "@/lib/db/trainingPlans";
 import { generateAndSaveTrainingPlan } from "@/lib/training/generateAndSaveTrainingPlan";
+import { buildDefaultTrainingPlanName } from "@/lib/training/planGenerator";
 import type {
   PlannedWorkout,
   Profile,
@@ -13,12 +22,19 @@ import type {
   TrainingPlan,
 } from "@/types";
 
-type LoadStatus = "loading" | "ready" | "generating" | "error";
+type LoadStatus =
+  | "loading"
+  | "ready"
+  | "generating"
+  | "activating"
+  | "deleting"
+  | "error";
 
-type ActivePlanState = {
+type PlansState = {
   profile: Profile | null;
   raceGoal: RaceGoal | null;
-  plan: TrainingPlan | null;
+  plans: TrainingPlan[];
+  activePlan: TrainingPlan | null;
   workouts: PlannedWorkout[];
 };
 
@@ -27,10 +43,13 @@ type WeeklyWorkoutGroup = {
   workouts: PlannedWorkout[];
 };
 
-const emptyState: ActivePlanState = {
+type DeletePreviewByPlanId = Record<string, TrainingPlanDeletePreview>;
+
+const emptyState: PlansState = {
   profile: null,
   raceGoal: null,
-  plan: null,
+  plans: [],
+  activePlan: null,
   workouts: [],
 };
 
@@ -89,6 +108,18 @@ function formatTerrain(terrain: string | null): string {
   return terrain ? formatLabel(terrain) : "No terrain target";
 }
 
+function formatPlanDateRange(plan: TrainingPlan): string {
+  return `${formatDate(plan.start_date)} - ${formatDate(plan.end_date)}`;
+}
+
+function getStatusBadgeClass(status: string): string {
+  if (status === "active") {
+    return "border-emerald-200 bg-emerald-50 text-emerald-800";
+  }
+
+  return "border-slate-200 bg-slate-50 text-slate-700";
+}
+
 function groupWorkoutsByWeek(workouts: PlannedWorkout[]): WeeklyWorkoutGroup[] {
   const groups = new Map<number, PlannedWorkout[]>();
 
@@ -108,81 +139,119 @@ function groupWorkoutsByWeek(workouts: PlannedWorkout[]): WeeklyWorkoutGroup[] {
     }));
 }
 
+function buildDefaultMessage(input: {
+  profile: Profile;
+  raceGoal: RaceGoal | null;
+  plans: TrainingPlan[];
+  activePlan: TrainingPlan | null;
+}): string {
+  if (!input.raceGoal) {
+    return "Create and save a Race Goal before generating a new plan.";
+  }
+
+  if (input.plans.length === 0) {
+    return "No training plan has been generated yet.";
+  }
+
+  if (!input.activePlan) {
+    return "No active plan is selected. Open the plan picker and choose one plan to make it active.";
+  }
+
+  return "Loaded your active training plan.";
+}
+
+function buildDeleteSuccessMessage(result: DeleteTrainingPlanResult): string {
+  const activePlanMessage = result.was_active
+    ? " It was the active plan, so select another plan before using Dashboard or Workouts."
+    : "";
+
+  return `Deleted ${result.deleted_plan_name}. Removed ${result.deleted_planned_workout_count} planned workouts and ${result.deleted_workout_evaluation_count} workout evaluations. Kept and unlinked ${result.unlinked_logged_workout_count} logged workouts.${activePlanMessage}`;
+}
+
 export function TrainingPlanPanel() {
   const [status, setStatus] = useState<LoadStatus>("loading");
   const [message, setMessage] = useState<string | null>(null);
-  const [activePlanState, setActivePlanState] =
-    useState<ActivePlanState>(emptyState);
+  const [plansState, setPlansState] = useState<PlansState>(emptyState);
   const [showReplaceConfirmation, setShowReplaceConfirmation] =
     useState(false);
   const [generationAssumptions, setGenerationAssumptions] = useState<string[]>(
     [],
   );
   const [generationWarnings, setGenerationWarnings] = useState<string[]>([]);
+  const [planNameInput, setPlanNameInput] = useState("");
+  const [isPlanPickerOpen, setIsPlanPickerOpen] = useState(false);
+  const [pendingDeletePlanId, setPendingDeletePlanId] = useState<string | null>(
+    null,
+  );
+  const [deletingPlanId, setDeletingPlanId] = useState<string | null>(null);
+  const [deletePreviews, setDeletePreviews] = useState<DeletePreviewByPlanId>(
+    {},
+  );
 
-  const loadTrainingPlan = useCallback(async (successMessage?: string) => {
+  const loadPlans = useCallback(async (successMessage?: string) => {
     try {
       const profile = await fetchFirstProfile();
 
       if (!profile) {
-        setActivePlanState(emptyState);
+        setPlansState(emptyState);
         setMessage(successMessage ?? "Create and save a Profile first.");
         setStatus("ready");
         return;
       }
 
-      const raceGoal = await fetchActiveRaceGoal(profile.id);
+      const [raceGoal, plans] = await Promise.all([
+        fetchActiveRaceGoal(profile.id),
+        fetchTrainingPlans(profile.id),
+      ]);
+      const activePlan = plans.find((plan) => plan.status === "active") ?? null;
+      const workouts = activePlan ? await fetchPlannedWorkouts(activePlan.id) : [];
 
-      if (!raceGoal) {
-        setActivePlanState({
-          ...emptyState,
-          profile,
-        });
-        setMessage(
-          successMessage ??
-            "Create and save a Race Goal before generating a plan.",
-        );
-        setStatus("ready");
-        return;
-      }
-
-      const activePlan = await fetchActiveTrainingPlanWithWorkouts(profile.id);
-
-      setActivePlanState({
+      setPlansState({
         profile,
         raceGoal,
-        plan: activePlan?.plan ?? null,
-        workouts: activePlan?.workouts ?? [],
+        plans,
+        activePlan,
+        workouts,
       });
+      setPendingDeletePlanId(null);
+      setDeletingPlanId(null);
       setMessage(
         successMessage ??
-          (activePlan
-            ? "Loaded your active training plan."
-            : "No training plan has been generated yet."),
+          buildDefaultMessage({
+            profile,
+            raceGoal,
+            plans,
+            activePlan,
+          }),
       );
       setStatus("ready");
     } catch (error) {
       setMessage(
         error instanceof Error
           ? error.message
-          : "Could not load your training plan.",
+          : "Could not load your training plans.",
       );
       setStatus("error");
     }
   }, []);
 
   useEffect(() => {
-    void Promise.resolve().then(() => loadTrainingPlan());
-  }, [loadTrainingPlan]);
+    void Promise.resolve().then(() => loadPlans());
+  }, [loadPlans]);
 
-  async function handleGeneratePlan(archiveExistingPlan: boolean) {
+  async function handleGeneratePlan(replaceActivePlan: boolean) {
     setStatus("generating");
     setMessage("Generating and saving your training plan...");
     setShowReplaceConfirmation(false);
+    setIsPlanPickerOpen(false);
+    setPendingDeletePlanId(null);
     setGenerationAssumptions([]);
     setGenerationWarnings([]);
 
-    const result = await generateAndSaveTrainingPlan({ archiveExistingPlan });
+    const result = await generateAndSaveTrainingPlan({
+      planName: planNameInput,
+      replaceActivePlan,
+    });
 
     if (result.needsConfirmation) {
       setStatus("ready");
@@ -197,21 +266,116 @@ export function TrainingPlanPanel() {
       return;
     }
 
-    await loadTrainingPlan(result.message);
+    await loadPlans(result.message);
+    setPlanNameInput("");
     setGenerationAssumptions(result.assumptions);
     setGenerationWarnings(result.warnings);
+  }
+
+  async function handleActivatePlan(trainingPlanId: string) {
+    if (
+      !trainingPlanId ||
+      trainingPlanId === plansState.activePlan?.id ||
+      status === "generating" ||
+      status === "deleting"
+    ) {
+      return;
+    }
+
+    const selectedPlan =
+      plansState.plans.find((plan) => plan.id === trainingPlanId) ?? null;
+
+    if (!selectedPlan) {
+      setStatus("error");
+      setMessage("Could not find the selected training plan.");
+      return;
+    }
+
+    setStatus("activating");
+    setMessage(`Activating ${selectedPlan.name}...`);
+    setShowReplaceConfirmation(false);
+    setIsPlanPickerOpen(false);
+    setPendingDeletePlanId(null);
+
+    try {
+      await activateTrainingPlan(trainingPlanId);
+      await loadPlans(`${selectedPlan.name} is now active. Other plans are paused.`);
+    } catch (error) {
+      setMessage(
+        error instanceof Error
+          ? `Could not activate plan: ${error.message}`
+          : "Could not activate plan.",
+      );
+      setStatus("error");
+    }
+  }
+
+  async function handleStartDeletePlan(trainingPlan: TrainingPlan) {
+    if (status === "generating" || status === "activating" || deletingPlanId) {
+      return;
+    }
+
+    setShowReplaceConfirmation(false);
+    setPendingDeletePlanId(trainingPlan.id);
+
+    if (deletePreviews[trainingPlan.id]) {
+      return;
+    }
+
+    try {
+      const preview = await fetchTrainingPlanDeletePreview(trainingPlan.id);
+      setDeletePreviews((currentPreviews) => ({
+        ...currentPreviews,
+        [trainingPlan.id]: preview,
+      }));
+    } catch (error) {
+      setMessage(
+        error instanceof Error
+          ? `Could not check related plan data: ${error.message}`
+          : "Could not check related plan data.",
+      );
+      setStatus("error");
+    }
+  }
+
+  async function handleDeletePlan(trainingPlan: TrainingPlan) {
+    setDeletingPlanId(trainingPlan.id);
+    setStatus("deleting");
+    setMessage(null);
+
+    try {
+      const result = await deleteTrainingPlanAndRelatedData(trainingPlan.id);
+      setDeletePreviews((currentPreviews) => {
+        const nextPreviews = { ...currentPreviews };
+        delete nextPreviews[trainingPlan.id];
+        return nextPreviews;
+      });
+      setIsPlanPickerOpen(false);
+      await loadPlans(buildDeleteSuccessMessage(result));
+    } catch (error) {
+      setDeletingPlanId(null);
+      setStatus("error");
+      setMessage(
+        error instanceof Error
+          ? `Could not delete plan: ${error.message}`
+          : "Could not delete plan.",
+      );
+    }
   }
 
   if (status === "loading") {
     return (
       <div className="rounded-md border border-slate-200 bg-white p-6 text-sm text-slate-600">
-        Loading training plan...
+        Loading training plans...
       </div>
     );
   }
 
-  const { profile, raceGoal, plan, workouts } = activePlanState;
+  const { profile, raceGoal, plans, activePlan, workouts } = plansState;
   const isGenerating = status === "generating";
+  const isActivating = status === "activating";
+  const isDeleting = status === "deleting";
+  const isBusy = isGenerating || isActivating || isDeleting;
   const canGeneratePlan = Boolean(profile && raceGoal);
   const weeklyWorkoutGroups = groupWorkoutsByWeek(workouts);
 
@@ -251,29 +415,54 @@ export function TrainingPlanPanel() {
               <div>
                 <dt className="font-medium text-slate-700">Active plan</dt>
                 <dd className="mt-1 text-slate-600">
-                  {plan ? plan.name : "Not generated yet"}
+                  {activePlan ? activePlan.name : "None selected"}
                 </dd>
               </div>
             </dl>
           </div>
 
           {canGeneratePlan ? (
-            <button
-              className={`w-fit rounded-md px-4 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:bg-slate-300 ${
-                plan
-                  ? "border border-slate-300 bg-white text-slate-900"
-                  : "bg-slate-950 text-white"
-              }`}
-              disabled={isGenerating}
-              onClick={() => handleGeneratePlan(false)}
-              type="button"
-            >
-              {isGenerating
-                ? "Generating..."
-                : plan
-                  ? "Generate replacement plan"
-                  : "Generate Plan"}
-            </button>
+            <div className="w-full space-y-3 md:max-w-sm">
+              <div>
+                <label
+                  className="text-sm font-medium text-slate-700"
+                  htmlFor="new-plan-name"
+                >
+                  New plan name (optional)
+                </label>
+                <input
+                  className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-950 outline-none focus:border-slate-500 disabled:cursor-not-allowed disabled:bg-slate-100"
+                  disabled={isBusy}
+                  id="new-plan-name"
+                  maxLength={120}
+                  onChange={(event) => setPlanNameInput(event.target.value)}
+                  placeholder={
+                    raceGoal
+                      ? buildDefaultTrainingPlanName(raceGoal)
+                      : "Race Distance Plan"
+                  }
+                  type="text"
+                  value={planNameInput}
+                />
+              </div>
+
+              <button
+                className={`w-full rounded-md px-4 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:bg-slate-300 ${
+                  activePlan
+                    ? "border border-slate-300 bg-white text-slate-900"
+                    : "bg-slate-950 text-white"
+                }`}
+                disabled={isBusy}
+                onClick={() => handleGeneratePlan(false)}
+                type="button"
+              >
+                {isGenerating
+                  ? "Generating..."
+                  : activePlan
+                    ? "Generate replacement plan"
+                    : "Generate Plan"}
+              </button>
+            </div>
           ) : null}
         </div>
 
@@ -295,23 +484,24 @@ export function TrainingPlanPanel() {
           </div>
         ) : null}
 
-        {showReplaceConfirmation && plan ? (
+        {showReplaceConfirmation && activePlan ? (
           <div className="mt-5 rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
             <p>
-              This will archive the current active plan, then save a new active
-              plan and its planned workouts.
+              This will save a new paused plan with its planned workouts, then
+              activate it and pause the current active plan.
             </p>
             <div className="mt-3 flex flex-wrap gap-3">
               <button
                 className="rounded-md bg-amber-900 px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:bg-amber-300"
-                disabled={isGenerating}
+                disabled={isBusy}
                 onClick={() => handleGeneratePlan(true)}
                 type="button"
               >
-                Archive current plan and generate new one
+                Generate and activate replacement
               </button>
               <button
-                className="rounded-md border border-amber-300 bg-white px-3 py-2 text-sm font-medium text-amber-900"
+                className="rounded-md border border-amber-300 bg-white px-3 py-2 text-sm font-medium text-amber-900 disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={isBusy}
                 onClick={() => {
                   setShowReplaceConfirmation(false);
                   setMessage("Kept the current active training plan.");
@@ -324,6 +514,208 @@ export function TrainingPlanPanel() {
           </div>
         ) : null}
       </section>
+
+      {profile ? (
+        <section className="rounded-md border border-slate-200 bg-white p-6">
+          <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+            <div>
+              <h2 className="text-base font-medium text-slate-950">
+                Plans management
+              </h2>
+              <p className="mt-1 text-sm text-slate-600">
+                The selected plan is used by Dashboard and Workouts.
+              </p>
+            </div>
+            <button
+              className="w-fit rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
+              disabled={isBusy}
+              onClick={() => loadPlans()}
+              type="button"
+            >
+              Refresh
+            </button>
+          </div>
+
+          {plans.length === 0 ? (
+            <div className="mt-5 rounded-md border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+              No saved plans yet. Generate a plan to start managing plans here.
+            </div>
+          ) : (
+            <>
+              <div className="mt-5">
+                <p className="text-sm font-medium text-slate-800">
+                  Active plan
+                </p>
+                <button
+                  aria-controls="plan-picker"
+                  aria-expanded={isPlanPickerOpen}
+                  className="mt-1 flex w-full flex-col gap-2 rounded-md border border-slate-300 bg-white px-4 py-3 text-left text-sm text-slate-950 disabled:cursor-not-allowed disabled:bg-slate-100 md:flex-row md:items-center md:justify-between"
+                  disabled={isBusy}
+                  onClick={() => {
+                    setShowReplaceConfirmation(false);
+                    setIsPlanPickerOpen((currentValue) => !currentValue);
+                  }}
+                  type="button"
+                >
+                  <span>
+                    {activePlan ? activePlan.name : "No active plan selected"}
+                  </span>
+                  <span className="flex flex-wrap items-center gap-2">
+                    {activePlan ? (
+                      <span
+                        className={`w-fit rounded-md border px-2 py-1 text-xs font-medium uppercase tracking-wide ${getStatusBadgeClass(
+                          activePlan.status,
+                        )}`}
+                      >
+                        {activePlan.status}
+                      </span>
+                    ) : null}
+                    <span className="text-xs font-medium text-slate-600">
+                      {isPlanPickerOpen ? "Close picker" : "Open picker"}
+                    </span>
+                  </span>
+                </button>
+
+                {isPlanPickerOpen ? (
+                  <div
+                    className="mt-3 divide-y divide-slate-100 rounded-md border border-slate-200"
+                    id="plan-picker"
+                  >
+                    {plans.map((plan) => {
+                      const isActive = plan.status === "active";
+                      const isConfirmingDelete = pendingDeletePlanId === plan.id;
+                      const isDeletingThisPlan = deletingPlanId === plan.id;
+                      const preview = deletePreviews[plan.id];
+
+                      return (
+                        <article
+                          className={`grid gap-4 p-4 text-sm md:grid-cols-[minmax(170px,220px)_1fr] ${
+                            isDeletingThisPlan ? "opacity-60" : ""
+                          }`}
+                          key={plan.id}
+                        >
+                          <div className="flex flex-wrap gap-2 md:block md:space-y-2">
+                            {isActive ? (
+                              <span className="inline-flex w-fit rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800">
+                                Current active
+                              </span>
+                            ) : (
+                              <button
+                                className="rounded-md border border-slate-300 px-3 py-2 text-xs font-medium text-slate-900 disabled:cursor-not-allowed disabled:opacity-60"
+                                disabled={isBusy}
+                                onClick={() => handleActivatePlan(plan.id)}
+                                type="button"
+                              >
+                                Make active
+                              </button>
+                            )}
+
+                            {isConfirmingDelete ? (
+                              <>
+                                <button
+                                  className="rounded-md border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+                                  disabled={isDeletingThisPlan}
+                                  onClick={() => setPendingDeletePlanId(null)}
+                                  type="button"
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-800 disabled:cursor-not-allowed disabled:opacity-60"
+                                  disabled={isDeletingThisPlan}
+                                  onClick={() => handleDeletePlan(plan)}
+                                  type="button"
+                                >
+                                  {isDeletingThisPlan
+                                    ? "Deleting..."
+                                    : "Delete permanently"}
+                                </button>
+                              </>
+                            ) : (
+                              <button
+                                className="rounded-md border border-red-200 px-3 py-2 text-xs font-medium text-red-700 disabled:cursor-not-allowed disabled:opacity-60"
+                                disabled={isBusy}
+                                onClick={() => handleStartDeletePlan(plan)}
+                                type="button"
+                              >
+                                Delete
+                              </button>
+                            )}
+                          </div>
+
+                          <div>
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div>
+                                <h3 className="font-medium text-slate-950">
+                                  {plan.name}
+                                </h3>
+                                <p className="mt-1 text-slate-600">
+                                  {formatPlanDateRange(plan)}
+                                </p>
+                              </div>
+                              <span
+                                className={`w-fit rounded-md border px-2 py-1 text-xs font-medium uppercase tracking-wide ${getStatusBadgeClass(
+                                  plan.status,
+                                )}`}
+                              >
+                                {plan.status}
+                              </span>
+                            </div>
+
+                            <dl className="mt-3 grid gap-3 text-slate-600 md:grid-cols-3">
+                              <div>
+                                <dt className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                                  Total weeks
+                                </dt>
+                                <dd className="mt-1">{plan.total_weeks}</dd>
+                              </div>
+                              <div>
+                                <dt className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                                  Created
+                                </dt>
+                                <dd className="mt-1">
+                                  {formatDate(plan.created_at.slice(0, 10))}
+                                </dd>
+                              </div>
+                              <div>
+                                <dt className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                                  Updated
+                                </dt>
+                                <dd className="mt-1">
+                                  {formatDate(plan.updated_at.slice(0, 10))}
+                                </dd>
+                              </div>
+                            </dl>
+
+                            {isConfirmingDelete ? (
+                              <div className="mt-3 rounded-md border border-red-100 bg-red-50 p-3 text-sm text-red-800">
+                                {preview ? (
+                                  <p>
+                                    This will delete{" "}
+                                    {preview.plannedWorkoutCount} planned
+                                    workouts and{" "}
+                                    {preview.workoutEvaluationCount} workout
+                                    evaluations.{" "}
+                                    {preview.linkedLoggedWorkoutCount} logged
+                                    workouts will be kept but unlinked from this
+                                    plan.
+                                  </p>
+                                ) : (
+                                  <p>Checking related plan data...</p>
+                                )}
+                              </div>
+                            ) : null}
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
+            </>
+          )}
+        </section>
+      ) : null}
 
       {generationWarnings.length > 0 ? (
         <section className="rounded-md border border-amber-200 bg-amber-50 p-6">
@@ -351,16 +743,23 @@ export function TrainingPlanPanel() {
         </section>
       ) : null}
 
-      {plan ? (
+      {activePlan ? (
         <section className="rounded-md border border-slate-200 bg-white p-6">
           <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
             <div>
               <h2 className="text-base font-medium text-slate-950">
-                {plan.name}
+                {activePlan.name}
               </h2>
+              <p className="mt-1 text-sm text-slate-600">
+                Active plan workout schedule
+              </p>
             </div>
-            <span className="w-fit rounded-md border border-slate-200 px-2 py-1 text-xs font-medium uppercase tracking-wide text-slate-600">
-              {plan.status}
+            <span
+              className={`w-fit rounded-md border px-2 py-1 text-xs font-medium uppercase tracking-wide ${getStatusBadgeClass(
+                activePlan.status,
+              )}`}
+            >
+              {activePlan.status}
             </span>
           </div>
 
@@ -368,18 +767,18 @@ export function TrainingPlanPanel() {
             <div>
               <dt className="font-medium text-slate-700">Start date</dt>
               <dd className="mt-1 text-slate-600">
-                {formatDate(plan.start_date)}
+                {formatDate(activePlan.start_date)}
               </dd>
             </div>
             <div>
               <dt className="font-medium text-slate-700">Race/end date</dt>
               <dd className="mt-1 text-slate-600">
-                {formatDate(plan.end_date)}
+                {formatDate(activePlan.end_date)}
               </dd>
             </div>
             <div>
               <dt className="font-medium text-slate-700">Total weeks</dt>
-              <dd className="mt-1 text-slate-600">{plan.total_weeks}</dd>
+              <dd className="mt-1 text-slate-600">{activePlan.total_weeks}</dd>
             </div>
           </dl>
 
@@ -392,8 +791,8 @@ export function TrainingPlanPanel() {
                 <div className="mt-3 divide-y divide-slate-100 rounded-md border border-slate-200">
                   {weekGroup.workouts.map((workout) => (
                     <div
-                      key={workout.id}
                       className="grid gap-3 p-4 text-sm md:grid-cols-[minmax(110px,140px)_1fr]"
+                      key={workout.id}
                     >
                       <div className="text-slate-600">
                         {formatDate(workout.workout_date)}
