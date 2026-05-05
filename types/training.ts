@@ -50,11 +50,13 @@ export type PlannedWorkoutStatus =
   | "missed"
   | "skipped";
 
+export type LoggedWorkoutSource = "manual" | "strava";
+
+export type LoggedWorkoutType = "run" | "treadmill_run";
+
+export type WorkoutRiskLevel = "low" | "medium" | "high";
+
 export type WorkoutIntensity = "rest" | "easy" | "moderate" | "hard";
-
-export type WorkoutResult = "completed" | "partial" | "missed";
-
-export type EvaluationStatus = "on_track" | "too_easy" | "too_hard" | "missed";
 
 export type AdjustmentType =
   | "keep_plan"
@@ -162,23 +164,42 @@ export type GeneratedTrainingPlan = {
 
 export type LoggedWorkout = {
   id: string;
-  runnerProfileId: string;
-  plannedWorkoutId?: string;
-  date: string;
-  result: WorkoutResult;
-  distanceKm?: number;
-  durationMinutes?: number;
-  perceivedEffort: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
-  notes?: string;
+  profile_id: string;
+  race_goal_id: string | null;
+  training_plan_id: string | null;
+  planned_workout_id: string | null;
+  workout_date: string;
+  workout_type: LoggedWorkoutType;
+  source: LoggedWorkoutSource;
+  distance_km: number | null;
+  duration_sec: number | null;
+  avg_pace_sec_per_km: number | null;
+  avg_heart_rate: number | null;
+  max_heart_rate: number | null;
+  cadence: number | null;
+  elevation_gain_m: number | null;
+  rpe: number | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 export type WorkoutEvaluation = {
   id: string;
-  loggedWorkoutId: string;
-  status: EvaluationStatus;
-  score: number;
-  reason: string;
-  createdAt: string;
+  logged_workout_id: string;
+  planned_workout_id: string | null;
+  profile_id: string;
+  training_plan_id: string | null;
+  overall_score: number;
+  completion_score: number;
+  pace_accuracy_score: number;
+  distance_completion_score: number;
+  effort_control_score: number;
+  training_value_score: number;
+  risk_level: WorkoutRiskLevel;
+  summary: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 export type PlanAdjustment = {
