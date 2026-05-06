@@ -139,6 +139,12 @@ function workoutEvaluation(overrides = {}) {
   };
 }
 
+function snapshotWorkout(decision, snapshotName, workoutId) {
+  return decision[snapshotName].workouts.find(
+    (workout) => workout.id === workoutId,
+  );
+}
+
 function buildInput(overrides = {}) {
   const planned = overrides.plannedWorkout ?? plannedWorkout();
 
@@ -219,11 +225,20 @@ describe("suggestPlanAdjustment", () => {
       target_pace_min_sec_per_km: 320,
       target_pace_max_sec_per_km: 340,
     });
+    const completedStructuredWorkout = {
+      version: 1,
+      sport: "Run",
+      name: "Completed interval",
+      exportSafe: true,
+      exportWarnings: [],
+      steps: [],
+    };
     const futureCompletedInterval = plannedWorkout({
       id: "future-completed-1",
       workout_date: "2026-05-06",
       workout_type: "interval",
       status: "completed",
+      structured_workout: completedStructuredWorkout,
     });
     const decision = suggestPlanAdjustment(
       buildInput({
@@ -253,7 +268,23 @@ describe("suggestPlanAdjustment", () => {
     assert.equal(adjustedTempo.workout_type, "recovery");
     assert.equal(adjustedTempo.title, "Recovery run");
     assert.ok(adjustedTempo.distance_km < futureTempo.distance_km);
+    assert.equal(adjustedTempo.structured_workout.name, "Recovery run");
+    assert.equal(adjustedTempo.structured_workout.exportSafe, true);
+    assert.deepEqual(adjustedTempo.structured_workout.exportWarnings, []);
+    assert.equal(adjustedTempo.structured_workout.steps[0].durationType, "distance");
+    assert.equal(adjustedTempo.structured_workout.steps[0].durationValue, 7000);
+    assert.equal(adjustedTempo.structured_workout.steps[0].targetMin, 370);
+    assert.equal(adjustedTempo.structured_workout.steps[0].targetMax, 415);
+    assert.equal(
+      snapshotWorkout(decision, "after_snapshot", "future-tempo-1")
+        .structured_workout.exportSafe,
+      true,
+    );
     assert.equal(completedInterval.workout_type, "interval");
+    assert.deepEqual(
+      completedInterval.structured_workout,
+      completedStructuredWorkout,
+    );
   });
 
   it("protects long-run progression after an under-completed long run", () => {
@@ -301,6 +332,21 @@ describe("suggestPlanAdjustment", () => {
     assert.deepEqual(decision.affected_workout_ids, ["future-long-1"]);
     assert.equal(adjustedLongRun.workout_type, "long_run");
     assert.equal(adjustedLongRun.distance_km, 14);
+    assert.equal(adjustedLongRun.duration_min, 98);
+    assert.equal(adjustedLongRun.structured_workout.exportSafe, true);
+    assert.deepEqual(adjustedLongRun.structured_workout.exportWarnings, []);
+    assert.equal(
+      adjustedLongRun.structured_workout.steps[0].durationType,
+      "distance",
+    );
+    assert.equal(adjustedLongRun.structured_workout.steps[0].durationValue, 14000);
+    assert.equal(adjustedLongRun.structured_workout.steps[0].targetMin, 375);
+    assert.equal(adjustedLongRun.structured_workout.steps[0].targetMax, 420);
+    assert.equal(
+      snapshotWorkout(decision, "after_snapshot", "future-long-1")
+        .structured_workout.steps[0].durationValue,
+      14000,
+    );
     assert.match(adjustedLongRun.instructions, /Do not add extra distance/);
   });
 
@@ -328,6 +374,15 @@ describe("suggestPlanAdjustment", () => {
     assert.deepEqual(decision.affected_workout_ids, ["future-easy-1"]);
     assert.equal(adjustedEasy.target_pace_min_sec_per_km, 353);
     assert.equal(adjustedEasy.target_pace_max_sec_per_km, 382);
+    assert.equal(adjustedEasy.structured_workout.steps[0].targetMin, 353);
+    assert.equal(adjustedEasy.structured_workout.steps[0].targetMax, 382);
+    assert.equal(adjustedEasy.structured_workout.exportSafe, true);
+    assert.deepEqual(adjustedEasy.structured_workout.exportWarnings, []);
+    assert.equal(
+      snapshotWorkout(decision, "after_snapshot", "future-easy-1")
+        .structured_workout.steps[0].targetMin,
+      353,
+    );
   });
 
   it("does not overreact when heart-rate and RPE data are missing", () => {

@@ -32,6 +32,7 @@ const baseAdjustment = {
         target_hr_zone: "Zone 3",
         purpose: "Build threshold fitness.",
         instructions: "Run controlled tempo intervals.",
+        structured_workout: null,
       },
     ],
   },
@@ -59,6 +60,7 @@ describe("plan adjustment rollback helpers", () => {
         target_hr_zone: "Zone 3",
         purpose: "Build threshold fitness.",
         instructions: "Run controlled tempo intervals.",
+        structured_workout: null,
       },
     ]);
   });

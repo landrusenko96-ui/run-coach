@@ -1,4 +1,5 @@
-import { getEffectiveRunningDaysPerWeek } from "@/lib/training/runningDays";
+import { getEffectiveRunningDaysPerWeek } from "./runningDays.ts";
+import { buildStructuredWorkout } from "./structuredWorkout.ts";
 import type {
   GeneratedPlannedWorkout,
   GeneratedTrainingPlan,
@@ -786,8 +787,7 @@ function buildWorkout(input: {
     input.plannedDay.weekNumber,
     input.terrainAvailable,
   );
-
-  return {
+  const workout = {
     profile_id: input.profileId,
     race_goal_id: input.raceGoalId,
     workout_date: input.plannedDay.dateText,
@@ -805,6 +805,11 @@ function buildWorkout(input: {
     purpose: getWorkoutPurpose(input.plannedDay.workoutType),
     instructions: getWorkoutInstructions(input.plannedDay.workoutType, terrain),
     status: "planned",
+  } satisfies Omit<GeneratedPlannedWorkout, "structured_workout">;
+
+  return {
+    ...workout,
+    structured_workout: buildStructuredWorkout(workout),
   };
 }
 

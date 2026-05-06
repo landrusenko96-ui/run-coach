@@ -14,6 +14,7 @@ export type PlannedWorkoutRollbackUpdate = Pick<PlannedWorkout, "id"> &
       | "target_hr_zone"
       | "purpose"
       | "instructions"
+      | "structured_workout"
     >
   > & {
     source_adjustment_id: string;
@@ -55,6 +56,12 @@ function isNumberOrNull(value: unknown): value is number | null {
   return typeof value === "number" || value === null;
 }
 
+function isStructuredWorkoutOrNull(
+  value: unknown,
+): value is PlannedWorkout["structured_workout"] {
+  return value === null || isObject(value);
+}
+
 function isWorkoutType(value: unknown): value is WorkoutType {
   return (
     typeof value === "string" &&
@@ -73,7 +80,8 @@ function hasRestorableField(update: PlannedWorkoutRollbackUpdate): boolean {
     update.target_pace_max_sec_per_km !== undefined ||
     update.target_hr_zone !== undefined ||
     update.purpose !== undefined ||
-    update.instructions !== undefined
+    update.instructions !== undefined ||
+    update.structured_workout !== undefined
   );
 }
 
@@ -171,6 +179,13 @@ export function extractRollbackUpdatesFromAdjustment(
 
     if (isStringOrNull(snapshotWorkout.instructions)) {
       update.instructions = snapshotWorkout.instructions;
+    }
+
+    if (
+      "structured_workout" in snapshotWorkout &&
+      isStructuredWorkoutOrNull(snapshotWorkout.structured_workout)
+    ) {
+      update.structured_workout = snapshotWorkout.structured_workout;
     }
 
     if (hasRestorableField(update)) {

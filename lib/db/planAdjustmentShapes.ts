@@ -1,3 +1,4 @@
+import { buildStructuredWorkout } from "../training/structuredWorkout.ts";
 import type {
   PlanAdjustment,
   PlanAdjustmentDecision,
@@ -31,6 +32,7 @@ export type PlannedWorkoutAdjustmentUpdate = Pick<
   | "target_hr_zone"
   | "purpose"
   | "instructions"
+  | "structured_workout"
 >;
 
 export function buildSavePlanAdjustmentInput(
@@ -66,5 +68,6 @@ export function buildPlannedWorkoutAdjustmentUpdate(
     target_hr_zone: workout.target_hr_zone,
     purpose: workout.purpose,
     instructions: workout.instructions,
+    structured_workout: buildStructuredWorkout(workout),
   };
 }

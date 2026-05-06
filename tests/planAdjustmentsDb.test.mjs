@@ -84,6 +84,7 @@ describe("plan adjustment database helpers", () => {
       "id",
       "instructions",
       "purpose",
+      "structured_workout",
       "target_hr_zone",
       "target_pace_max_sec_per_km",
       "target_pace_min_sec_per_km",
@@ -92,6 +93,10 @@ describe("plan adjustment database helpers", () => {
     ]);
     assert.equal(update.id, "planned-2");
     assert.equal(update.workout_type, "recovery");
+    assert.equal(update.structured_workout.name, "Recovery run");
+    assert.equal(update.structured_workout.exportSafe, true);
+    assert.deepEqual(update.structured_workout.exportWarnings, []);
+    assert.equal(update.structured_workout.steps[0].targetType, "pace");
     assert.equal(update.status, undefined);
     assert.equal(update.workout_date, undefined);
     assert.equal(update.created_at, undefined);
@@ -106,10 +111,12 @@ describe("plan adjustment database helpers", () => {
       title: "Tempo run",
       distance_km: 8,
       target_hr_zone: "Zone 3",
+      structured_workout: null,
     });
 
     assert.deepEqual(Object.keys(update).sort(), [
       "distance_km",
+      "structured_workout",
       "target_hr_zone",
       "title",
       "workout_type",

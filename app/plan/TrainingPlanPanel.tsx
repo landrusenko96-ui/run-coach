@@ -27,6 +27,7 @@ import type {
   Profile,
   RaceGoal,
   TrainingPlan,
+  WorkoutStep,
 } from "@/types";
 
 type LoadStatus =
@@ -121,6 +122,73 @@ function formatPaceRange(workout: PlannedWorkout): string {
   )}`;
 }
 
+function formatStepDuration(step: WorkoutStep): string {
+  if (step.durationType === "open") {
+    return "Open";
+  }
+
+  if (
+    step.durationValue === undefined ||
+    step.durationUnit === undefined ||
+    step.durationValue <= 0
+  ) {
+    return "No duration";
+  }
+
+  if (step.durationUnit === "meters") {
+    if (step.durationValue >= 1000) {
+      return `${Number((step.durationValue / 1000).toFixed(1))} km`;
+    }
+
+    return `${step.durationValue} m`;
+  }
+
+  if (step.durationValue >= 3600) {
+    const hours = Math.floor(step.durationValue / 3600);
+    const minutes = Math.round((step.durationValue % 3600) / 60);
+
+    return minutes > 0 ? `${hours} hr ${minutes} min` : `${hours} hr`;
+  }
+
+  if (step.durationValue >= 60) {
+    return `${Math.round(step.durationValue / 60)} min`;
+  }
+
+  return `${step.durationValue} sec`;
+}
+
+function formatStepTarget(step: WorkoutStep): string {
+  if (!step.targetType || step.targetType === "none") {
+    return "No target";
+  }
+
+  if (
+    step.targetType === "pace" &&
+    step.targetMin !== undefined &&
+    step.targetMax !== undefined
+  ) {
+    return `${formatPace(step.targetMin)} - ${formatPace(step.targetMax)}`;
+  }
+
+  if (
+    step.targetType === "heart_rate" &&
+    step.targetMin !== undefined &&
+    step.targetMax !== undefined
+  ) {
+    return `${step.targetMin}-${step.targetMax} bpm`;
+  }
+
+  if (
+    step.targetType === "rpe" &&
+    step.targetMin !== undefined &&
+    step.targetMax !== undefined
+  ) {
+    return `RPE ${step.targetMin}-${step.targetMax}`;
+  }
+
+  return formatLabel(step.targetType);
+}
+
 function formatTerrain(terrain: string | null): string {
   return terrain ? formatLabel(terrain) : "No terrain target";
 }
@@ -189,6 +257,120 @@ function buildDeleteSuccessMessage(result: DeleteTrainingPlanResult): string {
     : "";
 
   return `Deleted ${result.deleted_plan_name}. Removed ${result.deleted_planned_workout_count} planned workouts and ${result.deleted_workout_evaluation_count} workout evaluations. Kept and unlinked ${result.unlinked_logged_workout_count} logged workouts.${activePlanMessage}`;
+}
+
+function StructuredWorkoutStepList({
+  steps,
+  level = 0,
+}: {
+  steps: WorkoutStep[];
+  level?: number;
+}) {
+  return (
+    <ol className={level === 0 ? "space-y-2" : "mt-2 space-y-2"}>
+      {steps.map((step) => (
+        <li
+          className="border-l border-slate-200 pl-3"
+          key={`${level}-${step.id}`}
+        >
+          <div className="grid gap-2 md:grid-cols-[1.1fr_0.7fr_1fr]">
+            <div>
+              <p className="font-medium text-slate-800">{step.name}</p>
+              {step.repeat ? (
+                <p className="mt-1 text-xs font-medium uppercase tracking-wide text-slate-500">
+                  Repeat {step.repeat.count} times
+                </p>
+              ) : null}
+            </div>
+            <div>
+              <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                Duration
+              </p>
+              <p className="mt-1 text-slate-700">{formatStepDuration(step)}</p>
+            </div>
+            <div>
+              <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                Target
+              </p>
+              <p className="mt-1 text-slate-700">{formatStepTarget(step)}</p>
+            </div>
+          </div>
+
+          {step.notes ? (
+            <p className="mt-2 text-slate-600">{step.notes}</p>
+          ) : null}
+
+          {step.repeat ? (
+            <StructuredWorkoutStepList
+              level={level + 1}
+              steps={step.repeat.steps}
+            />
+          ) : null}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function StructuredWorkoutPreview({ workout }: { workout: PlannedWorkout }) {
+  const structuredWorkout = workout.structured_workout;
+
+  if (!structuredWorkout) {
+    return (
+      <div className="mt-4 border-t border-slate-100 pt-4 text-sm text-amber-800">
+        No structured workout is saved for this planned workout. It cannot be
+        exported.
+      </div>
+    );
+  }
+
+  const exportWarnings = structuredWorkout.exportWarnings ?? [];
+  const hasExportSafetyMetadata =
+    typeof structuredWorkout.exportSafe === "boolean" &&
+    Array.isArray(structuredWorkout.exportWarnings);
+  const visibleWarnings = hasExportSafetyMetadata
+    ? exportWarnings
+    : [
+        "Export safety metadata is missing. Regenerate or adjust this workout before export.",
+      ];
+  const isExportSafe =
+    structuredWorkout.exportSafe === true && visibleWarnings.length === 0;
+
+  return (
+    <div className="mt-4 border-t border-slate-100 pt-4">
+      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+        <div>
+          <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+            Structured workout preview
+          </p>
+          <p className="mt-1 text-sm font-medium text-slate-900">
+            {structuredWorkout.name}
+          </p>
+        </div>
+        <span
+          className={`w-fit rounded-md border px-2 py-1 text-xs font-medium ${
+            isExportSafe
+              ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+              : "border-amber-200 bg-amber-50 text-amber-800"
+          }`}
+        >
+          {isExportSafe ? "Export-safe" : "Needs review"}
+        </span>
+      </div>
+
+      {visibleWarnings.length > 0 ? (
+        <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-amber-800">
+          {visibleWarnings.map((warning) => (
+            <li key={warning}>{warning}</li>
+          ))}
+        </ul>
+      ) : null}
+
+      <div className="mt-3 text-sm">
+        <StructuredWorkoutStepList steps={structuredWorkout.steps ?? []} />
+      </div>
+    </div>
+  );
 }
 
 export function TrainingPlanPanel() {
@@ -960,6 +1142,8 @@ export function TrainingPlanPanel() {
                             </dd>
                           </div>
                         </dl>
+
+                        <StructuredWorkoutPreview workout={workout} />
                       </div>
                     </div>
                   ))}

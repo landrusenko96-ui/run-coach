@@ -16,6 +16,9 @@ build
 .env.test.local
 .env.production.local
 
+# supabase local link/cache metadata
+supabase/.temp
+
 # typecheck cache
 tsconfig.tsbuildinfo
 

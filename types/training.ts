@@ -42,6 +42,34 @@ export type WorkoutType =
   | "calibration"
   | "cross_training";
 
+export type StructuredWorkout = {
+  version: 1;
+  sport: "Run";
+  name: string;
+  description?: string;
+  exportSafe: boolean;
+  exportWarnings: string[];
+  steps: WorkoutStep[];
+};
+
+export type WorkoutStep = {
+  id: string;
+  type: "warmup" | "work" | "recovery" | "cooldown" | "rest";
+  name: string;
+  durationType: "time" | "distance" | "open";
+  durationValue?: number;
+  durationUnit?: "seconds" | "meters";
+  targetType?: "pace" | "heart_rate" | "rpe" | "none";
+  targetMin?: number;
+  targetMax?: number;
+  targetUnit?: "sec_per_km" | "bpm" | "zone" | "rpe";
+  notes?: string;
+  repeat?: {
+    count: number;
+    steps: WorkoutStep[];
+  };
+};
+
 export type TrainingPlanStatus = "active" | "paused";
 
 export type PlannedWorkoutStatus =
@@ -149,6 +177,7 @@ export type PlannedWorkout = {
   terrain: TerrainAvailable | null;
   purpose: string | null;
   instructions: string | null;
+  structured_workout: StructuredWorkout | null;
   status: PlannedWorkoutStatus;
   created_at: string;
   updated_at: string;

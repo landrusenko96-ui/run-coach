@@ -1,3 +1,4 @@
+import { buildStructuredWorkout } from "./structuredWorkout.ts";
 import type {
   AdjustmentType,
   LoggedWorkout,
@@ -27,6 +28,7 @@ type SnapshotWorkout = Pick<
   | "target_hr_zone"
   | "purpose"
   | "instructions"
+  | "structured_workout"
 >;
 
 const qualityWorkoutTypes: WorkoutType[] = [
@@ -245,14 +247,14 @@ function protectLongRunProgression(input: {
   const protectedDistance = roundDistance(
     Math.min(nextLongRun.distance_km * 0.9, maxSafeDistance),
   );
-  const updatedLongRun = {
+  const updatedLongRun = refreshStructuredWorkout({
     ...nextLongRun,
     distance_km: Math.max(3, protectedDistance),
     duration_min: updateDurationForDistance(nextLongRun, protectedDistance),
     purpose: "Protect long-run progression after a missed or shortened long run.",
     instructions:
       "Keep this long run easy and controlled. Do not add extra distance to make up for the previous long run.",
-  };
+  });
 
   replaceWorkout(input.futureWorkouts, updatedLongRun);
 
@@ -302,7 +304,7 @@ function reduceNextWeekVolume(input: {
   const updatedWorkouts = workoutsToReduce.map((workout) => {
     const updatedDistance = roundDistance((workout.distance_km ?? 0) * 0.9);
 
-    return {
+    return refreshStructuredWorkout({
       ...workout,
       distance_km: Math.max(3, updatedDistance),
       duration_min: updateDurationForDistance(workout, updatedDistance),
@@ -311,7 +313,7 @@ function reduceNextWeekVolume(input: {
         "Keep next week's volume conservative after a shortened workout.",
       instructions:
         "Keep this workout controlled. Do not add extra intensity or distance to make up missed volume.",
-    };
+    });
   });
 
   for (const workout of updatedWorkouts) {
@@ -355,11 +357,17 @@ function updateTrainingPaces(input: {
   }
 
   const beforeWorkouts = workoutsToUpdate.map(snapshotWorkout);
-  const updatedWorkouts = workoutsToUpdate.map((workout) => ({
-    ...workout,
-    target_pace_min_sec_per_km: improvePace(workout.target_pace_min_sec_per_km),
-    target_pace_max_sec_per_km: improvePace(workout.target_pace_max_sec_per_km),
-  }));
+  const updatedWorkouts = workoutsToUpdate.map((workout) =>
+    refreshStructuredWorkout({
+      ...workout,
+      target_pace_min_sec_per_km: improvePace(
+        workout.target_pace_min_sec_per_km,
+      ),
+      target_pace_max_sec_per_km: improvePace(
+        workout.target_pace_max_sec_per_km,
+      ),
+    }),
+  );
 
   for (const workout of updatedWorkouts) {
     replaceWorkout(input.futureWorkouts, workout);
@@ -403,6 +411,13 @@ function copyWorkouts(workouts: PlannedWorkout[]): PlannedWorkout[] {
   return workouts.map((workout) => ({ ...workout }));
 }
 
+function refreshStructuredWorkout(workout: PlannedWorkout): PlannedWorkout {
+  return {
+    ...workout,
+    structured_workout: buildStructuredWorkout(workout),
+  };
+}
+
 function getEditableFutureWorkouts(
   futureWorkouts: PlannedWorkout[],
   latestWorkoutDate: string,
@@ -433,7 +448,7 @@ function convertToRecoveryWorkout(
       ? Math.max(3, roundDistance(workout.distance_km * 0.7))
       : null;
 
-  return {
+  return refreshStructuredWorkout({
     ...workout,
     workout_type: "recovery",
     title: "Recovery run",
@@ -449,7 +464,7 @@ function convertToRecoveryWorkout(
     purpose: "Reduce fatigue and protect the next training block.",
     instructions:
       "Keep this deliberately easy. Finish fresher than you started and do not add extra intensity.",
-  };
+  });
 }
 
 function hasVeryHighRpe(
@@ -610,6 +625,7 @@ function snapshotWorkout(workout: PlannedWorkout): SnapshotWorkout {
     target_hr_zone: workout.target_hr_zone,
     purpose: workout.purpose,
     instructions: workout.instructions,
+    structured_workout: workout.structured_workout ?? null,
   };
 }
 
