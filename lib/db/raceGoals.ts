@@ -27,6 +27,26 @@ export async function fetchActiveRaceGoal(
   return data as RaceGoal | null;
 }
 
+export async function fetchRaceGoalById(raceGoalId: string): Promise<RaceGoal> {
+  const supabase = getSupabaseClient();
+
+  const { data, error } = await supabase
+    .from("race_goals")
+    .select("*")
+    .eq("id", raceGoalId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  if (!data) {
+    throw new Error("Could not find the linked race goal.");
+  }
+
+  return data as RaceGoal;
+}
+
 export async function saveRaceGoal(
   raceGoal: SaveRaceGoalInput,
   existingRaceGoalId?: string,

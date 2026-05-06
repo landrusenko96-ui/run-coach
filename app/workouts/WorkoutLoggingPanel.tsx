@@ -2,10 +2,23 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import {
+  buildSavePlanAdjustmentInput,
+  deletePlanAdjustmentsForLoggedWorkout,
+  fetchFuturePlannedWorkouts,
+  fetchPlanAdjustmentsAffectingWorkouts,
+  fetchPlanAdjustmentsForLoggedWorkout,
+  fetchPlanAdjustmentsForLoggedWorkouts,
+  restoreFuturePlannedWorkoutsFromRollbackUpdates,
+  savePlanAdjustment,
+  updateFuturePlannedWorkoutsForAdjustment,
+} from "@/lib/db/planAdjustments";
 import { fetchFirstProfile } from "@/lib/db/profiles";
+import { fetchRaceGoalById } from "@/lib/db/raceGoals";
 import { fetchActiveTrainingPlanWithWorkouts } from "@/lib/db/trainingPlans";
 import {
   deleteLoggedWorkout,
+  deleteWorkoutEvaluationsForLoggedWorkout,
   fetchLoggedWorkoutsForPlannedWorkout,
   fetchLoggedWorkoutsForTrainingPlan,
   fetchPlannedWorkoutById,
@@ -16,25 +29,46 @@ import {
   saveWorkoutEvaluation,
   type SaveLoggedWorkoutInput,
 } from "@/lib/db/workouts";
+import { suggestPlanAdjustment } from "@/lib/training/planAdjustment";
+import {
+  buildPlanAdjustmentByLoggedWorkoutId,
+  formatAdjustmentTypeLabel,
+  formatAffectedWorkoutLabels,
+} from "@/lib/training/planAdjustmentDisplay";
+import {
+  buildRollbackUpdatesFromAdjustments,
+  filterRollbackUpdatesBlockedByNewerAdjustments,
+} from "@/lib/training/planAdjustmentRollback";
 import { scoreWorkout } from "@/lib/training/workoutScoring";
 import type {
   LoggedWorkout,
   LoggedWorkoutType,
+  PlanAdjustment,
   PlannedWorkout,
+  PlanAdjustmentDecision,
   WorkoutEvaluation,
   Profile,
+  RaceGoal,
   TrainingPlan,
   WorkoutType,
 } from "@/types";
+
+type DeleteWorkoutRollbackResult = {
+  hadPlanChangingAdjustment: boolean;
+  restoredWorkoutCount: number;
+  needsRegenerationWarning: boolean;
+};
 
 type LoadStatus = "loading" | "ready" | "saving" | "deleting" | "error" | "saved";
 
 type WorkoutsState = {
   profile: Profile | null;
+  raceGoal: RaceGoal | null;
   plan: TrainingPlan | null;
   plannedWorkouts: PlannedWorkout[];
   loggedWorkouts: LoggedWorkout[];
   workoutEvaluations: WorkoutEvaluation[];
+  planAdjustments: PlanAdjustment[];
 };
 
 type FormState = {
@@ -54,10 +88,12 @@ type FormState = {
 
 const emptyState: WorkoutsState = {
   profile: null,
+  raceGoal: null,
   plan: null,
   plannedWorkouts: [],
   loggedWorkouts: [],
   workoutEvaluations: [],
+  planAdjustments: [],
 };
 
 const emptyForm: FormState = {
@@ -195,6 +231,34 @@ function getRiskBadgeClass(riskLevel: WorkoutEvaluation["risk_level"]): string {
   return "border-emerald-200 bg-emerald-50 text-emerald-800";
 }
 
+function getPlanAdjustmentStatusLabel(
+  adjustment: PlanAdjustment | null,
+): string {
+  if (!adjustment) {
+    return "No adjustment record";
+  }
+
+  if (adjustment.adjustment_type === "none") {
+    return "Plan unchanged";
+  }
+
+  return "Plan adjusted";
+}
+
+function getPlanAdjustmentStatusBadgeClass(
+  adjustment: PlanAdjustment | null,
+): string {
+  if (!adjustment) {
+    return "border-slate-200 bg-slate-50 text-slate-600";
+  }
+
+  if (adjustment.adjustment_type === "none") {
+    return "border-slate-200 bg-white text-slate-700";
+  }
+
+  return "border-blue-200 bg-blue-50 text-blue-800";
+}
+
 function buildLoggedWorkoutIdSet(loggedWorkouts: LoggedWorkout[]): Set<string> {
   return new Set(
     loggedWorkouts
@@ -266,6 +330,209 @@ function addWorkoutEvaluationIfMissing(
   }
 
   return [evaluation, ...evaluations];
+}
+
+function getRecentLoggedWorkouts(
+  loggedWorkouts: LoggedWorkout[],
+  savedLoggedWorkout: LoggedWorkout,
+): LoggedWorkout[] {
+  return addLoggedWorkoutIfMissing(loggedWorkouts, savedLoggedWorkout)
+    .sort((firstWorkout, secondWorkout) =>
+      secondWorkout.workout_date.localeCompare(firstWorkout.workout_date),
+    )
+    .slice(0, 5);
+}
+
+function getRecentWorkoutEvaluations(
+  evaluations: WorkoutEvaluation[],
+  savedEvaluation: WorkoutEvaluation,
+): WorkoutEvaluation[] {
+  return addWorkoutEvaluationIfMissing(evaluations, savedEvaluation)
+    .sort((firstEvaluation, secondEvaluation) =>
+      secondEvaluation.created_at.localeCompare(firstEvaluation.created_at),
+    )
+    .slice(0, 5);
+}
+
+function buildFallbackNoneDecision(
+  error: unknown,
+  failedDecision: PlanAdjustmentDecision | null,
+): PlanAdjustmentDecision {
+  const errorMessage =
+    error instanceof Error ? error.message : "Unknown adjustment error.";
+
+  return {
+    adjustment_type: "none",
+    reason: "Plan adjustment failed after workout logging.",
+    explanation: `The workout and score were saved, but the planned workout updates or adjustment record failed: ${errorMessage}. The plan was left unchanged.`,
+    affected_workout_ids: [],
+    before_snapshot: failedDecision?.before_snapshot ?? null,
+    after_snapshot: null,
+    updatedFuturePlannedWorkouts:
+      failedDecision?.updatedFuturePlannedWorkouts ?? [],
+  };
+}
+
+async function applyPlanAdjustmentAfterLogging(input: {
+  profile: Profile;
+  raceGoal: RaceGoal;
+  plan: TrainingPlan;
+  loggedWorkout: LoggedWorkout;
+  plannedWorkout: PlannedWorkout;
+  workoutEvaluation: WorkoutEvaluation;
+  recentLoggedWorkouts: LoggedWorkout[];
+  recentWorkoutEvaluations: WorkoutEvaluation[];
+}): Promise<string> {
+  let decision: PlanAdjustmentDecision | null = null;
+
+  try {
+    const futurePlannedWorkouts = await fetchFuturePlannedWorkouts(
+      input.plan.id,
+      input.loggedWorkout.workout_date,
+    );
+    decision = suggestPlanAdjustment({
+      profile: input.profile,
+      raceGoal: input.raceGoal,
+      trainingPlan: input.plan,
+      loggedWorkout: input.loggedWorkout,
+      workoutEvaluation: input.workoutEvaluation,
+      plannedWorkout: input.plannedWorkout,
+      futurePlannedWorkouts,
+      recentLoggedWorkouts: input.recentLoggedWorkouts,
+      recentWorkoutEvaluations: input.recentWorkoutEvaluations,
+    });
+
+    if (decision.adjustment_type !== "none") {
+      await updateFuturePlannedWorkoutsForAdjustment({
+        updatedFuturePlannedWorkouts: decision.updatedFuturePlannedWorkouts,
+        affectedWorkoutIds: decision.affected_workout_ids,
+        loggedWorkoutDate: input.loggedWorkout.workout_date,
+      });
+    }
+
+    await savePlanAdjustment(
+      buildSavePlanAdjustmentInput({
+        profileId: input.profile.id,
+        raceGoalId: input.raceGoal.id,
+        trainingPlanId: input.plan.id,
+        loggedWorkoutId: input.loggedWorkout.id,
+        workoutEvaluationId: input.workoutEvaluation.id,
+        decision,
+      }),
+    );
+  } catch (error) {
+    const fallbackDecision = buildFallbackNoneDecision(error, decision);
+
+    try {
+      await savePlanAdjustment(
+        buildSavePlanAdjustmentInput({
+          profileId: input.profile.id,
+          raceGoalId: input.raceGoal.id,
+          trainingPlanId: input.plan.id,
+          loggedWorkoutId: input.loggedWorkout.id,
+          workoutEvaluationId: input.workoutEvaluation.id,
+          decision: fallbackDecision,
+        }),
+      );
+    } catch {
+      // The workout and score are already saved. If the audit row also fails,
+      // leave the plan adjustment untouched and report partial success.
+    }
+
+    return "Workout saved and score generated, but plan adjustment failed. The plan was left unchanged.";
+  }
+
+  if (decision.adjustment_type === "none") {
+    return "Workout saved, score generated, and plan unchanged.";
+  }
+
+  return "Workout saved, score generated, and plan adjusted.";
+}
+
+async function rollbackPlanAdjustmentBeforeDeletingWorkout(input: {
+  plan: TrainingPlan;
+  loggedWorkout: LoggedWorkout;
+}): Promise<DeleteWorkoutRollbackResult> {
+  const planAdjustments = await fetchPlanAdjustmentsForLoggedWorkout(
+    input.loggedWorkout.id,
+  );
+  const hadPlanChangingAdjustment = planAdjustments.some(
+    (adjustment) =>
+      adjustment.adjustment_type !== "none" &&
+      adjustment.affected_workout_ids.length > 0,
+  );
+  const rollbackBuildResult =
+    buildRollbackUpdatesFromAdjustments(planAdjustments);
+  let rollbackUpdates = rollbackBuildResult.rollbackUpdates;
+  let needsRegenerationWarning =
+    rollbackBuildResult.needsRegenerationWarning;
+
+  if (rollbackUpdates.length > 0) {
+    const remainingAdjustments = await fetchPlanAdjustmentsAffectingWorkouts({
+      trainingPlanId: input.plan.id,
+      affectedWorkoutIds: rollbackUpdates.map(
+        (rollbackUpdate) => rollbackUpdate.id,
+      ),
+    });
+    const newerRemainingAdjustments = remainingAdjustments.filter(
+      (adjustment) => adjustment.logged_workout_id !== input.loggedWorkout.id,
+    );
+    const rollbackFilterResult =
+      filterRollbackUpdatesBlockedByNewerAdjustments(
+        rollbackUpdates,
+        newerRemainingAdjustments,
+      );
+
+    rollbackUpdates = rollbackFilterResult.rollbackUpdates;
+    needsRegenerationWarning =
+      needsRegenerationWarning ||
+      rollbackFilterResult.skippedWorkoutIds.length > 0;
+  }
+
+  if (hadPlanChangingAdjustment && rollbackUpdates.length === 0) {
+    return {
+      hadPlanChangingAdjustment,
+      restoredWorkoutCount: 0,
+      needsRegenerationWarning: true,
+    };
+  }
+
+  try {
+    const restoredWorkouts = await restoreFuturePlannedWorkoutsFromRollbackUpdates({
+      rollbackUpdates,
+      loggedWorkoutDate: input.loggedWorkout.workout_date,
+    });
+
+    return {
+      hadPlanChangingAdjustment,
+      restoredWorkoutCount: restoredWorkouts.length,
+      needsRegenerationWarning,
+    };
+  } catch {
+    return {
+      hadPlanChangingAdjustment,
+      restoredWorkoutCount: 0,
+      needsRegenerationWarning: true,
+    };
+  }
+}
+
+function buildDeletedWorkoutMessage(
+  rollbackResult: DeleteWorkoutRollbackResult,
+): string {
+  if (rollbackResult.needsRegenerationWarning) {
+    return "Workout log and score deleted. Planned workout reset when needed. Some plan adjustment changes could not be safely reversed, so regenerate the plan if future workouts look wrong.";
+  }
+
+  if (rollbackResult.restoredWorkoutCount > 0) {
+    return `Workout log and score deleted. Planned workout reset when needed. Reversed ${rollbackResult.restoredWorkoutCount} future workout adjustment${rollbackResult.restoredWorkoutCount === 1 ? "" : "s"}.`;
+  }
+
+  if (rollbackResult.hadPlanChangingAdjustment) {
+    return "Workout log and score deleted. Planned workout reset when needed. No editable future workouts needed rollback.";
+  }
+
+  return "Workout log and score deleted. Planned workout reset when needed. No plan rollback was needed.";
 }
 
 function canLogWorkout(
@@ -540,10 +807,12 @@ export function WorkoutLoggingPanel() {
       if (!activePlan) {
         setWorkoutsState({
           profile,
+          raceGoal: null,
           plan: null,
           plannedWorkouts: [],
           loggedWorkouts: [],
           workoutEvaluations: [],
+          planAdjustments: [],
         });
         setForm(emptyForm);
         setMessage(
@@ -554,10 +823,14 @@ export function WorkoutLoggingPanel() {
         return;
       }
 
-      const [loggedWorkouts, workoutEvaluations] = await Promise.all([
+      const [raceGoal, loggedWorkouts, workoutEvaluations] = await Promise.all([
+        fetchRaceGoalById(activePlan.plan.race_goal_id),
         fetchLoggedWorkoutsForTrainingPlan(activePlan.plan.id),
         fetchWorkoutEvaluationsForTrainingPlan(activePlan.plan.id),
       ]);
+      const planAdjustments = await fetchPlanAdjustmentsForLoggedWorkouts(
+        loggedWorkouts.map((loggedWorkout) => loggedWorkout.id),
+      );
       const runWorkouts = activePlan.workouts.filter(isRunRelatedWorkout);
       const loggedWorkoutIds = buildLoggedWorkoutIdSet(loggedWorkouts);
       const firstLoggableWorkout = getFirstLoggableWorkout(
@@ -567,10 +840,12 @@ export function WorkoutLoggingPanel() {
 
       setWorkoutsState({
         profile,
+        raceGoal,
         plan: activePlan.plan,
         plannedWorkouts: activePlan.workouts,
         loggedWorkouts,
         workoutEvaluations,
+        planAdjustments,
       });
       setPendingDeleteLogId(null);
       setDeletingLogId(null);
@@ -623,6 +898,10 @@ export function WorkoutLoggingPanel() {
     () => buildLoggedWorkoutByPlannedWorkoutId(workoutsState.loggedWorkouts),
     [workoutsState.loggedWorkouts],
   );
+  const adjustmentByLoggedWorkoutId = useMemo(
+    () => buildPlanAdjustmentByLoggedWorkoutId(workoutsState.planAdjustments),
+    [workoutsState.planAdjustments],
+  );
   const workoutHistory = useMemo(
     () =>
       [...workoutsState.loggedWorkouts].sort((firstWorkout, secondWorkout) =>
@@ -645,9 +924,16 @@ export function WorkoutLoggingPanel() {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const { profile, raceGoal, plan } = workoutsState;
     setPendingDeleteLogId(null);
     setStatus("saving");
     setMessage(null);
+
+    if (!profile || !raceGoal || !plan) {
+      setStatus("error");
+      setMessage("Load a profile, race goal, and active plan before logging workouts.");
+      return;
+    }
 
     let loggedWorkoutInput: SaveLoggedWorkoutInput;
 
@@ -746,9 +1032,6 @@ export function WorkoutLoggingPanel() {
 
     try {
       await markPlannedWorkoutCompleted(plannedWorkoutId);
-      await loadWorkouts(
-        "Workout logged, scored, and planned workout marked completed.",
-      );
     } catch (error) {
       setWorkoutsState((currentState) => ({
         ...currentState,
@@ -766,6 +1049,48 @@ export function WorkoutLoggingPanel() {
         error instanceof Error
           ? `Workout log and score were saved, but the planned workout status was not updated: ${error.message}`
           : "Workout log and score were saved, but the planned workout status was not updated.",
+      );
+      return;
+    }
+
+    const recentLoggedWorkouts = getRecentLoggedWorkouts(
+      workoutsState.loggedWorkouts,
+      savedLoggedWorkout,
+    );
+    const recentWorkoutEvaluations = getRecentWorkoutEvaluations(
+      workoutsState.workoutEvaluations,
+      savedEvaluation,
+    );
+    const successMessage = await applyPlanAdjustmentAfterLogging({
+      profile,
+      raceGoal,
+      plan,
+      loggedWorkout: savedLoggedWorkout,
+      plannedWorkout: linkedPlannedWorkout,
+      workoutEvaluation: savedEvaluation,
+      recentLoggedWorkouts,
+      recentWorkoutEvaluations,
+    });
+
+    try {
+      await loadWorkouts(successMessage);
+    } catch (error) {
+      setWorkoutsState((currentState) => ({
+        ...currentState,
+        loggedWorkouts: addLoggedWorkoutIfMissing(
+          currentState.loggedWorkouts,
+          savedLoggedWorkout,
+        ),
+        workoutEvaluations: addWorkoutEvaluationIfMissing(
+          currentState.workoutEvaluations,
+          savedEvaluation,
+        ),
+      }));
+      setStatus("error");
+      setMessage(
+        error instanceof Error
+          ? `${successMessage} Could not reload workouts: ${error.message}`
+          : `${successMessage} Could not reload workouts.`,
       );
     }
   }
@@ -789,7 +1114,27 @@ export function WorkoutLoggingPanel() {
     setStatus("deleting");
     setMessage(null);
 
+    let rollbackResult: DeleteWorkoutRollbackResult;
+
     try {
+      rollbackResult = await rollbackPlanAdjustmentBeforeDeletingWorkout({
+        plan,
+        loggedWorkout,
+      });
+    } catch (error) {
+      setDeletingLogId(null);
+      setStatus("error");
+      setMessage(
+        error instanceof Error
+          ? `Could not check plan adjustments before deleting workout log: ${error.message}`
+          : "Could not check plan adjustments before deleting workout log.",
+      );
+      return;
+    }
+
+    try {
+      await deletePlanAdjustmentsForLoggedWorkout(loggedWorkout.id);
+      await deleteWorkoutEvaluationsForLoggedWorkout(loggedWorkout.id);
       await deleteLoggedWorkout(loggedWorkout.id);
     } catch (error) {
       setDeletingLogId(null);
@@ -814,7 +1159,7 @@ export function WorkoutLoggingPanel() {
       }
 
       await loadWorkouts(
-        "Workout log and score deleted. Planned workout reset when needed.",
+        buildDeletedWorkoutMessage(rollbackResult),
       );
     } catch (error) {
       setPendingDeleteLogId(null);
@@ -909,6 +1254,14 @@ export function WorkoutLoggingPanel() {
                     : null;
                   const evaluation =
                     evaluationByLoggedWorkoutId.get(loggedWorkout.id) ?? null;
+                  const planAdjustment =
+                    adjustmentByLoggedWorkoutId.get(loggedWorkout.id) ?? null;
+                  const affectedWorkoutLabels = planAdjustment
+                    ? formatAffectedWorkoutLabels(
+                        planAdjustment,
+                        plannedWorkoutById,
+                      )
+                    : [];
                   const isConfirmingDelete = pendingDeleteLogId === loggedWorkout.id;
                   const isDeletingThisLog = deletingLogId === loggedWorkout.id;
                   const canStartDelete = !isBusy || isDeletingThisLog;
@@ -948,6 +1301,13 @@ export function WorkoutLoggingPanel() {
                               Not scored yet
                             </span>
                           )}
+                          <span
+                            className={`w-fit rounded-md border px-2 py-1 text-xs font-medium ${getPlanAdjustmentStatusBadgeClass(
+                              planAdjustment,
+                            )}`}
+                          >
+                            {getPlanAdjustmentStatusLabel(planAdjustment)}
+                          </span>
                           {isConfirmingDelete ? (
                             <>
                               <button
@@ -1077,6 +1437,81 @@ export function WorkoutLoggingPanel() {
                           This log does not have a saved score yet.
                         </div>
                       )}
+
+                      <div className="mt-4 border-t border-slate-100 pt-4">
+                        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                          Plan adjustment
+                        </p>
+
+                        {!planAdjustment ? (
+                          <p className="mt-2 text-slate-700">
+                            This older log does not have a saved plan adjustment
+                            decision.
+                          </p>
+                        ) : (
+                          <>
+                            <dl className="mt-3 grid gap-3 text-slate-700 md:grid-cols-3">
+                              <div>
+                                <dt className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                                  Date
+                                </dt>
+                                <dd className="mt-1">
+                                  {formatDate(
+                                    planAdjustment.created_at.slice(0, 10),
+                                  )}
+                                </dd>
+                              </div>
+                              <div>
+                                <dt className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                                  Type
+                                </dt>
+                                <dd className="mt-1">
+                                  {formatAdjustmentTypeLabel(
+                                    planAdjustment.adjustment_type,
+                                  )}
+                                </dd>
+                              </div>
+                              <div>
+                                <dt className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                                  Reason
+                                </dt>
+                                <dd className="mt-1">
+                                  {planAdjustment.reason}
+                                </dd>
+                              </div>
+                            </dl>
+
+                            <div className="mt-3 text-slate-700">
+                              <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                                Explanation
+                              </p>
+                              <p className="mt-1">
+                                {planAdjustment.explanation ??
+                                  "No explanation saved."}
+                              </p>
+                            </div>
+
+                            <div className="mt-3">
+                              <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                                Affected future workouts
+                              </p>
+                              {affectedWorkoutLabels.length === 0 ? (
+                                <p className="mt-1 text-slate-700">
+                                  No future workouts were changed.
+                                </p>
+                              ) : (
+                                <ul className="mt-2 list-disc space-y-1 pl-5 text-slate-700">
+                                  {affectedWorkoutLabels.map((label, index) => (
+                                    <li key={`${planAdjustment.id}-${index}`}>
+                                      {label}
+                                    </li>
+                                  ))}
+                                </ul>
+                              )}
+                            </div>
+                          </>
+                        )}
+                      </div>
                     </article>
                   );
                 })}

@@ -154,6 +154,21 @@ export async function deleteLoggedWorkout(loggedWorkoutId: string): Promise<void
   }
 }
 
+export async function deleteWorkoutEvaluationsForLoggedWorkout(
+  loggedWorkoutId: string,
+): Promise<void> {
+  const supabase = getSupabaseClient();
+
+  const { error } = await supabase
+    .from("workout_evaluations")
+    .delete()
+    .eq("logged_workout_id", loggedWorkoutId);
+
+  if (error) {
+    throw new Error(error.message);
+  }
+}
+
 export async function markPlannedWorkoutCompleted(
   plannedWorkoutId: string,
 ): Promise<PlannedWorkout> {

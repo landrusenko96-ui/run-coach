@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import { fetchRecentPlanAdjustmentsForTrainingPlan } from "@/lib/db/planAdjustments";
 import { fetchFirstProfile } from "@/lib/db/profiles";
 import { fetchActiveRaceGoal } from "@/lib/db/raceGoals";
 import {
@@ -14,8 +15,14 @@ import {
   type TrainingPlanDeletePreview,
 } from "@/lib/db/trainingPlans";
 import { generateAndSaveTrainingPlan } from "@/lib/training/generateAndSaveTrainingPlan";
+import {
+  filterPlanChangingAdjustments,
+  formatAdjustmentTypeLabel,
+  formatAffectedWorkoutLabels,
+} from "@/lib/training/planAdjustmentDisplay";
 import { buildDefaultTrainingPlanName } from "@/lib/training/planGenerator";
 import type {
+  PlanAdjustment,
   PlannedWorkout,
   Profile,
   RaceGoal,
@@ -36,6 +43,7 @@ type PlansState = {
   plans: TrainingPlan[];
   activePlan: TrainingPlan | null;
   workouts: PlannedWorkout[];
+  planAdjustments: PlanAdjustment[];
 };
 
 type WeeklyWorkoutGroup = {
@@ -51,6 +59,7 @@ const emptyState: PlansState = {
   plans: [],
   activePlan: null,
   workouts: [],
+  planAdjustments: [],
 };
 
 function formatDate(date: string): string {
@@ -59,6 +68,14 @@ function formatDate(date: string): string {
     day: "numeric",
     year: "numeric",
   }).format(new Date(`${date}T00:00:00`));
+}
+
+function formatTimestampDate(timestamp: string): string {
+  return new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(timestamp));
 }
 
 function formatLabel(value: string): string {
@@ -139,6 +156,12 @@ function groupWorkoutsByWeek(workouts: PlannedWorkout[]): WeeklyWorkoutGroup[] {
     }));
 }
 
+function buildPlannedWorkoutById(
+  plannedWorkouts: PlannedWorkout[],
+): Map<string, PlannedWorkout> {
+  return new Map(plannedWorkouts.map((workout) => [workout.id, workout]));
+}
+
 function buildDefaultMessage(input: {
   profile: Profile;
   raceGoal: RaceGoal | null;
@@ -204,7 +227,15 @@ export function TrainingPlanPanel() {
         fetchTrainingPlans(profile.id),
       ]);
       const activePlan = plans.find((plan) => plan.status === "active") ?? null;
-      const workouts = activePlan ? await fetchPlannedWorkouts(activePlan.id) : [];
+      let workouts: PlannedWorkout[] = [];
+      let planAdjustments: PlanAdjustment[] = [];
+
+      if (activePlan) {
+        [workouts, planAdjustments] = await Promise.all([
+          fetchPlannedWorkouts(activePlan.id),
+          fetchRecentPlanAdjustmentsForTrainingPlan(activePlan.id, 50),
+        ]);
+      }
 
       setPlansState({
         profile,
@@ -212,6 +243,7 @@ export function TrainingPlanPanel() {
         plans,
         activePlan,
         workouts,
+        planAdjustments,
       });
       setPendingDeletePlanId(null);
       setDeletingPlanId(null);
@@ -371,13 +403,17 @@ export function TrainingPlanPanel() {
     );
   }
 
-  const { profile, raceGoal, plans, activePlan, workouts } = plansState;
+  const { profile, raceGoal, plans, activePlan, workouts, planAdjustments } =
+    plansState;
   const isGenerating = status === "generating";
   const isActivating = status === "activating";
   const isDeleting = status === "deleting";
   const isBusy = isGenerating || isActivating || isDeleting;
   const canGeneratePlan = Boolean(profile && raceGoal);
   const weeklyWorkoutGroups = groupWorkoutsByWeek(workouts);
+  const plannedWorkoutById = buildPlannedWorkoutById(workouts);
+  const planChangingAdjustments =
+    filterPlanChangingAdjustments(planAdjustments).slice(0, 10);
 
   return (
     <div className="space-y-6">
@@ -740,6 +776,86 @@ export function TrainingPlanPanel() {
               <li key={assumption}>{assumption}</li>
             ))}
           </ul>
+        </section>
+      ) : null}
+
+      {activePlan ? (
+        <section className="rounded-md border border-slate-200 bg-white p-6">
+          <h2 className="text-base font-medium text-slate-950">
+            Recent plan adjustments
+          </h2>
+          <p className="mt-1 text-sm text-slate-600">
+            Recent changes made by workout logging and scoring.
+          </p>
+
+          {planChangingAdjustments.length === 0 ? (
+            <div className="mt-5 rounded-md border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+              No plan-changing adjustments have been saved yet.
+            </div>
+          ) : (
+            <div className="mt-5 divide-y divide-slate-100 rounded-md border border-slate-200">
+              {planChangingAdjustments.map((adjustment) => {
+                const affectedWorkoutLabels = formatAffectedWorkoutLabels(
+                  adjustment,
+                  plannedWorkoutById,
+                );
+
+                return (
+                  <article className="p-4 text-sm" key={adjustment.id}>
+                    <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                      <div>
+                        <p className="font-medium text-slate-950">
+                          {formatAdjustmentTypeLabel(
+                            adjustment.adjustment_type,
+                          )}
+                        </p>
+                        <p className="mt-1 text-slate-600">
+                          {formatTimestampDate(adjustment.created_at)}
+                        </p>
+                      </div>
+                      <span className="w-fit rounded-md border border-blue-200 bg-blue-50 px-2 py-1 text-xs font-medium text-blue-800">
+                        Plan changed
+                      </span>
+                    </div>
+
+                    <dl className="mt-4 grid gap-3 text-slate-700 md:grid-cols-2">
+                      <div>
+                        <dt className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                          Reason
+                        </dt>
+                        <dd className="mt-1">{adjustment.reason}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                          Explanation
+                        </dt>
+                        <dd className="mt-1">
+                          {adjustment.explanation ?? "No explanation saved."}
+                        </dd>
+                      </div>
+                    </dl>
+
+                    <div className="mt-4">
+                      <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                        Affected future workouts
+                      </p>
+                      {affectedWorkoutLabels.length === 0 ? (
+                        <p className="mt-1 text-slate-700">
+                          No affected workouts were saved for this adjustment.
+                        </p>
+                      ) : (
+                        <ul className="mt-2 list-disc space-y-1 pl-5 text-slate-700">
+                          {affectedWorkoutLabels.map((label, index) => (
+                            <li key={`${adjustment.id}-${index}`}>{label}</li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
         </section>
       ) : null}
 

@@ -59,11 +59,13 @@ export type WorkoutRiskLevel = "low" | "medium" | "high";
 export type WorkoutIntensity = "rest" | "easy" | "moderate" | "hard";
 
 export type AdjustmentType =
-  | "keep_plan"
-  | "reduce_volume"
-  | "reduce_intensity"
+  | "none"
+  | "reduce_next_intensity"
   | "add_recovery"
-  | "move_workout";
+  | "shift_workout"
+  | "update_training_paces"
+  | "reduce_weekly_volume"
+  | "protect_long_run_progression";
 
 export type Profile = {
   id: string;
@@ -204,9 +206,38 @@ export type WorkoutEvaluation = {
 
 export type PlanAdjustment = {
   id: string;
-  raceGoalId: string;
-  adjustmentType: AdjustmentType;
-  affectedWorkoutIds: string[];
+  profile_id: string;
+  race_goal_id: string;
+  training_plan_id: string;
+  logged_workout_id: string;
+  workout_evaluation_id: string;
+  adjustment_type: AdjustmentType;
   reason: string;
-  createdAt: string;
+  explanation: string | null;
+  affected_workout_ids: string[];
+  before_snapshot: Record<string, unknown> | null;
+  after_snapshot: Record<string, unknown> | null;
+  created_at: string;
+};
+
+export type PlanAdjustmentInput = {
+  profile: Profile;
+  raceGoal: RaceGoal;
+  trainingPlan: TrainingPlan;
+  loggedWorkout: LoggedWorkout;
+  workoutEvaluation: WorkoutEvaluation;
+  plannedWorkout: PlannedWorkout;
+  futurePlannedWorkouts: PlannedWorkout[];
+  recentLoggedWorkouts?: LoggedWorkout[];
+  recentWorkoutEvaluations?: WorkoutEvaluation[];
+};
+
+export type PlanAdjustmentDecision = {
+  adjustment_type: AdjustmentType;
+  reason: string;
+  explanation: string;
+  affected_workout_ids: string[];
+  before_snapshot: Record<string, unknown> | null;
+  after_snapshot: Record<string, unknown> | null;
+  updatedFuturePlannedWorkouts: PlannedWorkout[];
 };

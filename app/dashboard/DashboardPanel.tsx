@@ -2,14 +2,18 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { fetchPlanAdjustmentDashboardSummary } from "@/lib/db/planAdjustments";
 import { fetchFirstProfile } from "@/lib/db/profiles";
 import { fetchActiveTrainingPlanWithWorkouts } from "@/lib/db/trainingPlans";
 import {
   fetchLoggedWorkoutsForTrainingPlan,
   fetchWorkoutEvaluationsForTrainingPlan,
 } from "@/lib/db/workouts";
+import { deriveCurrentPlanStatus, type CurrentPlanStatus } from "@/lib/training/dashboardStatus";
+import { formatAdjustmentTypeLabel } from "@/lib/training/planAdjustmentDisplay";
 import type {
   LoggedWorkout,
+  PlanAdjustment,
   PlannedWorkout,
   Profile,
   TrainingPlan,
@@ -25,6 +29,8 @@ type DashboardState = {
   plannedWorkouts: PlannedWorkout[];
   loggedWorkouts: LoggedWorkout[];
   workoutEvaluations: WorkoutEvaluation[];
+  latestPlanAdjustment: PlanAdjustment | null;
+  adjustmentCount: number;
 };
 
 const emptyState: DashboardState = {
@@ -33,6 +39,8 @@ const emptyState: DashboardState = {
   plannedWorkouts: [],
   loggedWorkouts: [],
   workoutEvaluations: [],
+  latestPlanAdjustment: null,
+  adjustmentCount: 0,
 };
 
 const runningWorkoutTypes: WorkoutType[] = [
@@ -55,6 +63,14 @@ function formatDate(date: string): string {
     day: "numeric",
     year: "numeric",
   }).format(new Date(`${date}T00:00:00`));
+}
+
+function formatTimestampDate(timestamp: string): string {
+  return new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(timestamp));
 }
 
 function formatLabel(value: string): string {
@@ -148,6 +164,42 @@ function clampPercentage(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
 
+function formatCurrentPlanStatus(status: CurrentPlanStatus): string {
+  if (status === "needs_recovery") {
+    return "Needs recovery";
+  }
+
+  if (status === "caution") {
+    return "Caution";
+  }
+
+  return "On track";
+}
+
+function getCurrentPlanStatusBadgeClass(status: CurrentPlanStatus): string {
+  if (status === "needs_recovery") {
+    return "border-red-200 bg-red-50 text-red-800";
+  }
+
+  if (status === "caution") {
+    return "border-amber-200 bg-amber-50 text-amber-800";
+  }
+
+  return "border-emerald-200 bg-emerald-50 text-emerald-800";
+}
+
+function getCurrentPlanStatusDescription(status: CurrentPlanStatus): string {
+  if (status === "needs_recovery") {
+    return "Recent scores show high-risk fatigue signals. Prioritize recovery before adding stress.";
+  }
+
+  if (status === "caution") {
+    return "Recent scores or plan changes suggest watching fatigue closely.";
+  }
+
+  return "Recent scores do not show major risk signals.";
+}
+
 export function DashboardPanel() {
   const [status, setStatus] = useState<LoadStatus>("loading");
   const [message, setMessage] = useState<string | null>(null);
@@ -179,9 +231,14 @@ export function DashboardPanel() {
         return;
       }
 
-      const [loggedWorkouts, workoutEvaluations] = await Promise.all([
+      const [
+        loggedWorkouts,
+        workoutEvaluations,
+        planAdjustmentSummary,
+      ] = await Promise.all([
         fetchLoggedWorkoutsForTrainingPlan(activePlan.plan.id),
         fetchWorkoutEvaluationsForTrainingPlan(activePlan.plan.id),
+        fetchPlanAdjustmentDashboardSummary(activePlan.plan.id),
       ]);
 
       setDashboardState({
@@ -190,6 +247,8 @@ export function DashboardPanel() {
         plannedWorkouts: activePlan.workouts,
         loggedWorkouts,
         workoutEvaluations,
+        latestPlanAdjustment: planAdjustmentSummary.latestPlanAdjustment,
+        adjustmentCount: planAdjustmentSummary.adjustmentCount,
       });
       setMessage(null);
       setStatus("ready");
@@ -207,8 +266,15 @@ export function DashboardPanel() {
     void Promise.resolve().then(() => loadDashboard());
   }, [loadDashboard]);
 
-  const { profile, plan, plannedWorkouts, loggedWorkouts, workoutEvaluations } =
-    dashboardState;
+  const {
+    profile,
+    plan,
+    plannedWorkouts,
+    loggedWorkouts,
+    workoutEvaluations,
+    latestPlanAdjustment,
+    adjustmentCount,
+  } = dashboardState;
   const plannedWorkoutById = useMemo(
     () => buildPlannedWorkoutById(plannedWorkouts),
     [plannedWorkouts],
@@ -249,6 +315,13 @@ export function DashboardPanel() {
         .slice(0, 5),
     [workoutEvaluations],
   );
+  const recentHighRiskEvaluations = recentWorkoutEvaluations.filter(
+    (evaluation) => evaluation.risk_level === "high",
+  );
+  const currentPlanStatus = deriveCurrentPlanStatus({
+    recentWorkoutEvaluations,
+    latestPlanAdjustment,
+  });
 
   if (status === "loading") {
     return (
@@ -334,6 +407,78 @@ export function DashboardPanel() {
                 </p>
               </div>
             </div>
+          </section>
+
+          <section className="rounded-md border border-slate-200 bg-white p-6">
+            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div>
+                <h2 className="text-base font-medium text-slate-950">
+                  Adaptive plan status
+                </h2>
+                <p className="mt-1 text-sm text-slate-600">
+                  Milestone 5 summary from workout scores and saved plan
+                  adjustments.
+                </p>
+              </div>
+              <span
+                className={`w-fit rounded-md border px-3 py-2 text-sm font-medium ${getCurrentPlanStatusBadgeClass(
+                  currentPlanStatus,
+                )}`}
+              >
+                {formatCurrentPlanStatus(currentPlanStatus)}
+              </span>
+            </div>
+
+            <div className="mt-5 grid gap-4 md:grid-cols-2">
+              <div className="rounded-md border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+                <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                  Adjustments made
+                </p>
+                <p className="mt-2 text-2xl font-semibold text-slate-950">
+                  {adjustmentCount}
+                </p>
+                <p className="mt-2">
+                  {getCurrentPlanStatusDescription(currentPlanStatus)}
+                </p>
+              </div>
+
+              <div className="rounded-md border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+                <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                  Latest plan adjustment
+                </p>
+                {latestPlanAdjustment ? (
+                  <div className="mt-2">
+                    <p className="font-medium text-slate-950">
+                      {formatAdjustmentTypeLabel(
+                        latestPlanAdjustment.adjustment_type,
+                      )}
+                    </p>
+                    <p className="mt-1 text-slate-600">
+                      {formatTimestampDate(latestPlanAdjustment.created_at)}
+                    </p>
+                    <p className="mt-2">{latestPlanAdjustment.reason}</p>
+                    {latestPlanAdjustment.explanation ? (
+                      <p className="mt-1">
+                        {latestPlanAdjustment.explanation}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : (
+                  <p className="mt-2">
+                    No plan-changing adjustments have been saved yet.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {recentHighRiskEvaluations.length > 0 ? (
+              <div className="mt-4 rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+                {recentHighRiskEvaluations.length} recent high-risk workout{" "}
+                {recentHighRiskEvaluations.length === 1 ? "score" : "scores"}{" "}
+                found. Keep the next workouts conservative and consider extra
+                recovery if fatigue is still high.
+              </div>
+            ) : null}
           </section>
 
           <section className="rounded-md border border-slate-200 bg-white p-6">
