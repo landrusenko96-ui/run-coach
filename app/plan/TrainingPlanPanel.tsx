@@ -7,7 +7,6 @@ import { fetchFirstProfile } from "@/lib/db/profiles";
 import { fetchActiveRaceGoal } from "@/lib/db/raceGoals";
 import {
   activateTrainingPlan,
-  deleteTrainingPlanAndRelatedData,
   fetchPlannedWorkouts,
   fetchTrainingPlanDeletePreview,
   fetchTrainingPlans,
@@ -53,6 +52,17 @@ type WeeklyWorkoutGroup = {
 };
 
 type DeletePreviewByPlanId = Record<string, TrainingPlanDeletePreview>;
+
+type DeleteTrainingPlanApiResult = DeleteTrainingPlanResult & {
+  intervals_delete_attempt_count?: number;
+  intervals_deleted_event_count?: number;
+};
+
+type DeleteTrainingPlanResponse = {
+  ok: boolean;
+  message: string;
+  result: DeleteTrainingPlanApiResult | null;
+};
 
 const emptyState: PlansState = {
   profile: null,
@@ -251,12 +261,18 @@ function buildDefaultMessage(input: {
   return "Loaded your active training plan.";
 }
 
-function buildDeleteSuccessMessage(result: DeleteTrainingPlanResult): string {
+function buildDeleteSuccessMessage(result: DeleteTrainingPlanApiResult): string {
   const activePlanMessage = result.was_active
     ? " It was the active plan, so select another plan before using Dashboard or Workouts."
     : "";
+  const intervalsDeletedEventCount =
+    result.intervals_deleted_event_count ?? 0;
+  const intervalsMessage =
+    intervalsDeletedEventCount > 0
+      ? ` Deleted ${intervalsDeletedEventCount} future Intervals.icu event${intervalsDeletedEventCount === 1 ? "" : "s"}.`
+      : "";
 
-  return `Deleted ${result.deleted_plan_name}. Removed ${result.deleted_planned_workout_count} planned workouts and ${result.deleted_workout_evaluation_count} workout evaluations. Kept and unlinked ${result.unlinked_logged_workout_count} logged workouts.${activePlanMessage}`;
+  return `Deleted ${result.deleted_plan_name}. Removed ${result.deleted_planned_workout_count} planned workouts and ${result.deleted_workout_evaluation_count} workout evaluations. Kept and unlinked ${result.unlinked_logged_workout_count} logged workouts.${intervalsMessage}${activePlanMessage}`;
 }
 
 function StructuredWorkoutStepList({
@@ -558,14 +574,31 @@ export function TrainingPlanPanel() {
     setMessage(null);
 
     try {
-      const result = await deleteTrainingPlanAndRelatedData(trainingPlan.id);
+      const response = await fetch("/api/training-plans/delete", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          trainingPlanId: trainingPlan.id,
+        }),
+      });
+      const deleteResponse =
+        (await response.json()) as DeleteTrainingPlanResponse;
+
+      if (!response.ok || !deleteResponse.ok || !deleteResponse.result) {
+        throw new Error(
+          deleteResponse.message || "Could not delete training plan.",
+        );
+      }
+
       setDeletePreviews((currentPreviews) => {
         const nextPreviews = { ...currentPreviews };
         delete nextPreviews[trainingPlan.id];
         return nextPreviews;
       });
       setIsPlanPickerOpen(false);
-      await loadPlans(buildDeleteSuccessMessage(result));
+      await loadPlans(buildDeleteSuccessMessage(deleteResponse.result));
     } catch (error) {
       setDeletingPlanId(null);
       setStatus("error");

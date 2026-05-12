@@ -13,6 +13,10 @@ import {
   savePlanAdjustment,
   updateFuturePlannedWorkoutsForAdjustment,
 } from "@/lib/db/planAdjustments";
+import {
+  fetchIntervalsWorkoutSyncsForTrainingPlan,
+  markSyncedIntervalsWorkoutSyncsNeedsResync,
+} from "@/lib/db/intervalsWorkoutSyncs";
 import { fetchFirstProfile } from "@/lib/db/profiles";
 import { fetchRaceGoalById } from "@/lib/db/raceGoals";
 import { fetchActiveTrainingPlanWithWorkouts } from "@/lib/db/trainingPlans";
@@ -29,6 +33,11 @@ import {
   saveWorkoutEvaluation,
   type SaveLoggedWorkoutInput,
 } from "@/lib/db/workouts";
+import {
+  getDefaultIntervalsBulkPublishWorkoutIds,
+  isWorkoutInIntervalsBulkPublishWindow,
+  type IntervalsBulkPublishWindowDays,
+} from "@/lib/intervals/publishSelection";
 import { suggestPlanAdjustment } from "@/lib/training/planAdjustment";
 import {
   buildPlanAdjustmentByLoggedWorkoutId,
@@ -51,15 +60,37 @@ import type {
   RaceGoal,
   TrainingPlan,
   WorkoutType,
+  IntervalsBulkPublishWorkoutsResponse,
+  IntervalsPublishWorkoutResult,
+  IntervalsWorkoutSync,
+  IntervalsWorkoutSyncStatus,
 } from "@/types";
 
 type DeleteWorkoutRollbackResult = {
   hadPlanChangingAdjustment: boolean;
   restoredWorkoutCount: number;
   needsRegenerationWarning: boolean;
+  syncInvalidationWarning: string | null;
 };
 
-type LoadStatus = "loading" | "ready" | "saving" | "deleting" | "error" | "saved";
+type LoadStatus =
+  | "loading"
+  | "ready"
+  | "saving"
+  | "deleting"
+  | "publishing"
+  | "error"
+  | "saved";
+
+type PublishWorkoutResponse = {
+  ok: boolean;
+  message: string;
+};
+
+type BulkPublishSelectionState = {
+  defaultKey: string;
+  selectedWorkoutIds: string[];
+};
 
 type WorkoutsState = {
   profile: Profile | null;
@@ -69,6 +100,7 @@ type WorkoutsState = {
   loggedWorkouts: LoggedWorkout[];
   workoutEvaluations: WorkoutEvaluation[];
   planAdjustments: PlanAdjustment[];
+  intervalsWorkoutSyncs: IntervalsWorkoutSync[];
 };
 
 type FormState = {
@@ -94,6 +126,7 @@ const emptyState: WorkoutsState = {
   loggedWorkouts: [],
   workoutEvaluations: [],
   planAdjustments: [],
+  intervalsWorkoutSyncs: [],
 };
 
 const emptyForm: FormState = {
@@ -109,6 +142,11 @@ const emptyForm: FormState = {
   elevation_gain_m: "",
   rpe: "",
   notes: "",
+};
+
+const emptyBulkPublishSelection: BulkPublishSelectionState = {
+  defaultKey: "",
+  selectedWorkoutIds: [],
 };
 
 const runWorkoutTypes: WorkoutType[] = [
@@ -231,6 +269,48 @@ function getRiskBadgeClass(riskLevel: WorkoutEvaluation["risk_level"]): string {
   return "border-emerald-200 bg-emerald-50 text-emerald-800";
 }
 
+function getPublishResultBadgeClass(ok: boolean): string {
+  return ok
+    ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+    : "border-red-200 bg-red-50 text-red-800";
+}
+
+function getIntervalsSyncStatusLabel(
+  sync: IntervalsWorkoutSync | null,
+): string {
+  if (!sync) {
+    return "Not synced";
+  }
+
+  if (sync.sync_status === "needs_resync") {
+    return "Needs republish";
+  }
+
+  return formatLabel(sync.sync_status);
+}
+
+function getIntervalsSyncStatusBadgeClass(
+  syncStatus: IntervalsWorkoutSyncStatus | "not_synced",
+): string {
+  if (syncStatus === "synced") {
+    return "border-emerald-200 bg-emerald-50 text-emerald-800";
+  }
+
+  if (syncStatus === "needs_resync") {
+    return "border-amber-200 bg-amber-50 text-amber-800";
+  }
+
+  if (syncStatus === "failed") {
+    return "border-red-200 bg-red-50 text-red-800";
+  }
+
+  if (syncStatus === "deleted") {
+    return "border-slate-300 bg-slate-100 text-slate-600";
+  }
+
+  return "border-slate-200 bg-white text-slate-600";
+}
+
 function getPlanAdjustmentStatusLabel(
   adjustment: PlanAdjustment | null,
 ): string {
@@ -306,6 +386,12 @@ function buildLoggedWorkoutByPlannedWorkoutId(
   return loggedWorkoutByPlannedWorkoutId;
 }
 
+function buildIntervalsWorkoutSyncByPlannedWorkoutId(
+  syncs: IntervalsWorkoutSync[],
+): Map<string, IntervalsWorkoutSync> {
+  return new Map(syncs.map((sync) => [sync.planned_workout_id, sync]));
+}
+
 function addLoggedWorkoutIfMissing(
   loggedWorkouts: LoggedWorkout[],
   loggedWorkout: LoggedWorkout,
@@ -373,6 +459,26 @@ function buildFallbackNoneDecision(
   };
 }
 
+async function markUpdatedIntervalsSyncsNeedsResync(
+  updatedWorkouts: PlannedWorkout[],
+): Promise<string | null> {
+  if (updatedWorkouts.length === 0) {
+    return null;
+  }
+
+  try {
+    await markSyncedIntervalsWorkoutSyncsNeedsResync(
+      updatedWorkouts.map((workout) => workout.id),
+    );
+
+    return null;
+  } catch (error) {
+    return error instanceof Error
+      ? ` Intervals.icu sync status could not be marked stale: ${error.message}`
+      : " Intervals.icu sync status could not be marked stale.";
+  }
+}
+
 async function applyPlanAdjustmentAfterLogging(input: {
   profile: Profile;
   raceGoal: RaceGoal;
@@ -384,6 +490,7 @@ async function applyPlanAdjustmentAfterLogging(input: {
   recentWorkoutEvaluations: WorkoutEvaluation[];
 }): Promise<string> {
   let decision: PlanAdjustmentDecision | null = null;
+  let intervalsSyncWarning: string | null = null;
 
   try {
     const futurePlannedWorkouts = await fetchFuturePlannedWorkouts(
@@ -403,11 +510,13 @@ async function applyPlanAdjustmentAfterLogging(input: {
     });
 
     if (decision.adjustment_type !== "none") {
-      await updateFuturePlannedWorkoutsForAdjustment({
+      const updatedWorkouts = await updateFuturePlannedWorkoutsForAdjustment({
         updatedFuturePlannedWorkouts: decision.updatedFuturePlannedWorkouts,
         affectedWorkoutIds: decision.affected_workout_ids,
         loggedWorkoutDate: input.loggedWorkout.workout_date,
       });
+      intervalsSyncWarning =
+        await markUpdatedIntervalsSyncsNeedsResync(updatedWorkouts);
     }
 
     await savePlanAdjustment(
@@ -446,7 +555,7 @@ async function applyPlanAdjustmentAfterLogging(input: {
     return "Workout saved, score generated, and plan unchanged.";
   }
 
-  return "Workout saved, score generated, and plan adjusted.";
+  return `Workout saved, score generated, and plan adjusted.${intervalsSyncWarning ?? ""}`;
 }
 
 async function rollbackPlanAdjustmentBeforeDeletingWorkout(input: {
@@ -494,6 +603,7 @@ async function rollbackPlanAdjustmentBeforeDeletingWorkout(input: {
       hadPlanChangingAdjustment,
       restoredWorkoutCount: 0,
       needsRegenerationWarning: true,
+      syncInvalidationWarning: null,
     };
   }
 
@@ -502,17 +612,21 @@ async function rollbackPlanAdjustmentBeforeDeletingWorkout(input: {
       rollbackUpdates,
       loggedWorkoutDate: input.loggedWorkout.workout_date,
     });
+    const syncInvalidationWarning =
+      await markUpdatedIntervalsSyncsNeedsResync(restoredWorkouts);
 
     return {
       hadPlanChangingAdjustment,
       restoredWorkoutCount: restoredWorkouts.length,
       needsRegenerationWarning,
+      syncInvalidationWarning,
     };
   } catch {
     return {
       hadPlanChangingAdjustment,
       restoredWorkoutCount: 0,
       needsRegenerationWarning: true,
+      syncInvalidationWarning: null,
     };
   }
 }
@@ -520,19 +634,21 @@ async function rollbackPlanAdjustmentBeforeDeletingWorkout(input: {
 function buildDeletedWorkoutMessage(
   rollbackResult: DeleteWorkoutRollbackResult,
 ): string {
+  const syncInvalidationWarning = rollbackResult.syncInvalidationWarning ?? "";
+
   if (rollbackResult.needsRegenerationWarning) {
-    return "Workout log and score deleted. Planned workout reset when needed. Some plan adjustment changes could not be safely reversed, so regenerate the plan if future workouts look wrong.";
+    return `Workout log and score deleted. Planned workout reset when needed. Some plan adjustment changes could not be safely reversed, so regenerate the plan if future workouts look wrong.${syncInvalidationWarning}`;
   }
 
   if (rollbackResult.restoredWorkoutCount > 0) {
-    return `Workout log and score deleted. Planned workout reset when needed. Reversed ${rollbackResult.restoredWorkoutCount} future workout adjustment${rollbackResult.restoredWorkoutCount === 1 ? "" : "s"}.`;
+    return `Workout log and score deleted. Planned workout reset when needed. Reversed ${rollbackResult.restoredWorkoutCount} future workout adjustment${rollbackResult.restoredWorkoutCount === 1 ? "" : "s"}.${syncInvalidationWarning}`;
   }
 
   if (rollbackResult.hadPlanChangingAdjustment) {
-    return "Workout log and score deleted. Planned workout reset when needed. No editable future workouts needed rollback.";
+    return `Workout log and score deleted. Planned workout reset when needed. No editable future workouts needed rollback.${syncInvalidationWarning}`;
   }
 
-  return "Workout log and score deleted. Planned workout reset when needed. No plan rollback was needed.";
+  return `Workout log and score deleted. Planned workout reset when needed. No plan rollback was needed.${syncInvalidationWarning}`;
 }
 
 function canLogWorkout(
@@ -564,6 +680,55 @@ function getWorkoutLogStatus(
   }
 
   return formatLabel(workout.status);
+}
+
+function getTodayDateText(): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const year = parts.find((part) => part.type === "year")?.value;
+  const month = parts.find((part) => part.type === "month")?.value;
+  const day = parts.find((part) => part.type === "day")?.value;
+
+  if (!year || !month || !day) {
+    return new Date().toISOString().slice(0, 10);
+  }
+
+  return `${year}-${month}-${day}`;
+}
+
+function isCurrentOrFuturePlannedWorkout(workout: PlannedWorkout): boolean {
+  return workout.status === "planned" && workout.workout_date >= getTodayDateText();
+}
+
+function canPublishWorkoutToIntervals(workout: PlannedWorkout | null): boolean {
+  return Boolean(
+    workout &&
+      isCurrentOrFuturePlannedWorkout(workout) &&
+      workout.structured_workout,
+  );
+}
+
+function getIntervalsPublishBlocker(workout: PlannedWorkout | null): string {
+  if (!workout) {
+    return "Choose one planned workout first.";
+  }
+
+  if (workout.status !== "planned") {
+    return "Only workouts with planned status can be published.";
+  }
+
+  if (workout.workout_date < getTodayDateText()) {
+    return "Only today or future planned workouts can be published.";
+  }
+
+  if (!workout.structured_workout) {
+    return "This workout does not have a structured workout document yet.";
+  }
+
+  return "Ready to publish this workout with heart-rate targets.";
 }
 
 function optionalText(value: string): string | null {
@@ -789,6 +954,17 @@ export function WorkoutLoggingPanel() {
   const [form, setForm] = useState<FormState>(emptyForm);
   const [pendingDeleteLogId, setPendingDeleteLogId] = useState<string | null>(null);
   const [deletingLogId, setDeletingLogId] = useState<string | null>(null);
+  const [publishingWorkoutId, setPublishingWorkoutId] = useState<string | null>(
+    null,
+  );
+  const [bulkPublishing, setBulkPublishing] = useState(false);
+  const [bulkPublishWindowDays, setBulkPublishWindowDays] =
+    useState<IntervalsBulkPublishWindowDays>(7);
+  const [bulkPublishSelection, setBulkPublishSelection] =
+    useState<BulkPublishSelectionState>(emptyBulkPublishSelection);
+  const [bulkPublishResults, setBulkPublishResults] = useState<
+    IntervalsPublishWorkoutResult[]
+  >([]);
 
   const loadWorkouts = useCallback(async (successMessage?: string) => {
     try {
@@ -797,6 +973,8 @@ export function WorkoutLoggingPanel() {
       if (!profile) {
         setWorkoutsState(emptyState);
         setForm(emptyForm);
+        setBulkPublishing(false);
+        setBulkPublishResults([]);
         setMessage(successMessage ?? "Create and save a Profile first.");
         setStatus("ready");
         return;
@@ -813,8 +991,11 @@ export function WorkoutLoggingPanel() {
           loggedWorkouts: [],
           workoutEvaluations: [],
           planAdjustments: [],
+          intervalsWorkoutSyncs: [],
         });
         setForm(emptyForm);
+        setBulkPublishing(false);
+        setBulkPublishResults([]);
         setMessage(
           successMessage ??
             "Generate or select an active training plan on the Plan page before logging workouts.",
@@ -823,10 +1004,16 @@ export function WorkoutLoggingPanel() {
         return;
       }
 
-      const [raceGoal, loggedWorkouts, workoutEvaluations] = await Promise.all([
+      const [
+        raceGoal,
+        loggedWorkouts,
+        workoutEvaluations,
+        intervalsWorkoutSyncs,
+      ] = await Promise.all([
         fetchRaceGoalById(activePlan.plan.race_goal_id),
         fetchLoggedWorkoutsForTrainingPlan(activePlan.plan.id),
         fetchWorkoutEvaluationsForTrainingPlan(activePlan.plan.id),
+        fetchIntervalsWorkoutSyncsForTrainingPlan(activePlan.plan.id),
       ]);
       const planAdjustments = await fetchPlanAdjustmentsForLoggedWorkouts(
         loggedWorkouts.map((loggedWorkout) => loggedWorkout.id),
@@ -846,9 +1033,12 @@ export function WorkoutLoggingPanel() {
         loggedWorkouts,
         workoutEvaluations,
         planAdjustments,
+        intervalsWorkoutSyncs,
       });
       setPendingDeleteLogId(null);
       setDeletingLogId(null);
+      setPublishingWorkoutId(null);
+      setBulkPublishing(false);
       setForm(resetFormForWorkout(firstLoggableWorkout));
       setMessage(
         successMessage ??
@@ -863,6 +1053,7 @@ export function WorkoutLoggingPanel() {
           ? error.message
           : "Could not load planned workouts.",
       );
+      setBulkPublishing(false);
       setStatus("error");
     }
   }, []);
@@ -874,6 +1065,37 @@ export function WorkoutLoggingPanel() {
   const runWorkouts = useMemo(
     () => workoutsState.plannedWorkouts.filter(isRunRelatedWorkout),
     [workoutsState.plannedWorkouts],
+  );
+  const todayDateText = getTodayDateText();
+  const bulkPublishWindowWorkouts = useMemo(
+    () =>
+      runWorkouts.filter((workout) =>
+        isWorkoutInIntervalsBulkPublishWindow(
+          workout,
+          todayDateText,
+          bulkPublishWindowDays,
+        ),
+      ),
+    [bulkPublishWindowDays, runWorkouts, todayDateText],
+  );
+  const defaultBulkPublishWorkoutIds = useMemo(
+    () =>
+      getDefaultIntervalsBulkPublishWorkoutIds(
+        runWorkouts,
+        todayDateText,
+        bulkPublishWindowDays,
+      ),
+    [bulkPublishWindowDays, runWorkouts, todayDateText],
+  );
+  const defaultBulkPublishWorkoutIdKey =
+    defaultBulkPublishWorkoutIds.join("|");
+  const selectedBulkPublishWorkoutIds =
+    bulkPublishSelection.defaultKey === defaultBulkPublishWorkoutIdKey
+      ? bulkPublishSelection.selectedWorkoutIds
+      : defaultBulkPublishWorkoutIds;
+  const selectedBulkPublishWorkoutIdSet = useMemo(
+    () => new Set(selectedBulkPublishWorkoutIds),
+    [selectedBulkPublishWorkoutIds],
   );
   const loggedWorkoutIds = useMemo(
     () => buildLoggedWorkoutIdSet(workoutsState.loggedWorkouts),
@@ -898,6 +1120,13 @@ export function WorkoutLoggingPanel() {
     () => buildLoggedWorkoutByPlannedWorkoutId(workoutsState.loggedWorkouts),
     [workoutsState.loggedWorkouts],
   );
+  const intervalsWorkoutSyncByPlannedWorkoutId = useMemo(
+    () =>
+      buildIntervalsWorkoutSyncByPlannedWorkoutId(
+        workoutsState.intervalsWorkoutSyncs,
+      ),
+    [workoutsState.intervalsWorkoutSyncs],
+  );
   const adjustmentByLoggedWorkoutId = useMemo(
     () => buildPlanAdjustmentByLoggedWorkoutId(workoutsState.planAdjustments),
     [workoutsState.planAdjustments],
@@ -909,10 +1138,19 @@ export function WorkoutLoggingPanel() {
       ),
     [workoutsState.loggedWorkouts],
   );
+
   const previewPaceSecPerKm = calculatePreviewPace(form);
   const isSaving = status === "saving";
   const isDeleting = deletingLogId !== null;
-  const isBusy = isSaving || isDeleting;
+  const isPublishing = publishingWorkoutId !== null || bulkPublishing;
+  const isBusy = isSaving || isDeleting || isPublishing;
+  const selectedWorkoutIntervalsSync = selectedWorkout
+    ? intervalsWorkoutSyncByPlannedWorkoutId.get(selectedWorkout.id) ?? null
+    : null;
+  const canPublishSelectedWorkout =
+    canPublishWorkoutToIntervals(selectedWorkout);
+  const canBulkPublishWorkouts =
+    selectedBulkPublishWorkoutIds.length > 0 && workoutsState.plan !== null;
 
   function handleSelectWorkout(workout: PlannedWorkout) {
     setForm({
@@ -920,6 +1158,146 @@ export function WorkoutLoggingPanel() {
       planned_workout_id: workout.id,
       workout_date: workout.workout_date,
     });
+  }
+
+  function handleBulkPublishWindowChange(
+    windowDays: IntervalsBulkPublishWindowDays,
+  ) {
+    setBulkPublishWindowDays(windowDays);
+    setBulkPublishResults([]);
+  }
+
+  function handleToggleBulkPublishWorkout(plannedWorkoutId: string) {
+    setBulkPublishResults([]);
+    setBulkPublishSelection((currentSelection) => {
+      const currentIds =
+        currentSelection.defaultKey === defaultBulkPublishWorkoutIdKey
+          ? currentSelection.selectedWorkoutIds
+          : defaultBulkPublishWorkoutIds;
+
+      return {
+        defaultKey: defaultBulkPublishWorkoutIdKey,
+        selectedWorkoutIds: currentIds.includes(plannedWorkoutId)
+          ? currentIds.filter((currentId) => currentId !== plannedWorkoutId)
+          : [...currentIds, plannedWorkoutId],
+      };
+    });
+  }
+
+  async function handlePublishSelectedWorkout() {
+    if (!selectedWorkout) {
+      setStatus("error");
+      setMessage("Choose one planned workout before publishing.");
+      return;
+    }
+
+    if (!canPublishWorkoutToIntervals(selectedWorkout)) {
+      setStatus("error");
+      setMessage(getIntervalsPublishBlocker(selectedWorkout));
+      return;
+    }
+
+    setPublishingWorkoutId(selectedWorkout.id);
+    setStatus("publishing");
+    setMessage(null);
+
+    try {
+      const response = await fetch("/api/intervals/publish-workout", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          plannedWorkoutId: selectedWorkout.id,
+        }),
+      });
+      const result = (await response.json()) as PublishWorkoutResponse;
+
+      if (!response.ok || !result.ok) {
+        throw new Error(result.message || "Intervals.icu publish failed.");
+      }
+
+      await loadWorkouts(result.message);
+    } catch (error) {
+      setStatus("error");
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Could not publish workout to Intervals.icu.",
+      );
+    } finally {
+      setPublishingWorkoutId(null);
+    }
+  }
+
+  async function handleBulkPublishWorkouts() {
+    const { plan } = workoutsState;
+
+    if (!plan) {
+      setStatus("error");
+      setMessage("Load an active training plan before publishing workouts.");
+      return;
+    }
+
+    if (selectedBulkPublishWorkoutIds.length === 0) {
+      setStatus("error");
+      setMessage("Select at least one planned workout to publish.");
+      return;
+    }
+
+    setBulkPublishing(true);
+    setStatus("publishing");
+    setMessage(null);
+    setBulkPublishResults([]);
+
+    try {
+      const response = await fetch("/api/intervals/publish-workouts", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          trainingPlanId: plan.id,
+          plannedWorkoutIds: selectedBulkPublishWorkoutIds,
+        }),
+      });
+      const result = (await response.json()) as IntervalsBulkPublishWorkoutsResponse;
+
+      if (result.results.length > 0) {
+        const hasSuccess = result.results.some(
+          (publishResult) => publishResult.ok,
+        );
+        const hasFailure = result.results.some(
+          (publishResult) => !publishResult.ok,
+        );
+
+        if (hasSuccess) {
+          await loadWorkouts(result.message);
+        } else {
+          setMessage(result.message);
+        }
+
+        setStatus(hasFailure && !hasSuccess ? "error" : "saved");
+        setBulkPublishResults(result.results);
+        return;
+      }
+
+      if (!response.ok || !result.ok) {
+        throw new Error(result.message || "Intervals.icu bulk publish failed.");
+      }
+
+      setMessage(result.message);
+      setStatus("saved");
+    } catch (error) {
+      setStatus("error");
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Could not publish workouts to Intervals.icu.",
+      );
+    } finally {
+      setBulkPublishing(false);
+    }
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -1547,6 +1925,143 @@ export function WorkoutLoggingPanel() {
             ) : null}
 
             {hasRunWorkouts ? (
+              <div className="mt-5 rounded-md border border-slate-200 bg-slate-50 p-4">
+                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                  <div>
+                    <h3 className="text-sm font-medium text-slate-950">
+                      Bulk publish to Intervals.icu
+                    </h3>
+                    <p className="mt-1 text-sm text-slate-600">
+                      Publishes selected planned workouts with heart-rate targets.
+                    </p>
+                  </div>
+                  <div className="flex w-fit rounded-md border border-slate-300 bg-white p-1">
+                    {[7, 14].map((windowDays) => (
+                      <button
+                        aria-pressed={bulkPublishWindowDays === windowDays}
+                        className={`rounded px-3 py-1.5 text-sm font-medium ${
+                          bulkPublishWindowDays === windowDays
+                            ? "bg-slate-900 text-white"
+                            : "text-slate-700 hover:bg-slate-50"
+                        }`}
+                        disabled={isBusy}
+                        key={windowDays}
+                        onClick={() =>
+                          handleBulkPublishWindowChange(
+                            windowDays as IntervalsBulkPublishWindowDays,
+                          )
+                        }
+                        type="button"
+                      >
+                        Next {windowDays} days
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {bulkPublishWindowWorkouts.length === 0 ? (
+                  <p className="mt-4 text-sm text-slate-700">
+                    No today-or-future planned run workouts are in this window.
+                  </p>
+                ) : (
+                  <div className="mt-4 space-y-2">
+                    {bulkPublishWindowWorkouts.map((workout) => {
+                      const canSelectWorkout =
+                        canPublishWorkoutToIntervals(workout);
+                      const isChecked = selectedBulkPublishWorkoutIdSet.has(
+                        workout.id,
+                      );
+
+                      return (
+                        <label
+                          className={`flex gap-3 rounded-md border border-slate-200 bg-white p-3 text-sm ${
+                            canSelectWorkout
+                              ? "text-slate-800"
+                              : "text-slate-500 opacity-75"
+                          }`}
+                          key={workout.id}
+                        >
+                          <input
+                            checked={isChecked}
+                            className="mt-1 h-4 w-4"
+                            disabled={!canSelectWorkout || isBusy}
+                            onChange={() =>
+                              handleToggleBulkPublishWorkout(workout.id)
+                            }
+                            type="checkbox"
+                          />
+                          <span>
+                            <span className="block font-medium text-slate-950">
+                              {formatDate(workout.workout_date)} - {workout.title}
+                            </span>
+                            <span className="mt-1 block text-slate-600">
+                              {canSelectWorkout
+                                ? formatWorkoutLoad(workout)
+                                : getIntervalsPublishBlocker(workout)}
+                            </span>
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+
+                <div className="mt-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <p className="text-sm text-slate-600">
+                    {selectedBulkPublishWorkoutIds.length} selected
+                  </p>
+                  <button
+                    className="w-fit rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
+                    disabled={!canBulkPublishWorkouts || isBusy}
+                    onClick={() => void handleBulkPublishWorkouts()}
+                    type="button"
+                  >
+                    {bulkPublishing
+                      ? "Publishing selected..."
+                      : "Publish selected to Intervals.icu"}
+                  </button>
+                </div>
+
+                {bulkPublishResults.length > 0 ? (
+                  <div className="mt-4 rounded-md border border-slate-200 bg-white p-3">
+                    <h4 className="text-sm font-medium text-slate-950">
+                      Latest bulk publish results
+                    </h4>
+                    <div className="mt-3 space-y-2">
+                      {bulkPublishResults.map((publishResult) => (
+                        <div
+                          className="flex flex-col gap-2 rounded-md border border-slate-200 p-3 text-sm md:flex-row md:items-start md:justify-between"
+                          key={publishResult.plannedWorkoutId}
+                        >
+                          <div>
+                            <p className="font-medium text-slate-950">
+                              {publishResult.title ?? publishResult.plannedWorkoutId}
+                            </p>
+                            <p className="mt-1 text-slate-600">
+                              {publishResult.workoutDate
+                                ? formatDate(publishResult.workoutDate)
+                                : "Date unavailable"}
+                            </p>
+                            <p className="mt-1 text-slate-700">
+                              {publishResult.message}
+                            </p>
+                          </div>
+                          <span
+                            className={`w-fit rounded-md border px-2 py-1 text-xs font-medium ${getPublishResultBadgeClass(
+                              publishResult.ok,
+                            )}`}
+                          >
+                            {publishResult.ok ? "Synced" : "Failed"}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            {hasRunWorkouts ? (
               <div className="mt-5 divide-y divide-slate-100 rounded-md border border-slate-200">
                 {runWorkouts.map((workout) => {
                   const isSelected = workout.id === selectedWorkout?.id;
@@ -1557,6 +2072,11 @@ export function WorkoutLoggingPanel() {
                     ? evaluationByLoggedWorkoutId.get(linkedLoggedWorkout.id) ??
                       null
                     : null;
+                  const intervalsSync =
+                    intervalsWorkoutSyncByPlannedWorkoutId.get(workout.id) ??
+                    null;
+                  const intervalsSyncStatus =
+                    intervalsSync?.sync_status ?? "not_synced";
 
                   return (
                     <button
@@ -1590,6 +2110,14 @@ export function WorkoutLoggingPanel() {
                               {linkedEvaluation.overall_score}/100 score
                             </span>
                           ) : null}
+                          <span
+                            className={`w-fit rounded-md border px-2 py-1 text-xs font-medium ${getIntervalsSyncStatusBadgeClass(
+                              intervalsSyncStatus,
+                            )}`}
+                            title={intervalsSync?.last_error ?? undefined}
+                          >
+                            {getIntervalsSyncStatusLabel(intervalsSync)}
+                          </span>
                         </div>
                       </div>
                       <dl className="mt-3 grid gap-3 text-slate-600 md:grid-cols-3">
@@ -1635,6 +2163,42 @@ export function WorkoutLoggingPanel() {
                   <p className="mt-1">
                     {formatDate(selectedWorkout.workout_date)} - {formatWorkoutLoad(selectedWorkout)}
                   </p>
+                  <div className="mt-4 rounded-md border border-slate-200 bg-white p-3">
+                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                      <div>
+                        <p className="font-medium text-slate-950">
+                          Intervals.icu publishing
+                        </p>
+                        <span
+                          className={`mt-2 inline-flex w-fit rounded-md border px-2 py-1 text-xs font-medium ${getIntervalsSyncStatusBadgeClass(
+                            selectedWorkoutIntervalsSync?.sync_status ??
+                              "not_synced",
+                          )}`}
+                          title={
+                            selectedWorkoutIntervalsSync?.last_error ??
+                            undefined
+                          }
+                        >
+                          {getIntervalsSyncStatusLabel(
+                            selectedWorkoutIntervalsSync,
+                          )}
+                        </span>
+                        <p className="mt-1 text-slate-600">
+                          {getIntervalsPublishBlocker(selectedWorkout)}
+                        </p>
+                      </div>
+                      <button
+                        className="w-fit rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
+                        disabled={!canPublishSelectedWorkout || isBusy}
+                        onClick={() => void handlePublishSelectedWorkout()}
+                        type="button"
+                      >
+                        {publishingWorkoutId === selectedWorkout.id
+                          ? "Publishing..."
+                          : "Publish to Intervals.icu"}
+                      </button>
+                    </div>
+                  </div>
                 </div>
               ) : (
                 <div className="mt-4 rounded-md border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">

@@ -95,6 +95,31 @@ export type AdjustmentType =
   | "reduce_weekly_volume"
   | "protect_long_run_progression";
 
+export type IntervalsApiKeyPlaceholder = "stored_in_environment_variable";
+
+export type IntervalsWorkoutSyncStatus =
+  | "not_synced"
+  | "needs_resync"
+  | "synced"
+  | "failed"
+  | "deleted";
+
+export type IntervalsPublishWorkoutResult = {
+  plannedWorkoutId: string;
+  title: string | null;
+  workoutDate: string | null;
+  ok: boolean;
+  syncStatus: Extract<IntervalsWorkoutSyncStatus, "synced" | "failed">;
+  message: string;
+  intervalsEventId: number | null;
+};
+
+export type IntervalsBulkPublishWorkoutsResponse = {
+  ok: boolean;
+  message: string;
+  results: IntervalsPublishWorkoutResult[];
+};
+
 export type Profile = {
   id: string;
   username: string;
@@ -130,6 +155,30 @@ export type RaceGoal = {
   course_elevation_notes: string | null;
   expected_weather_notes: string | null;
   is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type IntervalsConnection = {
+  id: string;
+  profile_id: string;
+  athlete_id: string;
+  api_key_encrypted_or_placeholder: IntervalsApiKeyPlaceholder;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type IntervalsWorkoutSync = {
+  id: string;
+  planned_workout_id: string;
+  training_plan_id: string;
+  profile_id: string;
+  intervals_external_id: string;
+  intervals_event_id: number | null;
+  sync_status: IntervalsWorkoutSyncStatus;
+  last_synced_at: string | null;
+  last_error: string | null;
   created_at: string;
   updated_at: string;
 };

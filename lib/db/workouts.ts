@@ -91,6 +91,27 @@ export async function fetchPlannedWorkoutById(
   return data as PlannedWorkout;
 }
 
+export async function fetchPlannedWorkoutsByIds(
+  plannedWorkoutIds: string[],
+): Promise<PlannedWorkout[]> {
+  if (plannedWorkoutIds.length === 0) {
+    return [];
+  }
+
+  const supabase = getSupabaseClient();
+
+  const { data, error } = await supabase
+    .from("planned_workouts")
+    .select("*")
+    .in("id", plannedWorkoutIds);
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return (data ?? []) as PlannedWorkout[];
+}
+
 export async function saveLoggedWorkout(
   loggedWorkout: SaveLoggedWorkoutInput,
 ): Promise<LoggedWorkout> {

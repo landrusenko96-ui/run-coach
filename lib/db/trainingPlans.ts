@@ -74,6 +74,28 @@ export async function fetchActiveTrainingPlan(
   return data as TrainingPlan | null;
 }
 
+export async function fetchTrainingPlanById(
+  trainingPlanId: string,
+): Promise<TrainingPlan> {
+  const supabase = getSupabaseClient();
+
+  const { data, error } = await supabase
+    .from("training_plans")
+    .select("*")
+    .eq("id", trainingPlanId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  if (!data) {
+    throw new Error("Could not find the selected training plan.");
+  }
+
+  return data as TrainingPlan;
+}
+
 export async function fetchPlannedWorkouts(
   trainingPlanId: string,
 ): Promise<PlannedWorkout[]> {
