@@ -11,9 +11,21 @@ class HealthResponse(BaseModel):
 
 
 class GarminStatusResponse(BaseModel):
-    configured: bool
+    ok: bool
     authenticated: bool
-    auth_state: Literal["not_authenticated", "authenticated", "auth_failed"]
+    category: Literal[
+        "AUTHENTICATED",
+        "NOT_AUTHENTICATED",
+        "TOKEN_FILE_MISSING",
+        "TOKEN_EXPIRED_OR_INVALID",
+        "GARMIN_UNREACHABLE",
+        "UNKNOWN_ERROR",
+    ]
+    client_library: Literal["python-garminconnect"]
+    client_version: Optional[str] = None
+    token_file_exists: bool
+    token_file_path: str
+    last_auth_check_at: str
     message: str
 
 

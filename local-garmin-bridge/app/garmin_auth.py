@@ -1,5 +1,7 @@
 import importlib
+from datetime import datetime, timezone
 from getpass import getpass
+from importlib import metadata
 from pathlib import Path
 from types import ModuleType
 from typing import Optional
@@ -19,19 +21,22 @@ class GarminAuthService:
 
     def get_status(self) -> GarminStatusResponse:
         if not self.token_file.exists():
-            return GarminStatusResponse(
-                configured=False,
+            return self._status_response(
+                ok=False,
                 authenticated=False,
-                auth_state="not_authenticated",
-                message="No local python-garminconnect session token file was found.",
+                category="TOKEN_FILE_MISSING",
+                message=(
+                    "No local Garmin session token file was found. "
+                    "Authenticate locally before publishing to Garmin."
+                ),
             )
 
         garminconnect = self._load_garminconnect()
         if garminconnect is None:
-            return GarminStatusResponse(
-                configured=True,
+            return self._status_response(
+                ok=False,
                 authenticated=False,
-                auth_state="auth_failed",
+                category="UNKNOWN_ERROR",
                 message=(
                     "Local Garmin tokens exist, but python-garminconnect is not installed. "
                     "Install bridge requirements with Python 3.12 or newer."
@@ -40,22 +45,20 @@ class GarminAuthService:
 
         try:
             self.resume_client()
-        except Exception:
-            return GarminStatusResponse(
-                configured=True,
+        except Exception as error:
+            category = self._status_category_for_error(error)
+            return self._status_response(
+                ok=False,
                 authenticated=False,
-                auth_state="auth_failed",
-                message=(
-                    "Local Garmin tokens were found, but the session could not be resumed. "
-                    "Re-authentication may be needed."
-                ),
+                category=category,
+                message=self._status_message(category),
             )
 
-        return GarminStatusResponse(
-            configured=True,
+        return self._status_response(
+            ok=True,
             authenticated=True,
-            auth_state="authenticated",
-            message="A local python-garminconnect session is available.",
+            category="AUTHENTICATED",
+            message="Local Garmin session is available.",
         )
 
     def start_auth(self) -> GarminAuthStartResponse:
@@ -159,6 +162,89 @@ class GarminAuthService:
             return importlib.import_module("garminconnect")
         except ModuleNotFoundError:
             return None
+
+    def _status_response(
+        self,
+        *,
+        ok: bool,
+        authenticated: bool,
+        category: str,
+        message: str,
+    ) -> GarminStatusResponse:
+        return GarminStatusResponse(
+            ok=ok,
+            authenticated=authenticated,
+            category=category,
+            client_library="python-garminconnect",
+            client_version=self._client_version(),
+            token_file_exists=self.token_file.exists(),
+            token_file_path=str(self.token_file.resolve()),
+            last_auth_check_at=self._status_check_timestamp(),
+            message=message,
+        )
+
+    def _status_check_timestamp(self) -> str:
+        return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    def _client_version(self) -> Optional[str]:
+        try:
+            return metadata.version("garminconnect")
+        except metadata.PackageNotFoundError:
+            return None
+
+    def _status_category_for_error(self, error: Exception) -> str:
+        error_name = type(error).__name__
+
+        if error_name == "FileNotFoundError":
+            return "TOKEN_FILE_MISSING"
+
+        if error_name == "GarminConnectAuthenticationError":
+            return "TOKEN_EXPIRED_OR_INVALID"
+
+        if error_name == "GarminConnectTooManyRequestsError":
+            return "GARMIN_UNREACHABLE"
+
+        if error_name == "GarminConnectConnectionError":
+            if self._looks_like_token_load_error(error):
+                return "TOKEN_EXPIRED_OR_INVALID"
+
+            return "GARMIN_UNREACHABLE"
+
+        return "UNKNOWN_ERROR"
+
+    def _status_message(self, category: str) -> str:
+        messages = {
+            "AUTHENTICATED": "Local Garmin session is available.",
+            "NOT_AUTHENTICATED": "Local Garmin session is not authenticated.",
+            "TOKEN_FILE_MISSING": (
+                "No local Garmin session token file was found. "
+                "Authenticate locally before publishing to Garmin."
+            ),
+            "TOKEN_EXPIRED_OR_INVALID": (
+                "Local Garmin token file exists, but the saved session is expired or invalid. "
+                "Re-authenticate locally before publishing to Garmin."
+            ),
+            "GARMIN_UNREACHABLE": (
+                "Local Garmin token file exists, but Garmin could not be reached for the status check. "
+                "Try again later."
+            ),
+            "UNKNOWN_ERROR": (
+                "Garmin status could not be checked because an unexpected local bridge error occurred."
+            ),
+        }
+
+        return messages.get(category, messages["UNKNOWN_ERROR"])
+
+    def _looks_like_token_load_error(self, error: Exception) -> bool:
+        safe_text = str(error).lower()
+        token_load_markers = (
+            "token",
+            "session",
+            "json",
+            "auth",
+        )
+
+        return any(marker in safe_text for marker in token_load_markers)
 
     def _prompt_mfa(self) -> str:
         return input("Garmin MFA code: ").strip()
