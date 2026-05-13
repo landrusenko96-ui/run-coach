@@ -22,7 +22,7 @@ The correct strategy is not to build the full Run.B*tch.app vision immediately. 
 9. Intervals.icu planned-workout publishing;
 10. Strava import.
 
-The app should prove the core loop before adding social features, avatars, routes, Spotify, global marathon databases, or direct Garmin API integration. The MVP should publish planned workouts through Intervals.icu so they can sync onward to Garmin Connect and the Garmin Forerunner 265.
+The app should prove the core loop before adding social features, avatars, routes, Spotify, global marathon databases, or public direct Garmin API integration. The MVP should publish planned workouts through Intervals.icu so they can sync onward to Garmin Connect and the Garmin Forerunner 265. A local-only direct Garmin bridge can be tested as an experimental secondary export path if Intervals.icu does not preserve workout targets well enough.
 
 **Core product loop:**
 
@@ -765,6 +765,53 @@ Do not attempt direct Garmin API integration yet.
 
 ---
 
+### Milestone 6C — Direct Garmin Local Bridge, Experimental
+
+**Purpose:**
+
+Test whether the app can publish structured workouts directly to Garmin Connect using a local Python bridge and unofficial Garmin Connect APIs, with pace targets preserved on Garmin watch.
+
+**Status:**
+
+Experimental secondary export path. Intervals.icu remains the primary supported export path. New-login authentication is moving forward with python-garminconnect after the Garth path failed for new login.
+
+Manual validation on 2026-05-13 confirmed one simple pace-targeted running workout uploaded through the bridge appeared on the Forerunner with pace targets visible on the watch.
+
+**Architecture:**
+
+```text
+Next.js app → local Python FastAPI bridge → Garmin Connect internal API via python-garminconnect → Garmin watch
+```
+
+**Success criteria:**
+
+- Local Python service authenticates with Garmin using saved token.
+- App can send one structured planned workout to the local bridge.
+- Local bridge creates a Garmin structured workout.
+- Local bridge schedules it to Garmin calendar.
+- Workout appears in Garmin Connect and on Forerunner.
+- Pace targets appear correctly on watch.
+- App stores Garmin export status and Garmin workout ID if available.
+- Failure states are explicit; no silent success.
+
+**Validated checkpoint:**
+
+- Test workout: Run Coach Garmin Pace Test May 13.
+- Garmin workout ID: 1566821421.
+- Garmin schedule ID: 1648396171.
+- Watch verification: pace target appeared on Forerunner; it was not shown as `No Target`.
+
+**Constraints:**
+
+- Local-only.
+- Personal use only.
+- Unofficial Garmin API; can break without notice.
+- Do not store Garmin password in Supabase or Next.js.
+- Do not expose the local bridge publicly.
+- Keep Intervals.icu fallback.
+
+---
+
 ## 8. Post-MVP Feature Roadmap
 
 ### Phase 15 - Gear tracking
@@ -1136,6 +1183,19 @@ Workout pushed to Intervals.icu
 Duplicate prevented by stable external_id
 Workout appears in Garmin Connect
 Workout reaches Forerunner 265
+```
+
+### Milestone 6C - Direct Garmin Local Bridge, Experimental
+
+```text
+Local Python bridge authenticates with Garmin using a saved token
+App sends one structured planned workout to the bridge
+Bridge creates and schedules a Garmin structured workout
+Workout appears in Garmin Connect and on Forerunner
+Pace targets appear correctly on watch
+Garmin export status and Garmin workout ID are stored if available
+Failures are explicit, with no silent success
+Intervals.icu remains the primary supported export path
 ```
 
 ### Milestone 7 - Strava import

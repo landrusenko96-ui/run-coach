@@ -19,6 +19,16 @@ build
 # supabase local link/cache metadata
 supabase/.temp
 
+# local Garmin bridge session tokens
+local-garmin-bridge/.venv/
+local-garmin-bridge/.garth/
+local-garmin-bridge/.garminconnect/
+local-garmin-bridge/.garminconnect-spike/
+
+# python cache files
+__pycache__/
+*.py[cod]
+
 # typecheck cache
 tsconfig.tsbuildinfo
 
