@@ -22,6 +22,13 @@ import {
 import { buildDefaultTrainingPlanName } from "@/lib/training/planGenerator";
 import type {
   PlanAdjustment,
+  GarminBulkMaintenanceExecuteResponse,
+  GarminBulkMaintenanceMode,
+  GarminBulkMaintenancePreviewResponse,
+  GarminBulkPreviewWorkoutsResponse,
+  GarminBulkPublishWindowDays,
+  GarminBulkPublishWorkoutsResponse,
+  GarminPlanDeleteCleanupMode,
   PlannedWorkout,
   Profile,
   RaceGoal,
@@ -56,12 +63,26 @@ type DeletePreviewByPlanId = Record<string, TrainingPlanDeletePreview>;
 type DeleteTrainingPlanApiResult = DeleteTrainingPlanResult & {
   intervals_delete_attempt_count?: number;
   intervals_deleted_event_count?: number;
+  garmin_cleanup_mode?: GarminPlanDeleteCleanupMode;
+  garmin_future_export_count?: number;
+  garmin_delete_attempt_count?: number;
+  garmin_deleted_count?: number;
+  garmin_partial_count?: number;
+  garmin_failed_count?: number;
+  garmin_direct_exports_marked_deleted_count?: number;
 };
 
 type DeleteTrainingPlanResponse = {
   ok: boolean;
   message: string;
   result: DeleteTrainingPlanApiResult | null;
+};
+
+type GarminBridgeStatusResponse = {
+  ok: boolean;
+  enabled: boolean;
+  status: string;
+  message: string;
 };
 
 const emptyState: PlansState = {
@@ -271,8 +292,126 @@ function buildDeleteSuccessMessage(result: DeleteTrainingPlanApiResult): string 
     intervalsDeletedEventCount > 0
       ? ` Deleted ${intervalsDeletedEventCount} future Intervals.icu event${intervalsDeletedEventCount === 1 ? "" : "s"}.`
       : "";
+  const garminDeletedCount =
+    result.garmin_direct_exports_marked_deleted_count ?? 0;
+  const garminFutureExportCount = result.garmin_future_export_count ?? 0;
+  let garminMessage = "";
 
-  return `Deleted ${result.deleted_plan_name}. Removed ${result.deleted_planned_workout_count} planned workouts and ${result.deleted_workout_evaluation_count} workout evaluations. Kept and unlinked ${result.unlinked_logged_workout_count} logged workouts.${intervalsMessage}${activePlanMessage}`;
+  if (
+    result.garmin_cleanup_mode === "attempt_future_delete" &&
+    garminFutureExportCount > 0
+  ) {
+    garminMessage = ` Attempted to remove ${result.garmin_delete_attempt_count ?? 0} future Garmin workout${(result.garmin_delete_attempt_count ?? 0) === 1 ? "" : "s"}: ${result.garmin_deleted_count ?? 0} deleted, ${result.garmin_partial_count ?? 0} partial, ${result.garmin_failed_count ?? 0} failed.`;
+  } else if (garminDeletedCount > 0) {
+    garminMessage = ` Marked ${garminDeletedCount} future direct Garmin export${garminDeletedCount === 1 ? "" : "s"} deleted locally. Garmin Connect was not changed.`;
+  }
+
+  return `Deleted ${result.deleted_plan_name}. Removed ${result.deleted_planned_workout_count} planned workouts and ${result.deleted_workout_evaluation_count} workout evaluations. Kept and unlinked ${result.unlinked_logged_workout_count} logged workouts.${intervalsMessage}${garminMessage}${activePlanMessage}`;
+}
+
+function getBulkSummaryCountClass(count: number): string {
+  return count > 0 ? "text-slate-950" : "text-slate-500";
+}
+
+function getGarminBulkActionLabel(action: string): string {
+  if (action === "publish") {
+    return "Ready";
+  }
+
+  if (action === "skip_synced") {
+    return "Skipped";
+  }
+
+  if (action === "needs_confirmation") {
+    return "Needs confirmation";
+  }
+
+  return "Blocked";
+}
+
+function getGarminBulkExportStatusLabel(exportStatus: string): string {
+  if (exportStatus === "stale") {
+    return "Changed after Garmin export — update if needed";
+  }
+
+  return formatLabel(exportStatus);
+}
+
+function getGarminBulkActionBadgeClass(action: string): string {
+  if (action === "publish") {
+    return "border-emerald-200 bg-emerald-50 text-emerald-800";
+  }
+
+  if (action === "skip_synced") {
+    return "border-slate-200 bg-slate-50 text-slate-700";
+  }
+
+  if (action === "needs_confirmation") {
+    return "border-amber-200 bg-amber-50 text-amber-800";
+  }
+
+  return "border-red-200 bg-red-50 text-red-800";
+}
+
+function getGarminBulkResultBadgeClass(statusValue: string): string {
+  if (statusValue === "PUBLISHED") {
+    return "border-emerald-200 bg-emerald-50 text-emerald-800";
+  }
+
+  if (
+    statusValue === "UPLOADED_NOT_SCHEDULED" ||
+    statusValue.startsWith("SKIPPED")
+  ) {
+    return "border-amber-200 bg-amber-50 text-amber-800";
+  }
+
+  return "border-red-200 bg-red-50 text-red-800";
+}
+
+function getGarminMaintenanceModeLabel(mode: GarminBulkMaintenanceMode): string {
+  return mode === "update_stale"
+    ? "Update stale Garmin exports"
+    : "Delete selected Garmin exports";
+}
+
+function getGarminMaintenanceActionLabel(action: string): string {
+  if (action === "update") {
+    return "Update";
+  }
+
+  if (action === "delete") {
+    return "Delete";
+  }
+
+  return "Skipped";
+}
+
+function getGarminMaintenanceActionBadgeClass(action: string): string {
+  if (action === "update") {
+    return "border-blue-200 bg-blue-50 text-blue-800";
+  }
+
+  if (action === "delete") {
+    return "border-red-200 bg-red-50 text-red-800";
+  }
+
+  return "border-slate-200 bg-slate-50 text-slate-700";
+}
+
+function getGarminMaintenanceResultBadgeClass(statusValue: string): string {
+  if (statusValue === "UPDATED" || statusValue === "DELETED") {
+    return "border-emerald-200 bg-emerald-50 text-emerald-800";
+  }
+
+  if (
+    statusValue === "UPDATED_PARTIAL" ||
+    statusValue === "UNSCHEDULED_ONLY" ||
+    statusValue.startsWith("SKIPPED")
+  ) {
+    return "border-amber-200 bg-amber-50 text-amber-800";
+  }
+
+  return "border-red-200 bg-red-50 text-red-800";
 }
 
 function StructuredWorkoutStepList({
@@ -408,6 +547,51 @@ export function TrainingPlanPanel() {
   const [deletePreviews, setDeletePreviews] = useState<DeletePreviewByPlanId>(
     {},
   );
+  const [garminBridgeStatus, setGarminBridgeStatus] =
+    useState<GarminBridgeStatusResponse | null>(null);
+  const [garminBulkPreviewingWindowDays, setGarminBulkPreviewingWindowDays] =
+    useState<GarminBulkPublishWindowDays | null>(null);
+  const [garminBulkPublishing, setGarminBulkPublishing] = useState(false);
+  const [garminBulkPreview, setGarminBulkPreview] =
+    useState<GarminBulkPreviewWorkoutsResponse | null>(null);
+  const [garminBulkPublishResult, setGarminBulkPublishResult] =
+    useState<GarminBulkPublishWorkoutsResponse | null>(null);
+  const [includeGarminRetryStatuses, setIncludeGarminRetryStatuses] =
+    useState(false);
+  const [stopGarminBulkOnError, setStopGarminBulkOnError] = useState(false);
+  const [garminMaintenancePreviewing, setGarminMaintenancePreviewing] =
+    useState<{
+      mode: GarminBulkMaintenanceMode;
+      windowDays: GarminBulkPublishWindowDays;
+    } | null>(null);
+  const [garminMaintenanceExecuting, setGarminMaintenanceExecuting] =
+    useState(false);
+  const [garminMaintenancePreview, setGarminMaintenancePreview] =
+    useState<GarminBulkMaintenancePreviewResponse | null>(null);
+  const [garminMaintenanceResult, setGarminMaintenanceResult] =
+    useState<GarminBulkMaintenanceExecuteResponse | null>(null);
+  const [
+    selectedGarminMaintenanceDeleteIds,
+    setSelectedGarminMaintenanceDeleteIds,
+  ] = useState<string[]>([]);
+  const [stopGarminMaintenanceOnError, setStopGarminMaintenanceOnError] =
+    useState(false);
+
+  const loadGarminBridgeStatus = useCallback(async () => {
+    try {
+      const response = await fetch("/api/garmin/status");
+      const result = (await response.json()) as GarminBridgeStatusResponse;
+
+      setGarminBridgeStatus(result);
+    } catch {
+      setGarminBridgeStatus({
+        ok: false,
+        enabled: true,
+        status: "BRIDGE_UNAVAILABLE",
+        message: "Local Garmin bridge is not running.",
+      });
+    }
+  }, []);
 
   const loadPlans = useCallback(async (successMessage?: string) => {
     try {
@@ -468,6 +652,10 @@ export function TrainingPlanPanel() {
   useEffect(() => {
     void Promise.resolve().then(() => loadPlans());
   }, [loadPlans]);
+
+  useEffect(() => {
+    void Promise.resolve().then(() => loadGarminBridgeStatus());
+  }, [loadGarminBridgeStatus]);
 
   async function handleGeneratePlan(replaceActivePlan: boolean) {
     setStatus("generating");
@@ -568,7 +756,10 @@ export function TrainingPlanPanel() {
     }
   }
 
-  async function handleDeletePlan(trainingPlan: TrainingPlan) {
+  async function handleDeletePlan(
+    trainingPlan: TrainingPlan,
+    garminCleanupMode: GarminPlanDeleteCleanupMode,
+  ) {
     setDeletingPlanId(trainingPlan.id);
     setStatus("deleting");
     setMessage(null);
@@ -581,6 +772,7 @@ export function TrainingPlanPanel() {
         },
         body: JSON.stringify({
           trainingPlanId: trainingPlan.id,
+          garminCleanupMode,
         }),
       });
       const deleteResponse =
@@ -610,6 +802,258 @@ export function TrainingPlanPanel() {
     }
   }
 
+  async function handlePreviewGarminBulkPublish(
+    windowDays: GarminBulkPublishWindowDays,
+  ) {
+    if (!plansState.activePlan) {
+      setStatus("error");
+      setMessage("Select an active plan before previewing Garmin publish.");
+      return;
+    }
+
+    setGarminBulkPreviewingWindowDays(windowDays);
+    setGarminBulkPreview(null);
+    setGarminBulkPublishResult(null);
+    setGarminMaintenancePreview(null);
+    setGarminMaintenanceResult(null);
+    setSelectedGarminMaintenanceDeleteIds([]);
+    setIncludeGarminRetryStatuses(false);
+    setMessage(null);
+
+    try {
+      const response = await fetch("/api/garmin/bulk-preview-workouts", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          trainingPlanId: plansState.activePlan.id,
+          windowDays,
+        }),
+      });
+      const result =
+        (await response.json()) as GarminBulkPreviewWorkoutsResponse;
+
+      setGarminBulkPreview(result);
+      setMessage(result.message);
+      setStatus(response.ok ? "ready" : "error");
+    } catch (error) {
+      setStatus("error");
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Could not preview Garmin bulk publish.",
+      );
+    } finally {
+      setGarminBulkPreviewingWindowDays(null);
+    }
+  }
+
+  async function handlePublishGarminBulk() {
+    if (!plansState.activePlan || !garminBulkPreview) {
+      setStatus("error");
+      setMessage("Preview a Garmin bulk publish window before publishing.");
+      return;
+    }
+
+    const readyCount = includeGarminRetryStatuses
+      ? garminBulkPreview.summary.readyCount +
+        garminBulkPreview.summary.retryNeedsConfirmationCount
+      : garminBulkPreview.summary.readyCount;
+
+    if (readyCount === 0) {
+      setStatus("error");
+      setMessage("There are no Garmin workouts ready to publish from this preview.");
+      return;
+    }
+
+    const confirmationMessages = [
+      "This uses an unofficial local Garmin Connect bridge. It runs only on your laptop and may break if Garmin changes internal APIs.",
+      `This will publish ${readyCount} workout${readyCount === 1 ? "" : "s"} sequentially and will not delete old Garmin workouts automatically.`,
+    ];
+
+    if (includeGarminRetryStatuses) {
+      confirmationMessages.push(
+        "Retrying failed exports should be used only when no Garmin workout was created by the previous attempt.",
+      );
+    }
+
+    const confirmed = window.confirm(confirmationMessages.join("\n\n"));
+
+    if (!confirmed) {
+      return;
+    }
+
+    setGarminBulkPublishing(true);
+    setGarminBulkPublishResult(null);
+    setMessage(null);
+
+    try {
+      const response = await fetch("/api/garmin/bulk-publish-workouts", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          trainingPlanId: plansState.activePlan.id,
+          windowDays: garminBulkPreview.windowDays,
+          includeRetryStatuses: includeGarminRetryStatuses,
+          stopOnError: stopGarminBulkOnError,
+        }),
+      });
+      const result =
+        (await response.json()) as GarminBulkPublishWorkoutsResponse;
+
+      setGarminBulkPublishResult(result);
+      setMessage(result.message);
+      setStatus(result.ok ? "ready" : "error");
+    } catch (error) {
+      setStatus("error");
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Could not publish Garmin workouts.",
+      );
+    } finally {
+      setGarminBulkPublishing(false);
+    }
+  }
+
+  async function handlePreviewGarminBulkMaintenance(
+    mode: GarminBulkMaintenanceMode,
+    windowDays: GarminBulkPublishWindowDays,
+  ) {
+    if (!plansState.activePlan) {
+      setStatus("error");
+      setMessage("Select an active plan before previewing Garmin maintenance.");
+      return;
+    }
+
+    setGarminMaintenancePreviewing({ mode, windowDays });
+    setGarminMaintenancePreview(null);
+    setGarminMaintenanceResult(null);
+    setSelectedGarminMaintenanceDeleteIds([]);
+    setGarminBulkPreview(null);
+    setGarminBulkPublishResult(null);
+    setMessage(null);
+
+    try {
+      const response = await fetch("/api/garmin/bulk-maintenance-preview", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          trainingPlanId: plansState.activePlan.id,
+          mode,
+          windowDays,
+        }),
+      });
+      const result =
+        (await response.json()) as GarminBulkMaintenancePreviewResponse;
+
+      setGarminMaintenancePreview(result);
+      setMessage(result.message);
+      setStatus(response.ok ? "ready" : "error");
+    } catch (error) {
+      setStatus("error");
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Could not preview Garmin bulk maintenance.",
+      );
+    } finally {
+      setGarminMaintenancePreviewing(null);
+    }
+  }
+
+  function handleToggleGarminMaintenanceDeleteSelection(
+    plannedWorkoutId: string,
+  ) {
+    setSelectedGarminMaintenanceDeleteIds((currentIds) =>
+      currentIds.includes(plannedWorkoutId)
+        ? currentIds.filter((currentId) => currentId !== plannedWorkoutId)
+        : [...currentIds, plannedWorkoutId],
+    );
+  }
+
+  async function handleExecuteGarminBulkMaintenance() {
+    if (!plansState.activePlan || !garminMaintenancePreview) {
+      setStatus("error");
+      setMessage("Preview Garmin bulk maintenance before executing it.");
+      return;
+    }
+
+    const isDeleteMode = garminMaintenancePreview.mode === "delete_selected";
+    const executeCount = isDeleteMode
+      ? selectedGarminMaintenanceDeleteIds.length
+      : garminMaintenancePreview.summary.readyCount;
+
+    if (executeCount === 0) {
+      setStatus("error");
+      setMessage(
+        isDeleteMode
+          ? "Select at least one Garmin export to delete."
+          : "There are no stale Garmin exports ready to update.",
+      );
+      return;
+    }
+
+    const confirmationMessages = isDeleteMode
+      ? [
+          `This will ask the local Garmin bridge to delete ${executeCount} Garmin export${executeCount === 1 ? "" : "s"}.`,
+          "This does not delete the planned workout from the app.",
+          "Confirm the result in Garmin Connect and on the watch afterward.",
+        ]
+      : [
+          `This will update ${executeCount} stale Garmin export${executeCount === 1 ? "" : "s"} sequentially.`,
+          "For each workout, the app will try to remove the old Garmin workout, then publish the current app version.",
+          "If Garmin removal fails, an older duplicate may remain in Garmin.",
+        ];
+    const confirmed = window.confirm(confirmationMessages.join("\n\n"));
+
+    if (!confirmed) {
+      return;
+    }
+
+    setGarminMaintenanceExecuting(true);
+    setGarminMaintenanceResult(null);
+    setMessage(null);
+
+    try {
+      const response = await fetch("/api/garmin/bulk-maintenance-execute", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          trainingPlanId: plansState.activePlan.id,
+          mode: garminMaintenancePreview.mode,
+          windowDays: garminMaintenancePreview.windowDays,
+          selectedPlannedWorkoutIds: isDeleteMode
+            ? selectedGarminMaintenanceDeleteIds
+            : [],
+          stopOnError: stopGarminMaintenanceOnError,
+        }),
+      });
+      const result =
+        (await response.json()) as GarminBulkMaintenanceExecuteResponse;
+
+      setGarminMaintenanceResult(result);
+      setMessage(result.message);
+      setStatus(result.ok ? "ready" : "error");
+    } catch (error) {
+      setStatus("error");
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Could not execute Garmin bulk maintenance.",
+      );
+    } finally {
+      setGarminMaintenanceExecuting(false);
+    }
+  }
+
   if (status === "loading") {
     return (
       <div className="rounded-md border border-slate-200 bg-white p-6 text-sm text-slate-600">
@@ -623,12 +1067,33 @@ export function TrainingPlanPanel() {
   const isGenerating = status === "generating";
   const isActivating = status === "activating";
   const isDeleting = status === "deleting";
-  const isBusy = isGenerating || isActivating || isDeleting;
+  const isGarminBulkBusy =
+    garminBulkPreviewingWindowDays !== null || garminBulkPublishing;
+  const isGarminMaintenanceBusy =
+    garminMaintenancePreviewing !== null || garminMaintenanceExecuting;
+  const isBusy =
+    isGenerating ||
+    isActivating ||
+    isDeleting ||
+    isGarminBulkBusy ||
+    isGarminMaintenanceBusy;
+  const isGarminBridgeConfigured = garminBridgeStatus?.enabled === true;
   const canGeneratePlan = Boolean(profile && raceGoal);
   const weeklyWorkoutGroups = groupWorkoutsByWeek(workouts);
   const plannedWorkoutById = buildPlannedWorkoutById(workouts);
   const planChangingAdjustments =
     filterPlanChangingAdjustments(planAdjustments).slice(0, 10);
+  const garminBulkPreviewPublishCount = garminBulkPreview
+    ? garminBulkPreview.summary.readyCount +
+      (includeGarminRetryStatuses
+        ? garminBulkPreview.summary.retryNeedsConfirmationCount
+        : 0)
+    : 0;
+  const garminMaintenanceExecuteCount = garminMaintenancePreview
+    ? garminMaintenancePreview.mode === "delete_selected"
+      ? selectedGarminMaintenanceDeleteIds.length
+      : garminMaintenancePreview.summary.readyCount
+    : 0;
 
   return (
     <div className="space-y-6">
@@ -871,16 +1336,58 @@ export function TrainingPlanPanel() {
                                 >
                                   Cancel
                                 </button>
-                                <button
-                                  className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-800 disabled:cursor-not-allowed disabled:opacity-60"
-                                  disabled={isDeletingThisPlan}
-                                  onClick={() => handleDeletePlan(plan)}
-                                  type="button"
-                                >
-                                  {isDeletingThisPlan
-                                    ? "Deleting..."
-                                    : "Delete permanently"}
-                                </button>
+                                {preview ? (
+                                  preview.futureGarminExportCount > 0 ? (
+                                    <>
+                                      <button
+                                        className="rounded-md border border-red-200 bg-white px-3 py-2 text-xs font-medium text-red-800 disabled:cursor-not-allowed disabled:opacity-60"
+                                        disabled={isDeletingThisPlan}
+                                        onClick={() =>
+                                          handleDeletePlan(plan, "app_only")
+                                        }
+                                        type="button"
+                                      >
+                                        Delete app plan only
+                                      </button>
+                                      <button
+                                        className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-800 disabled:cursor-not-allowed disabled:opacity-60"
+                                        disabled={isDeletingThisPlan}
+                                        onClick={() =>
+                                          handleDeletePlan(
+                                            plan,
+                                            "attempt_future_delete",
+                                          )
+                                        }
+                                        type="button"
+                                      >
+                                        {isDeletingThisPlan
+                                          ? "Deleting..."
+                                          : "Delete app plan and attempt Garmin cleanup"}
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <button
+                                      className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-800 disabled:cursor-not-allowed disabled:opacity-60"
+                                      disabled={isDeletingThisPlan}
+                                      onClick={() =>
+                                        handleDeletePlan(plan, "app_only")
+                                      }
+                                      type="button"
+                                    >
+                                      {isDeletingThisPlan
+                                        ? "Deleting..."
+                                        : "Delete permanently"}
+                                    </button>
+                                  )
+                                ) : (
+                                  <button
+                                    className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-800 opacity-60"
+                                    disabled
+                                    type="button"
+                                  >
+                                    Checking...
+                                  </button>
+                                )}
                               </>
                             ) : (
                               <button
@@ -941,16 +1448,51 @@ export function TrainingPlanPanel() {
                             {isConfirmingDelete ? (
                               <div className="mt-3 rounded-md border border-red-100 bg-red-50 p-3 text-sm text-red-800">
                                 {preview ? (
-                                  <p>
-                                    This will delete{" "}
-                                    {preview.plannedWorkoutCount} planned
-                                    workouts and{" "}
-                                    {preview.workoutEvaluationCount} workout
-                                    evaluations.{" "}
-                                    {preview.linkedLoggedWorkoutCount} logged
-                                    workouts will be kept but unlinked from this
-                                    plan.
-                                  </p>
+                                  <>
+                                    <p>
+                                      This will delete{" "}
+                                      {preview.plannedWorkoutCount} planned
+                                      workouts and{" "}
+                                      {preview.workoutEvaluationCount} workout
+                                      evaluations.{" "}
+                                      {preview.linkedLoggedWorkoutCount} logged
+                                      workouts will be kept but unlinked from
+                                      this plan.
+                                    </p>
+                                    {preview.futureGarminExportCount > 0 ? (
+                                      <div className="mt-3 border-t border-red-200 pt-3">
+                                        <p className="font-medium">
+                                          This plan has workouts already
+                                          exported to Garmin.
+                                        </p>
+                                        <p className="mt-1">
+                                          Choose whether to delete only the app
+                                          plan or also attempt to remove future
+                                          Garmin workouts. Garmin cleanup is
+                                          never automatic.
+                                        </p>
+                                        <ul className="mt-2 list-disc space-y-1 pl-5">
+                                          {preview.futureGarminExports.map(
+                                            (garminExport) => (
+                                              <li
+                                                key={`${garminExport.plannedWorkoutId}-${garminExport.garminWorkoutId}`}
+                                              >
+                                                {formatDate(
+                                                  garminExport.workoutDate,
+                                                )}{" "}
+                                                - {garminExport.title} (Garmin
+                                                ID:{" "}
+                                                {
+                                                  garminExport.garminWorkoutId
+                                                }
+                                                )
+                                              </li>
+                                            ),
+                                          )}
+                                        </ul>
+                                      </div>
+                                    ) : null}
+                                  </>
                                 ) : (
                                   <p>Checking related plan data...</p>
                                 )}
@@ -1112,6 +1654,622 @@ export function TrainingPlanPanel() {
               <dd className="mt-1 text-slate-600">{activePlan.total_weeks}</dd>
             </div>
           </dl>
+
+          {isGarminBridgeConfigured ? (
+            <div className="mt-6 rounded-md border border-amber-200 bg-amber-50 p-4 text-sm">
+              <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                <div>
+                  <h3 className="font-medium text-amber-950">
+                    Direct Garmin bulk publishing
+                  </h3>
+                  <p className="mt-1 text-amber-900">
+                    This previews upcoming workouts first. Nothing is sent to
+                    Garmin until you confirm the preview.
+                  </p>
+                  {garminBridgeStatus ? (
+                    <p className="mt-2 text-amber-900">
+                      Bridge status: {garminBridgeStatus.message}
+                    </p>
+                  ) : null}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    className="rounded-md border border-amber-300 bg-white px-3 py-2 text-sm font-medium text-amber-950 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
+                    disabled={isBusy}
+                    onClick={() => void handlePreviewGarminBulkPublish(7)}
+                    type="button"
+                  >
+                    {garminBulkPreviewingWindowDays === 7
+                      ? "Previewing..."
+                      : "Publish next 7 days to Garmin"}
+                  </button>
+                  <button
+                    className="rounded-md border border-amber-300 bg-white px-3 py-2 text-sm font-medium text-amber-950 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
+                    disabled={isBusy}
+                    onClick={() => void handlePreviewGarminBulkPublish(14)}
+                    type="button"
+                  >
+                    {garminBulkPreviewingWindowDays === 14
+                      ? "Previewing..."
+                      : "Publish next 14 days to Garmin"}
+                  </button>
+                </div>
+              </div>
+
+              {garminBulkPreview ? (
+                <div className="mt-4 rounded-md border border-amber-200 bg-white p-3">
+                  <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                    <div>
+                      <p className="font-medium text-slate-950">
+                        Garmin preview: next {garminBulkPreview.windowDays} days
+                      </p>
+                      <p className="mt-1 text-slate-700">
+                        {garminBulkPreview.message}
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
+                      <div>
+                        <p className="font-medium uppercase tracking-wide text-slate-500">
+                          Ready
+                        </p>
+                        <p
+                          className={`mt-1 ${getBulkSummaryCountClass(
+                            garminBulkPreview.summary.readyCount,
+                          )}`}
+                        >
+                          {garminBulkPreview.summary.readyCount}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="font-medium uppercase tracking-wide text-slate-500">
+                          Skipped
+                        </p>
+                        <p
+                          className={`mt-1 ${getBulkSummaryCountClass(
+                            garminBulkPreview.summary.skippedCount,
+                          )}`}
+                        >
+                          {garminBulkPreview.summary.skippedCount}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="font-medium uppercase tracking-wide text-slate-500">
+                          Confirm
+                        </p>
+                        <p
+                          className={`mt-1 ${getBulkSummaryCountClass(
+                            garminBulkPreview.summary
+                              .retryNeedsConfirmationCount,
+                          )}`}
+                        >
+                          {
+                            garminBulkPreview.summary
+                              .retryNeedsConfirmationCount
+                          }
+                        </p>
+                      </div>
+                      <div>
+                        <p className="font-medium uppercase tracking-wide text-slate-500">
+                          Invalid
+                        </p>
+                        <p
+                          className={`mt-1 ${getBulkSummaryCountClass(
+                            garminBulkPreview.summary.invalidCount,
+                          )}`}
+                        >
+                          {garminBulkPreview.summary.invalidCount}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 grid gap-2 md:grid-cols-2">
+                    <label className="flex items-start gap-2 text-slate-700">
+                      <input
+                        checked={includeGarminRetryStatuses}
+                        className="mt-1"
+                        disabled={isBusy}
+                        onChange={(event) =>
+                          setIncludeGarminRetryStatuses(event.target.checked)
+                        }
+                        type="checkbox"
+                      />
+                      <span>
+                        Include failed retries
+                      </span>
+                    </label>
+                    <label className="flex items-start gap-2 text-slate-700">
+                      <input
+                        checked={stopGarminBulkOnError}
+                        className="mt-1"
+                        disabled={isBusy}
+                        onChange={(event) =>
+                          setStopGarminBulkOnError(event.target.checked)
+                        }
+                        type="checkbox"
+                      />
+                      <span>Stop on first Garmin publish error</span>
+                    </label>
+                  </div>
+
+                  <div className="mt-3 overflow-x-auto">
+                    <table className="min-w-full text-left text-sm">
+                      <thead className="text-xs uppercase tracking-wide text-slate-500">
+                        <tr>
+                          <th className="py-2 pr-3 font-medium">Date</th>
+                          <th className="py-2 pr-3 font-medium">Workout</th>
+                          <th className="py-2 pr-3 font-medium">Type</th>
+                          <th className="py-2 pr-3 font-medium">Pace</th>
+                          <th className="py-2 pr-3 font-medium">Export</th>
+                          <th className="py-2 pr-3 font-medium">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 text-slate-700">
+                        {garminBulkPreview.workouts.map((workout) => (
+                          <tr key={workout.plannedWorkoutId}>
+                            <td className="py-2 pr-3">
+                              {formatDate(workout.workoutDate)}
+                            </td>
+                            <td className="py-2 pr-3">
+                              <p className="font-medium text-slate-950">
+                                {workout.title}
+                              </p>
+                              {workout.warnings.length > 0 ? (
+                                <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-amber-800">
+                                  {workout.warnings.map((warning) => (
+                                    <li key={warning}>{warning}</li>
+                                  ))}
+                                </ul>
+                              ) : null}
+                            </td>
+                            <td className="py-2 pr-3">
+                              {formatLabel(workout.workoutType)}
+                            </td>
+                            <td className="py-2 pr-3">
+                              {workout.paceTargetCount}
+                            </td>
+                            <td className="py-2 pr-3">
+                              {getGarminBulkExportStatusLabel(
+                                workout.exportStatus,
+                              )}
+                            </td>
+                            <td className="py-2 pr-3">
+                              <span
+                                className={`inline-flex w-fit rounded-md border px-2 py-1 text-xs font-medium ${getGarminBulkActionBadgeClass(
+                                  workout.action,
+                                )}`}
+                              >
+                                {getGarminBulkActionLabel(workout.action)}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="mt-4">
+                    <button
+                      className="rounded-md bg-amber-900 px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:bg-amber-300"
+                      disabled={isBusy || garminBulkPreviewPublishCount === 0}
+                      onClick={() => void handlePublishGarminBulk()}
+                      type="button"
+                    >
+                      {garminBulkPublishing
+                        ? "Publishing..."
+                        : `Confirm Garmin publish (${garminBulkPreviewPublishCount})`}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              {garminBulkPublishResult ? (
+                <div className="mt-4 rounded-md border border-amber-200 bg-white p-3">
+                  <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                    <div>
+                      <p className="font-medium text-slate-950">
+                        Garmin publish summary
+                      </p>
+                      <p className="mt-1 text-slate-700">
+                        {garminBulkPublishResult.message}
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
+                      <div>
+                        <p className="font-medium uppercase tracking-wide text-slate-500">
+                          Published
+                        </p>
+                        <p className="mt-1 text-slate-950">
+                          {garminBulkPublishResult.summary.publishedCount}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="font-medium uppercase tracking-wide text-slate-500">
+                          Skipped
+                        </p>
+                        <p className="mt-1 text-slate-950">
+                          {garminBulkPublishResult.summary.skippedCount}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="font-medium uppercase tracking-wide text-slate-500">
+                          Failed
+                        </p>
+                        <p className="mt-1 text-slate-950">
+                          {garminBulkPublishResult.summary.failedCount}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="font-medium uppercase tracking-wide text-slate-500">
+                          Partial
+                        </p>
+                        <p className="mt-1 text-slate-950">
+                          {garminBulkPublishResult.summary.partialCount}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 space-y-2">
+                    {garminBulkPublishResult.results.map((result) => (
+                      <div
+                        className="rounded-md border border-slate-100 p-3"
+                        key={result.plannedWorkoutId}
+                      >
+                        <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                          <div>
+                            <p className="font-medium text-slate-950">
+                              {formatDate(result.workoutDate)} - {result.title}
+                            </p>
+                            <p className="mt-1 text-slate-700">
+                              {result.message}
+                            </p>
+                            {result.garminWorkoutId ? (
+                              <p className="mt-1 text-slate-700">
+                                Garmin workout ID: {result.garminWorkoutId}
+                              </p>
+                            ) : null}
+                          </div>
+                          <span
+                            className={`inline-flex w-fit rounded-md border px-2 py-1 text-xs font-medium ${getGarminBulkResultBadgeClass(
+                              result.status,
+                            )}`}
+                          >
+                            {formatLabel(result.status)}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="mt-4 border-t border-amber-200 pt-4">
+                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                  <div>
+                    <h4 className="font-medium text-amber-950">
+                      Bulk maintenance
+                    </h4>
+                    <p className="mt-1 text-amber-900">
+                      Use this for existing Direct Garmin exports only. Preview
+                      first, then confirm the maintenance action.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      className="rounded-md border border-amber-300 bg-white px-3 py-2 text-sm font-medium text-amber-950 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
+                      disabled={isBusy}
+                      onClick={() =>
+                        void handlePreviewGarminBulkMaintenance(
+                          "update_stale",
+                          7,
+                        )
+                      }
+                      type="button"
+                    >
+                      {garminMaintenancePreviewing?.mode === "update_stale" &&
+                      garminMaintenancePreviewing.windowDays === 7
+                        ? "Previewing..."
+                        : "Update stale Garmin exports in next 7 days"}
+                    </button>
+                    <button
+                      className="rounded-md border border-amber-300 bg-white px-3 py-2 text-sm font-medium text-amber-950 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
+                      disabled={isBusy}
+                      onClick={() =>
+                        void handlePreviewGarminBulkMaintenance(
+                          "update_stale",
+                          14,
+                        )
+                      }
+                      type="button"
+                    >
+                      {garminMaintenancePreviewing?.mode === "update_stale" &&
+                      garminMaintenancePreviewing.windowDays === 14
+                        ? "Previewing..."
+                        : "Update stale Garmin exports in next 14 days"}
+                    </button>
+                    <button
+                      className="rounded-md border border-amber-300 bg-white px-3 py-2 text-sm font-medium text-amber-950 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
+                      disabled={isBusy}
+                      onClick={() =>
+                        void handlePreviewGarminBulkMaintenance(
+                          "delete_selected",
+                          7,
+                        )
+                      }
+                      type="button"
+                    >
+                      {garminMaintenancePreviewing?.mode ===
+                        "delete_selected" &&
+                      garminMaintenancePreviewing.windowDays === 7
+                        ? "Previewing..."
+                        : "Delete Garmin exports in next 7 days"}
+                    </button>
+                    <button
+                      className="rounded-md border border-amber-300 bg-white px-3 py-2 text-sm font-medium text-amber-950 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
+                      disabled={isBusy}
+                      onClick={() =>
+                        void handlePreviewGarminBulkMaintenance(
+                          "delete_selected",
+                          14,
+                        )
+                      }
+                      type="button"
+                    >
+                      {garminMaintenancePreviewing?.mode ===
+                        "delete_selected" &&
+                      garminMaintenancePreviewing.windowDays === 14
+                        ? "Previewing..."
+                        : "Delete Garmin exports in next 14 days"}
+                    </button>
+                  </div>
+                </div>
+
+                {garminMaintenancePreview ? (
+                  <div className="mt-4 rounded-md border border-amber-200 bg-white p-3">
+                    <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                      <div>
+                        <p className="font-medium text-slate-950">
+                          {getGarminMaintenanceModeLabel(
+                            garminMaintenancePreview.mode,
+                          )}
+                          : next {garminMaintenancePreview.windowDays} days
+                        </p>
+                        <p className="mt-1 text-slate-700">
+                          {garminMaintenancePreview.message}
+                        </p>
+                      </div>
+                      <div className="text-xs">
+                        <p className="font-medium uppercase tracking-wide text-slate-500">
+                          Ready
+                        </p>
+                        <p
+                          className={`mt-1 ${getBulkSummaryCountClass(
+                            garminMaintenancePreview.summary.readyCount,
+                          )}`}
+                        >
+                          {garminMaintenancePreview.summary.readyCount}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="mt-3">
+                      <label className="flex items-start gap-2 text-slate-700">
+                        <input
+                          checked={stopGarminMaintenanceOnError}
+                          className="mt-1"
+                          disabled={isBusy}
+                          onChange={(event) =>
+                            setStopGarminMaintenanceOnError(
+                              event.target.checked,
+                            )
+                          }
+                          type="checkbox"
+                        />
+                        <span>Stop on first Garmin maintenance error</span>
+                      </label>
+                    </div>
+
+                    <div className="mt-3 overflow-x-auto">
+                      <table className="min-w-full text-left text-sm">
+                        <thead className="text-xs uppercase tracking-wide text-slate-500">
+                          <tr>
+                            {garminMaintenancePreview.mode ===
+                            "delete_selected" ? (
+                              <th className="py-2 pr-3 font-medium">Select</th>
+                            ) : null}
+                            <th className="py-2 pr-3 font-medium">Date</th>
+                            <th className="py-2 pr-3 font-medium">Workout</th>
+                            <th className="py-2 pr-3 font-medium">Status</th>
+                            <th className="py-2 pr-3 font-medium">
+                              Garmin ID
+                            </th>
+                            <th className="py-2 pr-3 font-medium">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 text-slate-700">
+                          {garminMaintenancePreview.workouts.map((workout) => (
+                            <tr key={workout.plannedWorkoutId}>
+                              {garminMaintenancePreview.mode ===
+                              "delete_selected" ? (
+                                <td className="py-2 pr-3">
+                                  <input
+                                    checked={selectedGarminMaintenanceDeleteIds.includes(
+                                      workout.plannedWorkoutId,
+                                    )}
+                                    disabled={isBusy}
+                                    onChange={() =>
+                                      handleToggleGarminMaintenanceDeleteSelection(
+                                        workout.plannedWorkoutId,
+                                      )
+                                    }
+                                    type="checkbox"
+                                  />
+                                </td>
+                              ) : null}
+                              <td className="py-2 pr-3">
+                                {formatDate(workout.workoutDate)}
+                              </td>
+                              <td className="py-2 pr-3">
+                                <p className="font-medium text-slate-950">
+                                  {workout.title}
+                                </p>
+                                {workout.warnings.length > 0 ? (
+                                  <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-amber-800">
+                                    {workout.warnings.map((warning) => (
+                                      <li key={warning}>{warning}</li>
+                                    ))}
+                                  </ul>
+                                ) : null}
+                              </td>
+                              <td className="py-2 pr-3">
+                                {getGarminBulkExportStatusLabel(
+                                  workout.currentStatus,
+                                )}
+                              </td>
+                              <td className="py-2 pr-3">
+                                {workout.garminWorkoutId}
+                              </td>
+                              <td className="py-2 pr-3">
+                                <span
+                                  className={`inline-flex w-fit rounded-md border px-2 py-1 text-xs font-medium ${getGarminMaintenanceActionBadgeClass(
+                                    workout.plannedAction,
+                                  )}`}
+                                >
+                                  {getGarminMaintenanceActionLabel(
+                                    workout.plannedAction,
+                                  )}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div className="mt-4">
+                      <button
+                        className="rounded-md bg-amber-900 px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:bg-amber-300"
+                        disabled={
+                          isBusy || garminMaintenanceExecuteCount === 0
+                        }
+                        onClick={() =>
+                          void handleExecuteGarminBulkMaintenance()
+                        }
+                        type="button"
+                      >
+                        {garminMaintenanceExecuting
+                          ? "Running maintenance..."
+                          : `Confirm Garmin maintenance (${garminMaintenanceExecuteCount})`}
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+
+                {garminMaintenanceResult ? (
+                  <div className="mt-4 rounded-md border border-amber-200 bg-white p-3">
+                    <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                      <div>
+                        <p className="font-medium text-slate-950">
+                          Garmin maintenance summary
+                        </p>
+                        <p className="mt-1 text-slate-700">
+                          {garminMaintenanceResult.message}
+                        </p>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 text-xs md:grid-cols-5">
+                        <div>
+                          <p className="font-medium uppercase tracking-wide text-slate-500">
+                            Updated
+                          </p>
+                          <p className="mt-1 text-slate-950">
+                            {garminMaintenanceResult.summary.updatedCount}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="font-medium uppercase tracking-wide text-slate-500">
+                            Deleted
+                          </p>
+                          <p className="mt-1 text-slate-950">
+                            {garminMaintenanceResult.summary.deletedCount}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="font-medium uppercase tracking-wide text-slate-500">
+                            Failed
+                          </p>
+                          <p className="mt-1 text-slate-950">
+                            {garminMaintenanceResult.summary.failedCount}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="font-medium uppercase tracking-wide text-slate-500">
+                            Partial
+                          </p>
+                          <p className="mt-1 text-slate-950">
+                            {garminMaintenanceResult.summary.partialCount}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="font-medium uppercase tracking-wide text-slate-500">
+                            Skipped
+                          </p>
+                          <p className="mt-1 text-slate-950">
+                            {garminMaintenanceResult.summary.skippedCount}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 space-y-2">
+                      {garminMaintenanceResult.results.map((result) => (
+                        <div
+                          className="rounded-md border border-slate-100 p-3"
+                          key={result.plannedWorkoutId}
+                        >
+                          <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                            <div>
+                              <p className="font-medium text-slate-950">
+                                {formatDate(result.workoutDate)} -{" "}
+                                {result.title}
+                              </p>
+                              <p className="mt-1 text-slate-700">
+                                {result.message}
+                              </p>
+                              {result.resultGarminWorkoutId ? (
+                                <p className="mt-1 text-slate-700">
+                                  Garmin workout ID:{" "}
+                                  {result.resultGarminWorkoutId}
+                                </p>
+                              ) : (
+                                <p className="mt-1 text-slate-700">
+                                  Garmin workout ID: {result.garminWorkoutId}
+                                </p>
+                              )}
+                              {result.warnings.length > 0 ? (
+                                <ul className="mt-2 list-disc space-y-1 pl-5 text-amber-800">
+                                  {result.warnings.map((warning) => (
+                                    <li key={warning}>{warning}</li>
+                                  ))}
+                                </ul>
+                              ) : null}
+                            </div>
+                            <span
+                              className={`inline-flex w-fit rounded-md border px-2 py-1 text-xs font-medium ${getGarminMaintenanceResultBadgeClass(
+                                result.status,
+                              )}`}
+                            >
+                              {formatLabel(result.status)}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
 
           <div className="mt-6 space-y-6">
             {weeklyWorkoutGroups.map((weekGroup) => (

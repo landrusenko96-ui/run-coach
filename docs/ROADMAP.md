@@ -59,7 +59,7 @@ Everything else is secondary until this loop works reliably.
 
 | Feature | Feasible? | Why postpone |
 |---|---:|---|
-| Direct Garmin workout push | Maybe, but hard | Direct Garmin Training API access may require developer program approval. Use Intervals.icu first. |
+| Official/public Direct Garmin workout push | Maybe, but hard | Garmin Training API access may require developer program approval. Use Intervals.icu first. The local bridge remains personal and experimental. |
 | Garmin direct activity import | Maybe, but hard | Strava is the simpler bridge from Garmin Connect. |
 | Global marathon database with prices | Partly | Dates are findable; prices, participants, and course metadata are inconsistent. |
 | Route generation | Hard | Requires maps, routing, and elevation data. Usually API-dependent. |
@@ -117,7 +117,7 @@ Do not include yet:
 - Spotify;
 - race marketplace;
 - route generation;
-- direct Garmin API integration;
+- official/public direct Garmin API integration;
 - gear rewards;
 - social sharing;
 - price tracking;
@@ -744,14 +744,14 @@ Keep the manual refresh button as a fallback.
 
 ### Phase 14 - Garmin workout export helper
 
-Keep this as a fallback if Intervals.icu to Garmin sync is unavailable or a workout type does not transfer correctly. Direct Garmin workout publishing may still be difficult because Garmin Training API access may require developer approval.
+Keep this as a fallback if Intervals.icu to Garmin sync is unavailable or a workout type does not transfer correctly. Official direct Garmin workout publishing may still be difficult because Garmin Training API access may require developer approval. The separate local Garmin bridge in Milestone 6C is an experimental personal-use workaround, not an official public Garmin integration.
 
 **Practical workaround:**
 
 1. show workout clearly in the app;
 2. format workout steps for easy Garmin Connect recreation;
 3. optionally generate text export;
-4. keep direct Garmin API integration for much later.
+4. keep official direct Garmin API integration for much later.
 
 **Codex prompt:**
 
@@ -760,7 +760,7 @@ Add Garmin workout export helper.
 For each planned workout, show structured workout steps:
 warmup, intervals, recoveries, cooldown.
 Format them in a way that is easy to manually recreate in Garmin Connect.
-Do not attempt direct Garmin API integration yet.
+Do not attempt official direct Garmin API integration yet.
 ```
 
 ---
@@ -773,9 +773,20 @@ Test whether the app can publish structured workouts directly to Garmin Connect 
 
 **Status:**
 
-Experimental secondary export path. Intervals.icu remains the primary supported export path. New-login authentication is moving forward with python-garminconnect after the Garth path failed for new login.
+Experimental secondary export path. Intervals.icu remains the primary supported export path. New-login authentication moved forward with `python-garminconnect==0.3.3` after the Garth path failed for new login.
 
 Manual validation on 2026-05-13 confirmed one simple pace-targeted running workout uploaded through the bridge appeared on the Forerunner with pace targets visible on the watch.
+
+The app now has a local Direct Garmin workflow for personal use:
+
+- Settings page troubleshooting status for the local bridge.
+- Single-workout preview and publish UI.
+- Plan-page bulk preview and sequential publish for the next 7 or 14 days.
+- Bulk maintenance for stale-update and selected delete workflows.
+- Plan deletion choices for app-only deletion or explicit future Garmin cleanup.
+- Server-side bridge client that keeps `GARMIN_BRIDGE_API_KEY` out of the browser.
+- Export history in `workout_exports`.
+- Duplicate, stale, partial, update, and local deleted-status guardrails.
 
 **Architecture:**
 
@@ -794,6 +805,30 @@ Next.js app → local Python FastAPI bridge → Garmin Connect internal API via 
 - App stores Garmin export status and Garmin workout ID if available.
 - Failure states are explicit; no silent success.
 
+**Current supported workflow:**
+
+- Start the local bridge on `127.0.0.1`.
+- Authenticate Garmin once through the bridge terminal.
+- Configure the Next.js app with `GARMIN_BRIDGE_URL` and `GARMIN_BRIDGE_API_KEY`.
+- Use Settings to check bridge configuration, reachability, auth status, client version, and safe errors.
+- Preview a planned run before publishing to confirm step count and pace target count.
+- Publish a single planned workout directly to Garmin.
+- Bulk publish eligible active-plan workouts for the next 7 or 14 days sequentially.
+- Update stale Garmin exports manually so the old Garmin workout is removed or unscheduled before the current app version is published.
+- Delete selected future Garmin exports manually.
+- During plan deletion, choose app-only deletion or explicit best-effort cleanup of future Garmin exports.
+- Store every real publish attempt in `workout_exports`.
+
+**Supported workout shapes:**
+
+- Run workouts only.
+- Time-based and distance-based executable steps.
+- Pace targets in `sec_per_km`.
+- One-level repeat blocks for interval workouts.
+- Warmup, work, recovery, cooldown, and rest step types.
+
+Unsupported cases fail before Garmin is called when possible.
+
 **Validated checkpoint:**
 
 - Test workout: Run Coach Garmin Pace Test May 13.
@@ -807,8 +842,15 @@ Next.js app → local Python FastAPI bridge → Garmin Connect internal API via 
 - Personal use only.
 - Unofficial Garmin API; can break without notice.
 - Do not store Garmin password in Supabase or Next.js.
+- Do not store Garmin tokens, cookies, session files, request headers, or full Garmin responses in Supabase or Next.js.
 - Do not expose the local bridge publicly.
 - Keep Intervals.icu fallback.
+- Manual Garmin deletion and stale-export update are available.
+- Known limitation: automatic Garmin deletion/update is not built. Garmin cleanup happens only after a direct user action or an explicit plan-deletion cleanup choice.
+- Already synced workouts are skipped by default to avoid Garmin clutter.
+- Failed Direct Garmin exports can be retried only when no Garmin workout ID was created.
+- Stale and partial Direct Garmin exports are not republished into duplicate Garmin workouts; use update or delete maintenance instead.
+- If the app changes a future planned workout after Direct Garmin export, the export should be marked stale: `Changed after Garmin export — update if needed`.
 
 ---
 
@@ -1195,6 +1237,12 @@ Workout appears in Garmin Connect and on Forerunner
 Pace targets appear correctly on watch
 Garmin export status and Garmin workout ID are stored if available
 Failures are explicit, with no silent success
+Settings page can troubleshoot bridge configuration, reachability, auth, and client version
+Single-workout preview and publish use Next.js server routes, not direct browser-to-bridge calls
+Bulk publishing supports next 7 or 14 days with preview, sequential publish, and retry guardrails
+workout_exports records Direct Garmin attempts and supports synced, failed, partial, stale, and deleted states
+Manual Garmin delete and stale-update are available
+No silent automatic Garmin deletion or update
 Intervals.icu remains the primary supported export path
 ```
 

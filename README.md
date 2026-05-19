@@ -6,7 +6,7 @@ Run.B*tch.app is a private web app for adaptive marathon preparation. The long-t
 
 Runner profile -> Race goal -> Training plan -> Workout logging -> Workout evaluation -> Plan adjustment -> Updated plan
 
-The most important future feature is the adaptive training plan. This repository currently contains only the initial app skeleton.
+The most important feature is the adaptive training plan. This repository now contains the early private MVP flow for profile setup, race goals, rule-based plan generation, manual workout logging, workout scoring, plan adjustment, dashboard status, Intervals.icu planned-workout publishing, and an experimental local-only direct Garmin export bridge.
 
 ## How to run locally
 
@@ -33,18 +33,97 @@ Useful checks after dependencies are installed:
 ```bash
 npm run typecheck
 npm run lint
+npm test
 ```
 
 ## Current status
 
-- Next.js App Router project structure is in place.
-- TypeScript is configured.
-- Tailwind CSS is configured for minimal styling.
+- Next.js App Router, TypeScript, and Tailwind CSS are configured.
 - Basic navigation exists for Dashboard, Profile, Goal, Plan, Workouts, and Settings.
-- Each page contains placeholder content only.
-- Shared training-related types are defined in `/types`.
-- Training logic files exist as placeholders in `/lib/training`.
-- Supabase, Strava, authentication, and real training logic are not connected yet.
+- Profile and race goal forms save to Supabase.
+- Rule-based plan generation creates planned workouts and structured workout documents.
+- Manual workout logging saves completed workouts and generates rule-based workout scores.
+- Plan adjustment logic can update future planned workouts with an audit record.
+- Dashboard shows current plan status, recent logs, recent scores, and latest adjustment summary.
+- Intervals.icu publishing exists for planned run workouts using server-only environment variables. It remains the primary export path.
+- Direct Garmin publishing exists as an experimental local-only bridge in `local-garmin-bridge/`.
+- The Direct Garmin bridge uses `python-garminconnect==0.3.3`, a locally saved Garmin session, and a FastAPI service bound to `127.0.0.1`.
+- Direct Garmin publishing has been manually verified to create Garmin workouts with pace targets visible on a Forerunner watch.
+- The app can preview, single-publish, and bulk-publish upcoming eligible workouts to the local Garmin bridge through server routes.
+- Garmin direct export attempts are tracked in `workout_exports`, including success, failure, partial, stale, and locally deleted states.
+- Direct Garmin duplicate guardrails are built: already-exported workouts are not republished into Garmin; stale workouts use the manual update flow instead.
+- Direct Garmin manual delete, manual stale-update, bulk publish, bulk maintenance, and explicit plan-deletion cleanup choices are available.
+- Known limitation: automatic Garmin deletion/update is not built. The app only changes Garmin workouts after a direct user action.
+- Settings includes a Direct Garmin Bridge troubleshooting panel.
+- Strava import, authentication, RLS policies, gear tracking, and AI feedback are not built yet.
+
+## Environment variables
+
+Copy `.env.example` to `.env.local` and fill in your own values.
+
+Supabase:
+
+```text
+NEXT_PUBLIC_SUPABASE_URL
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+NEXT_PUBLIC_SUPABASE_ANON_KEY
+```
+
+Intervals.icu:
+
+```text
+INTERVALS_ATHLETE_ID
+INTERVALS_API_KEY
+```
+
+Keep `INTERVALS_API_KEY` server-only. Do not prefix it with `NEXT_PUBLIC_`.
+
+Direct Garmin local bridge:
+
+```text
+GARMIN_BRIDGE_URL
+GARMIN_BRIDGE_API_KEY
+```
+
+For local development, the usual bridge URL is:
+
+```text
+GARMIN_BRIDGE_URL=http://127.0.0.1:8765
+```
+
+Keep `GARMIN_BRIDGE_API_KEY` server-only. Do not prefix it with `NEXT_PUBLIC_`. The browser must never receive the bridge key.
+
+The bridge has its own local-only environment variable with the same key value:
+
+```bash
+cd local-garmin-bridge
+source .venv/bin/activate
+export GARMIN_BRIDGE_API_KEY="replace-with-a-long-random-local-key"
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8765
+```
+
+Garmin login happens only in the local bridge terminal. Do not store Garmin usernames, passwords, tokens, cookies, or session files in Supabase, Next.js, `.env.local`, screenshots, docs, or commits.
+
+## Direct Garmin Bridge Notes
+
+Intervals.icu remains the primary supported export path. The Direct Garmin bridge is experimental, local-only, and personal-use only.
+
+Use it when you specifically need Garmin pace targets that Intervals.icu does not preserve reliably. The Direct Garmin path has been manually verified to publish pace targets to a Forerunner watch, but it uses unofficial Garmin Connect internals through `python-garminconnect==0.3.3`, so it can break without notice.
+
+To use Direct Garmin locally:
+
+1. Start the bridge from `local-garmin-bridge/`.
+2. Make sure `GARMIN_BRIDGE_API_KEY` is exported in the bridge terminal.
+3. Make sure the Next.js `.env.local` has matching `GARMIN_BRIDGE_URL` and `GARMIN_BRIDGE_API_KEY`.
+4. Authenticate Garmin once through the bridge terminal.
+5. Check Settings -> Direct Garmin Bridge status before publishing.
+
+Common fixes:
+
+- Bridge not configured: set `GARMIN_BRIDGE_URL` and `GARMIN_BRIDGE_API_KEY` in `.env.local`.
+- Bridge not running: run `cd local-garmin-bridge && source .venv/bin/activate && python -m uvicorn app.main:app --host 127.0.0.1 --port 8765`.
+- Auth missing or token invalid: run the Garmin auth helper and complete login/MFA in the bridge terminal.
+- Already exported workout: use Update Garmin Export for stale workouts or Delete from Garmin before publishing again. The app intentionally does not offer duplicate-creating republish.
 
 ## Folder structure
 
@@ -52,17 +131,23 @@ npm run lint
 /app               Next.js App Router pages and root layout
 /components        Shared React components
 /lib               Shared application utilities
-/lib/training      Future training plan, scoring, adjustment, and prediction logic
-/lib/db            Future database utilities
+/lib/training      Rule-based plan, scoring, adjustment, and dashboard logic
+/lib/db            Supabase database utilities
+/lib/intervals     Intervals.icu publishing utilities
+/lib/garminBridge  Server-only Next.js client for the local Garmin bridge
 /lib/strava        Future Strava import utilities
+/local-garmin-bridge  Separate local Python FastAPI Garmin bridge
+/supabase          Database migrations
+/tests             Node test suite for training and integration helpers
 /types             Shared TypeScript types
 ```
 
 ## Next planned milestone
 
-Build the Profile milestone:
+Continue tightening the adaptive training loop before adding broad new features:
 
-- Add a simple runner profile form.
-- Store profile data locally in component state or a temporary mock object.
-- Keep all profile types in `/types`.
-- Keep any non-UI profile logic outside React components.
+- keep training logic deterministic and rule-based;
+- finish the dashboard projection work;
+- keep Intervals.icu as the primary workout export path;
+- treat the direct Garmin local bridge as experimental even though pace-target publishing has been manually verified;
+- keep Garmin cleanup explicit and user-confirmed; do not add silent automatic Garmin deletion/update.

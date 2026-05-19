@@ -1,5 +1,15 @@
 import { getSupabaseClient } from "@/lib/db/supabaseClient";
-import type { PlannedWorkout, TrainingPlan } from "@/types/training";
+import {
+  buildFutureGarminPlanDeleteCandidates,
+  toGarminPlanDeletePreviewWorkout,
+} from "@/lib/garminBridge/planDeletion";
+import { getTodayDateText } from "@/lib/garminBridge/publishSelection";
+import type {
+  GarminPlanDeletePreviewWorkout,
+  PlannedWorkout,
+  TrainingPlan,
+  WorkoutExport,
+} from "@/types/training";
 
 export type SaveTrainingPlanInput = Omit<
   TrainingPlan,
@@ -20,6 +30,8 @@ export type TrainingPlanDeletePreview = {
   plannedWorkoutCount: number;
   workoutEvaluationCount: number;
   linkedLoggedWorkoutCount: number;
+  futureGarminExportCount: number;
+  futureGarminExports: GarminPlanDeletePreviewWorkout[];
 };
 
 export type DeleteTrainingPlanResult = {
@@ -183,14 +195,15 @@ export async function fetchTrainingPlanDeletePreview(
   const { data: plannedWorkoutRows, error: plannedWorkoutError } =
     await supabase
       .from("planned_workouts")
-      .select("id")
+      .select("*")
       .eq("training_plan_id", trainingPlanId);
 
   if (plannedWorkoutError) {
     throw new Error(plannedWorkoutError.message);
   }
 
-  const plannedWorkoutIds = ((plannedWorkoutRows ?? []) as IdRow[]).map(
+  const plannedWorkouts = (plannedWorkoutRows ?? []) as PlannedWorkout[];
+  const plannedWorkoutIds = plannedWorkouts.map(
     (plannedWorkout) => plannedWorkout.id,
   );
   const evaluationIds = new Set<string>();
@@ -276,10 +289,28 @@ export async function fetchTrainingPlanDeletePreview(
     }
   }
 
+  const { data: workoutExportRows, error: workoutExportError } = await supabase
+    .from("workout_exports")
+    .select("*")
+    .eq("training_plan_id", trainingPlanId)
+    .eq("export_provider", "garmin_direct");
+
+  if (workoutExportError) {
+    throw new Error(workoutExportError.message);
+  }
+
+  const futureGarminExports = buildFutureGarminPlanDeleteCandidates({
+    workouts: plannedWorkouts,
+    workoutExports: (workoutExportRows ?? []) as WorkoutExport[],
+    todayDateText: getTodayDateText(),
+  }).map(toGarminPlanDeletePreviewWorkout);
+
   return {
     plannedWorkoutCount: plannedWorkoutIds.length,
     workoutEvaluationCount: evaluationIds.size,
     linkedLoggedWorkoutCount: loggedWorkoutIds.size,
+    futureGarminExportCount: futureGarminExports.length,
+    futureGarminExports,
   };
 }
 

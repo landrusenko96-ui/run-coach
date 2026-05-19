@@ -104,6 +104,21 @@ export type IntervalsWorkoutSyncStatus =
   | "failed"
   | "deleted";
 
+export type WorkoutExportProvider = "intervals_icu" | "garmin_direct";
+
+export type WorkoutExportMode =
+  | "single_publish"
+  | "bulk_publish"
+  | "manual_update";
+
+export type WorkoutExportSyncStatus =
+  | "not_synced"
+  | "synced"
+  | "failed"
+  | "stale"
+  | "deleted"
+  | "partial";
+
 export type IntervalsPublishWorkoutResult = {
   plannedWorkoutId: string;
   title: string | null;
@@ -118,6 +133,133 @@ export type IntervalsBulkPublishWorkoutsResponse = {
   ok: boolean;
   message: string;
   results: IntervalsPublishWorkoutResult[];
+};
+
+export type GarminBulkPublishWindowDays = 7 | 14;
+
+export type GarminBulkExportStatus =
+  | WorkoutExportSyncStatus
+  | "not_synced";
+
+export type GarminBulkWorkoutAction =
+  | "publish"
+  | "skip_synced"
+  | "needs_confirmation"
+  | "invalid";
+
+export type GarminBulkPreviewWorkout = {
+  plannedWorkoutId: string;
+  workoutDate: string;
+  title: string;
+  workoutType: WorkoutType;
+  exportStatus: GarminBulkExportStatus;
+  action: GarminBulkWorkoutAction;
+  paceTargetCount: number;
+  warnings: string[];
+  previewOk: boolean;
+  previewMessage: string;
+};
+
+export type GarminBulkPublishSummary = {
+  publishedCount: number;
+  skippedCount: number;
+  failedCount: number;
+  partialCount: number;
+  readyCount: number;
+  retryNeedsConfirmationCount: number;
+  invalidCount: number;
+};
+
+export type GarminBulkPreviewWorkoutsResponse = {
+  ok: boolean;
+  message: string;
+  trainingPlanId: string;
+  windowDays: GarminBulkPublishWindowDays;
+  summary: GarminBulkPublishSummary;
+  workouts: GarminBulkPreviewWorkout[];
+};
+
+export type GarminBulkPublishWorkoutResult = GarminBulkPreviewWorkout & {
+  ok: boolean;
+  status: string;
+  message: string;
+  garminWorkoutId: string | null;
+  exportRecord: WorkoutExport | null;
+};
+
+export type GarminBulkPublishWorkoutsResponse = {
+  ok: boolean;
+  message: string;
+  trainingPlanId: string;
+  windowDays: GarminBulkPublishWindowDays;
+  summary: GarminBulkPublishSummary;
+  results: GarminBulkPublishWorkoutResult[];
+};
+
+export type GarminBulkMaintenanceMode = "update_stale" | "delete_selected";
+
+export type GarminBulkMaintenanceAction = "update" | "delete" | "skip";
+
+export type GarminBulkMaintenanceWorkout = {
+  plannedWorkoutId: string;
+  workoutDate: string;
+  title: string;
+  workoutType: WorkoutType;
+  currentStatus: GarminBulkExportStatus;
+  garminWorkoutId: string;
+  plannedAction: GarminBulkMaintenanceAction;
+  warnings: string[];
+};
+
+export type GarminBulkMaintenanceSummary = {
+  updatedCount: number;
+  deletedCount: number;
+  failedCount: number;
+  partialCount: number;
+  skippedCount: number;
+  readyCount: number;
+};
+
+export type GarminBulkMaintenancePreviewResponse = {
+  ok: boolean;
+  message: string;
+  trainingPlanId: string;
+  mode: GarminBulkMaintenanceMode;
+  windowDays: GarminBulkPublishWindowDays;
+  summary: GarminBulkMaintenanceSummary;
+  workouts: GarminBulkMaintenanceWorkout[];
+};
+
+export type GarminBulkMaintenanceResult = GarminBulkMaintenanceWorkout & {
+  ok: boolean;
+  status: string;
+  message: string;
+  resultGarminWorkoutId: string | null;
+  exportRecord: WorkoutExport | null;
+};
+
+export type GarminBulkMaintenanceExecuteResponse = {
+  ok: boolean;
+  message: string;
+  trainingPlanId: string;
+  mode: GarminBulkMaintenanceMode;
+  windowDays: GarminBulkPublishWindowDays;
+  summary: GarminBulkMaintenanceSummary;
+  results: GarminBulkMaintenanceResult[];
+};
+
+export type GarminPlanDeleteCleanupMode =
+  | "app_only"
+  | "attempt_future_delete";
+
+export type GarminPlanDeletePreviewWorkout = {
+  plannedWorkoutId: string;
+  workoutDate: string;
+  title: string;
+  workoutType: WorkoutType;
+  currentStatus: GarminBulkExportStatus;
+  garminWorkoutId: string;
+  warnings: string[];
 };
 
 export type Profile = {
@@ -179,6 +321,26 @@ export type IntervalsWorkoutSync = {
   sync_status: IntervalsWorkoutSyncStatus;
   last_synced_at: string | null;
   last_error: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type WorkoutExport = {
+  id: string;
+  planned_workout_id: string | null;
+  training_plan_id: string | null;
+  profile_id: string;
+  export_provider: WorkoutExportProvider;
+  export_mode: WorkoutExportMode;
+  provider_workout_id: string | null;
+  provider_schedule_id: string | null;
+  sync_status: WorkoutExportSyncStatus;
+  scheduled_date: string | null;
+  last_synced_at: string | null;
+  last_verified_at: string | null;
+  last_error: string | null;
+  warnings: string[];
+  payload_snapshot: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
 };

@@ -17,6 +17,10 @@ import {
   fetchIntervalsWorkoutSyncsForTrainingPlan,
   markSyncedIntervalsWorkoutSyncsNeedsResync,
 } from "@/lib/db/intervalsWorkoutSyncs";
+import {
+  fetchWorkoutExportsForTrainingPlan,
+  markSyncedGarminWorkoutExportsStale,
+} from "@/lib/db/workoutExports";
 import { fetchFirstProfile } from "@/lib/db/profiles";
 import { fetchRaceGoalById } from "@/lib/db/raceGoals";
 import { fetchActiveTrainingPlanWithWorkouts } from "@/lib/db/trainingPlans";
@@ -64,6 +68,8 @@ import type {
   IntervalsPublishWorkoutResult,
   IntervalsWorkoutSync,
   IntervalsWorkoutSyncStatus,
+  WorkoutExport,
+  WorkoutExportSyncStatus,
 } from "@/types";
 
 type DeleteWorkoutRollbackResult = {
@@ -87,6 +93,89 @@ type PublishWorkoutResponse = {
   message: string;
 };
 
+type GarminBridgeStatusResponse = {
+  ok: boolean;
+  enabled: boolean;
+  status: string;
+  message: string;
+};
+
+type GarminTargetSummary = {
+  target_type: string;
+  target_min: number | null;
+  target_max: number | null;
+  target_unit: string | null;
+  display: string;
+};
+
+type GarminPreviewResponse = {
+  ok: boolean;
+  target_summary: GarminTargetSummary;
+  step_count: number;
+  repeat_count: number;
+  pace_target_count: number;
+  hr_target_count: number;
+  warnings: string[];
+  error: string | null;
+  garmin_payload_preview: Record<string, unknown> | null;
+};
+
+type GarminPreviewApiResponse = {
+  ok: boolean;
+  status: string;
+  plannedWorkoutId: string;
+  message: string;
+  preview: GarminPreviewResponse | null;
+};
+
+type GarminPublishResponse = {
+  ok: boolean;
+  status: string;
+  plannedWorkoutId: string;
+  message: string;
+  publish: {
+    ok: boolean;
+    status: string;
+    garmin_workout_id: string | null;
+    garmin_schedule_id: string | null;
+    scheduled_date: string | null;
+    warnings: string[];
+    error: string | null;
+    target_summary: GarminTargetSummary;
+  } | null;
+  exportRecord: WorkoutExport | null;
+  trackingError: string | null;
+};
+
+type GarminDeleteResponse = {
+  ok: boolean;
+  status: string;
+  plannedWorkoutId: string;
+  message: string;
+  deleteResult: {
+    ok: boolean;
+    status: string;
+    planned_workout_id: string;
+    garmin_workout_id: string;
+    warnings: string[];
+    error: string | null;
+  } | null;
+  exportRecord: WorkoutExport | null;
+  trackingError: string | null;
+};
+
+type GarminUpdateResponse = {
+  ok: boolean;
+  status: string;
+  plannedWorkoutId: string;
+  message: string;
+  deleteResult: GarminDeleteResponse["deleteResult"];
+  publish: GarminPublishResponse["publish"];
+  exportRecord: WorkoutExport | null;
+  oldExportRecord: WorkoutExport | null;
+  trackingError: string | null;
+};
+
 type BulkPublishSelectionState = {
   defaultKey: string;
   selectedWorkoutIds: string[];
@@ -101,6 +190,7 @@ type WorkoutsState = {
   workoutEvaluations: WorkoutEvaluation[];
   planAdjustments: PlanAdjustment[];
   intervalsWorkoutSyncs: IntervalsWorkoutSync[];
+  workoutExports: WorkoutExport[];
 };
 
 type FormState = {
@@ -127,6 +217,7 @@ const emptyState: WorkoutsState = {
   workoutEvaluations: [],
   planAdjustments: [],
   intervalsWorkoutSyncs: [],
+  workoutExports: [],
 };
 
 const emptyForm: FormState = {
@@ -311,6 +402,125 @@ function getIntervalsSyncStatusBadgeClass(
   return "border-slate-200 bg-white text-slate-600";
 }
 
+function getEffectiveGarminExportStatus(
+  exportRecord: WorkoutExport | null,
+): WorkoutExportSyncStatus | "not_synced" {
+  if (!exportRecord) {
+    return "not_synced";
+  }
+
+  if (
+    exportRecord.sync_status === "failed" &&
+    exportRecord.provider_workout_id &&
+    exportRecord.last_error === "Garmin workout published and scheduled."
+  ) {
+    return "synced";
+  }
+
+  return exportRecord.sync_status;
+}
+
+function getGarminExportError(exportRecord: WorkoutExport | null): string | null {
+  if (
+    exportRecord?.sync_status === "failed" &&
+    exportRecord.provider_workout_id &&
+    exportRecord.last_error === "Garmin workout published and scheduled."
+  ) {
+    return null;
+  }
+
+  return exportRecord?.last_error ?? null;
+}
+
+function getGarminExportStatusLabel(exportRecord: WorkoutExport | null): string {
+  if (!exportRecord) {
+    return "Not exported";
+  }
+
+  const syncStatus = getEffectiveGarminExportStatus(exportRecord);
+
+  if (syncStatus === "partial") {
+    return "Partial";
+  }
+
+  if (syncStatus === "stale") {
+    return "Changed after Garmin export — update if needed";
+  }
+
+  if (syncStatus === "not_synced") {
+    return "Not exported";
+  }
+
+  return formatLabel(syncStatus);
+}
+
+function getGarminExportStatusBadgeClass(
+  syncStatus: WorkoutExportSyncStatus | "not_synced",
+): string {
+  if (syncStatus === "synced") {
+    return "border-emerald-200 bg-emerald-50 text-emerald-800";
+  }
+
+  if (syncStatus === "partial" || syncStatus === "stale") {
+    return "border-amber-200 bg-amber-50 text-amber-800";
+  }
+
+  if (syncStatus === "failed") {
+    return "border-red-200 bg-red-50 text-red-800";
+  }
+
+  if (syncStatus === "deleted") {
+    return "border-slate-300 bg-slate-100 text-slate-600";
+  }
+
+  return "border-slate-200 bg-white text-slate-600";
+}
+
+function getGarminExportGuardMessage(
+  exportRecord: WorkoutExport | null,
+): string | null {
+  const syncStatus = getEffectiveGarminExportStatus(exportRecord);
+
+  if (syncStatus === "synced") {
+    return "Already published to Garmin.";
+  }
+
+  if (syncStatus === "stale") {
+    return "Changed after Garmin export — use Update Garmin Export.";
+  }
+
+  if (syncStatus === "partial") {
+    return "Workout may already exist in Garmin. Delete or update it instead of publishing a duplicate.";
+  }
+
+  return null;
+}
+
+function getGarminPublishButtonLabel(
+  exportRecord: WorkoutExport | null,
+  isPublishing: boolean,
+): string {
+  if (isPublishing) {
+    return "Publishing...";
+  }
+
+  const syncStatus = getEffectiveGarminExportStatus(exportRecord);
+
+  if (syncStatus === "synced") {
+    return "Already exported to Garmin";
+  }
+
+  if (syncStatus === "stale") {
+    return "Use Update Garmin Export";
+  }
+
+  if (syncStatus === "partial") {
+    return "Delete or update Garmin export";
+  }
+
+  return "Publish Direct to Garmin (Experimental)";
+}
+
 function getPlanAdjustmentStatusLabel(
   adjustment: PlanAdjustment | null,
 ): string {
@@ -390,6 +600,84 @@ function buildIntervalsWorkoutSyncByPlannedWorkoutId(
   syncs: IntervalsWorkoutSync[],
 ): Map<string, IntervalsWorkoutSync> {
   return new Map(syncs.map((sync) => [sync.planned_workout_id, sync]));
+}
+
+function buildLatestGarminExportByPlannedWorkoutId(
+  workoutExports: WorkoutExport[],
+): Map<string, WorkoutExport> {
+  const exportByPlannedWorkoutId = new Map<string, WorkoutExport>();
+
+  for (const workoutExport of workoutExports) {
+    if (
+      workoutExport.export_provider !== "garmin_direct" ||
+      !workoutExport.planned_workout_id
+    ) {
+      continue;
+    }
+
+    const currentExport = exportByPlannedWorkoutId.get(
+      workoutExport.planned_workout_id,
+    );
+
+    if (
+      !currentExport ||
+      workoutExport.created_at.localeCompare(currentExport.created_at) > 0
+    ) {
+      exportByPlannedWorkoutId.set(
+        workoutExport.planned_workout_id,
+        workoutExport,
+      );
+    }
+  }
+
+  return exportByPlannedWorkoutId;
+}
+
+function addWorkoutExportRecordIfPresent(
+  workoutExports: WorkoutExport[],
+  exportRecord: WorkoutExport | null,
+): WorkoutExport[] {
+  if (!exportRecord) {
+    return workoutExports;
+  }
+
+  if (workoutExports.some((currentExport) => currentExport.id === exportRecord.id)) {
+    return workoutExports;
+  }
+
+  return [exportRecord, ...workoutExports];
+}
+
+function replaceWorkoutExportRecordIfPresent(
+  workoutExports: WorkoutExport[],
+  exportRecord: WorkoutExport | null,
+): WorkoutExport[] {
+  if (!exportRecord) {
+    return workoutExports;
+  }
+
+  let didReplace = false;
+  const nextWorkoutExports = workoutExports.map((currentExport) => {
+    if (currentExport.id !== exportRecord.id) {
+      return currentExport;
+    }
+
+    didReplace = true;
+    return exportRecord;
+  });
+
+  return didReplace ? nextWorkoutExports : [exportRecord, ...workoutExports];
+}
+
+function mergeWorkoutExportRecords(
+  workoutExports: WorkoutExport[],
+  exportRecords: Array<WorkoutExport | null>,
+): WorkoutExport[] {
+  return exportRecords.reduce(
+    (currentExports, exportRecord) =>
+      replaceWorkoutExportRecordIfPresent(currentExports, exportRecord),
+    workoutExports,
+  );
 }
 
 function addLoggedWorkoutIfMissing(
@@ -479,6 +767,30 @@ async function markUpdatedIntervalsSyncsNeedsResync(
   }
 }
 
+async function markUpdatedGarminExportsStale(
+  updatedWorkouts: PlannedWorkout[],
+): Promise<string | null> {
+  if (updatedWorkouts.length === 0) {
+    return null;
+  }
+
+  try {
+    await markSyncedGarminWorkoutExportsStale(
+      updatedWorkouts.map((workout) => workout.id),
+    );
+
+    return null;
+  } catch (error) {
+    return error instanceof Error
+      ? ` Direct Garmin export status could not be marked stale: ${error.message}`
+      : " Direct Garmin export status could not be marked stale.";
+  }
+}
+
+function combineSyncWarnings(...warnings: Array<string | null>): string {
+  return warnings.filter((warning): warning is string => Boolean(warning)).join("");
+}
+
 async function applyPlanAdjustmentAfterLogging(input: {
   profile: Profile;
   raceGoal: RaceGoal;
@@ -491,6 +803,7 @@ async function applyPlanAdjustmentAfterLogging(input: {
 }): Promise<string> {
   let decision: PlanAdjustmentDecision | null = null;
   let intervalsSyncWarning: string | null = null;
+  let garminExportWarning: string | null = null;
 
   try {
     const futurePlannedWorkouts = await fetchFuturePlannedWorkouts(
@@ -517,6 +830,7 @@ async function applyPlanAdjustmentAfterLogging(input: {
       });
       intervalsSyncWarning =
         await markUpdatedIntervalsSyncsNeedsResync(updatedWorkouts);
+      garminExportWarning = await markUpdatedGarminExportsStale(updatedWorkouts);
     }
 
     await savePlanAdjustment(
@@ -555,7 +869,10 @@ async function applyPlanAdjustmentAfterLogging(input: {
     return "Workout saved, score generated, and plan unchanged.";
   }
 
-  return `Workout saved, score generated, and plan adjusted.${intervalsSyncWarning ?? ""}`;
+  return `Workout saved, score generated, and plan adjusted.${combineSyncWarnings(
+    intervalsSyncWarning,
+    garminExportWarning,
+  )}`;
 }
 
 async function rollbackPlanAdjustmentBeforeDeletingWorkout(input: {
@@ -612,14 +929,19 @@ async function rollbackPlanAdjustmentBeforeDeletingWorkout(input: {
       rollbackUpdates,
       loggedWorkoutDate: input.loggedWorkout.workout_date,
     });
-    const syncInvalidationWarning =
-      await markUpdatedIntervalsSyncsNeedsResync(restoredWorkouts);
+    const [intervalsSyncWarning, garminExportWarning] = await Promise.all([
+      markUpdatedIntervalsSyncsNeedsResync(restoredWorkouts),
+      markUpdatedGarminExportsStale(restoredWorkouts),
+    ]);
 
     return {
       hadPlanChangingAdjustment,
       restoredWorkoutCount: restoredWorkouts.length,
       needsRegenerationWarning,
-      syncInvalidationWarning,
+      syncInvalidationWarning: combineSyncWarnings(
+        intervalsSyncWarning,
+        garminExportWarning,
+      ),
     };
   } catch {
     return {
@@ -965,6 +1287,40 @@ export function WorkoutLoggingPanel() {
   const [bulkPublishResults, setBulkPublishResults] = useState<
     IntervalsPublishWorkoutResult[]
   >([]);
+  const [garminBridgeStatus, setGarminBridgeStatus] =
+    useState<GarminBridgeStatusResponse | null>(null);
+  const [garminPreviewingWorkoutId, setGarminPreviewingWorkoutId] =
+    useState<string | null>(null);
+  const [garminPublishingWorkoutId, setGarminPublishingWorkoutId] =
+    useState<string | null>(null);
+  const [garminDeletingWorkoutId, setGarminDeletingWorkoutId] =
+    useState<string | null>(null);
+  const [garminUpdatingWorkoutId, setGarminUpdatingWorkoutId] =
+    useState<string | null>(null);
+  const [garminPreviewResult, setGarminPreviewResult] =
+    useState<GarminPreviewApiResponse | null>(null);
+  const [garminPublishResult, setGarminPublishResult] =
+    useState<GarminPublishResponse | null>(null);
+  const [garminDeleteResult, setGarminDeleteResult] =
+    useState<GarminDeleteResponse | null>(null);
+  const [garminUpdateResult, setGarminUpdateResult] =
+    useState<GarminUpdateResponse | null>(null);
+
+  const loadGarminBridgeStatus = useCallback(async () => {
+    try {
+      const response = await fetch("/api/garmin/status");
+      const result = (await response.json()) as GarminBridgeStatusResponse;
+
+      setGarminBridgeStatus(result);
+    } catch {
+      setGarminBridgeStatus({
+        ok: false,
+        enabled: true,
+        status: "BRIDGE_UNAVAILABLE",
+        message: "Local Garmin bridge is not running.",
+      });
+    }
+  }, []);
 
   const loadWorkouts = useCallback(async (successMessage?: string) => {
     try {
@@ -992,6 +1348,7 @@ export function WorkoutLoggingPanel() {
           workoutEvaluations: [],
           planAdjustments: [],
           intervalsWorkoutSyncs: [],
+          workoutExports: [],
         });
         setForm(emptyForm);
         setBulkPublishing(false);
@@ -1009,11 +1366,13 @@ export function WorkoutLoggingPanel() {
         loggedWorkouts,
         workoutEvaluations,
         intervalsWorkoutSyncs,
+        workoutExports,
       ] = await Promise.all([
         fetchRaceGoalById(activePlan.plan.race_goal_id),
         fetchLoggedWorkoutsForTrainingPlan(activePlan.plan.id),
         fetchWorkoutEvaluationsForTrainingPlan(activePlan.plan.id),
         fetchIntervalsWorkoutSyncsForTrainingPlan(activePlan.plan.id),
+        fetchWorkoutExportsForTrainingPlan(activePlan.plan.id),
       ]);
       const planAdjustments = await fetchPlanAdjustmentsForLoggedWorkouts(
         loggedWorkouts.map((loggedWorkout) => loggedWorkout.id),
@@ -1034,10 +1393,15 @@ export function WorkoutLoggingPanel() {
         workoutEvaluations,
         planAdjustments,
         intervalsWorkoutSyncs,
+        workoutExports,
       });
       setPendingDeleteLogId(null);
       setDeletingLogId(null);
       setPublishingWorkoutId(null);
+      setGarminPreviewingWorkoutId(null);
+      setGarminPublishingWorkoutId(null);
+      setGarminDeletingWorkoutId(null);
+      setGarminUpdatingWorkoutId(null);
       setBulkPublishing(false);
       setForm(resetFormForWorkout(firstLoggableWorkout));
       setMessage(
@@ -1061,6 +1425,10 @@ export function WorkoutLoggingPanel() {
   useEffect(() => {
     void Promise.resolve().then(() => loadWorkouts());
   }, [loadWorkouts]);
+
+  useEffect(() => {
+    void Promise.resolve().then(() => loadGarminBridgeStatus());
+  }, [loadGarminBridgeStatus]);
 
   const runWorkouts = useMemo(
     () => workoutsState.plannedWorkouts.filter(isRunRelatedWorkout),
@@ -1127,6 +1495,10 @@ export function WorkoutLoggingPanel() {
       ),
     [workoutsState.intervalsWorkoutSyncs],
   );
+  const garminExportByPlannedWorkoutId = useMemo(
+    () => buildLatestGarminExportByPlannedWorkoutId(workoutsState.workoutExports),
+    [workoutsState.workoutExports],
+  );
   const adjustmentByLoggedWorkoutId = useMemo(
     () => buildPlanAdjustmentByLoggedWorkoutId(workoutsState.planAdjustments),
     [workoutsState.planAdjustments],
@@ -1142,13 +1514,41 @@ export function WorkoutLoggingPanel() {
   const previewPaceSecPerKm = calculatePreviewPace(form);
   const isSaving = status === "saving";
   const isDeleting = deletingLogId !== null;
-  const isPublishing = publishingWorkoutId !== null || bulkPublishing;
+  const isGarminBusy =
+    garminPreviewingWorkoutId !== null ||
+    garminPublishingWorkoutId !== null ||
+    garminDeletingWorkoutId !== null ||
+    garminUpdatingWorkoutId !== null;
+  const isPublishing =
+    publishingWorkoutId !== null || bulkPublishing || isGarminBusy;
   const isBusy = isSaving || isDeleting || isPublishing;
+  const isGarminBridgeConfigured = garminBridgeStatus?.enabled === true;
   const selectedWorkoutIntervalsSync = selectedWorkout
     ? intervalsWorkoutSyncByPlannedWorkoutId.get(selectedWorkout.id) ?? null
     : null;
-  const canPublishSelectedWorkout =
+  const selectedWorkoutGarminExport = selectedWorkout
+    ? garminExportByPlannedWorkoutId.get(selectedWorkout.id) ?? null
+    : null;
+  const selectedWorkoutGarminEffectiveStatus =
+    getEffectiveGarminExportStatus(selectedWorkoutGarminExport);
+  const selectedWorkoutGarminGuardMessage = getGarminExportGuardMessage(
+    selectedWorkoutGarminExport,
+  );
+  const canDeleteSelectedWorkoutFromGarmin =
+    Boolean(selectedWorkoutGarminExport?.provider_workout_id) &&
+    (selectedWorkoutGarminEffectiveStatus === "synced" ||
+      selectedWorkoutGarminEffectiveStatus === "stale" ||
+      selectedWorkoutGarminEffectiveStatus === "partial");
+  const canUpdateSelectedGarminExport =
+    Boolean(selectedWorkoutGarminExport?.provider_workout_id) &&
+    selectedWorkoutGarminEffectiveStatus === "stale";
+  const canPreviewSelectedWorkoutToGarmin =
     canPublishWorkoutToIntervals(selectedWorkout);
+  const canPublishSelectedWorkout =
+    canPreviewSelectedWorkoutToGarmin &&
+    selectedWorkoutGarminEffectiveStatus !== "synced" &&
+    selectedWorkoutGarminEffectiveStatus !== "stale" &&
+    selectedWorkoutGarminEffectiveStatus !== "partial";
   const canBulkPublishWorkouts =
     selectedBulkPublishWorkoutIds.length > 0 && workoutsState.plan !== null;
 
@@ -1158,6 +1558,10 @@ export function WorkoutLoggingPanel() {
       planned_workout_id: workout.id,
       workout_date: workout.workout_date,
     });
+    setGarminPreviewResult(null);
+    setGarminPublishResult(null);
+    setGarminDeleteResult(null);
+    setGarminUpdateResult(null);
   }
 
   function handleBulkPublishWindowChange(
@@ -1227,6 +1631,282 @@ export function WorkoutLoggingPanel() {
       );
     } finally {
       setPublishingWorkoutId(null);
+    }
+  }
+
+  async function handlePreviewGarminExport() {
+    if (!selectedWorkout) {
+      setStatus("error");
+      setMessage("Choose one planned workout before previewing Garmin export.");
+      return;
+    }
+
+    if (!canPublishWorkoutToIntervals(selectedWorkout)) {
+      setStatus("error");
+      setMessage(getIntervalsPublishBlocker(selectedWorkout));
+      return;
+    }
+
+    setGarminPreviewingWorkoutId(selectedWorkout.id);
+    setGarminPreviewResult(null);
+    setGarminPublishResult(null);
+    setGarminDeleteResult(null);
+    setGarminUpdateResult(null);
+    setMessage(null);
+
+    try {
+      const response = await fetch("/api/garmin/preview-workout", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          plannedWorkoutId: selectedWorkout.id,
+        }),
+      });
+      const result = (await response.json()) as GarminPreviewApiResponse;
+
+      setGarminPreviewResult(result);
+      setStatus(result.ok ? "saved" : "error");
+      setMessage(result.message);
+    } catch (error) {
+      setStatus("error");
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Could not preview direct Garmin export.",
+      );
+    } finally {
+      setGarminPreviewingWorkoutId(null);
+    }
+  }
+
+  async function handlePublishGarminExport() {
+    if (!selectedWorkout) {
+      setStatus("error");
+      setMessage("Choose one planned workout before publishing to Garmin.");
+      return;
+    }
+
+    if (!canPublishWorkoutToIntervals(selectedWorkout)) {
+      setStatus("error");
+      setMessage(getIntervalsPublishBlocker(selectedWorkout));
+      return;
+    }
+
+    if (
+      selectedWorkoutGarminEffectiveStatus === "synced" ||
+      selectedWorkoutGarminEffectiveStatus === "stale" ||
+      selectedWorkoutGarminEffectiveStatus === "partial"
+    ) {
+      setStatus("error");
+      setMessage(
+        selectedWorkoutGarminGuardMessage ??
+          "This workout is already exported to Garmin.",
+      );
+      return;
+    }
+
+    const confirmationMessages = [
+      "This uses an unofficial local Garmin Connect bridge. It runs only on your laptop and may break if Garmin changes internal APIs.",
+    ];
+
+    if (selectedWorkoutGarminGuardMessage) {
+      confirmationMessages.push(selectedWorkoutGarminGuardMessage);
+    }
+
+    const confirmed = window.confirm(confirmationMessages.join("\n\n"));
+
+    if (!confirmed) {
+      return;
+    }
+
+    setGarminPublishingWorkoutId(selectedWorkout.id);
+    setGarminPublishResult(null);
+    setGarminDeleteResult(null);
+    setGarminUpdateResult(null);
+    setMessage(null);
+    setStatus("publishing");
+
+    try {
+      const response = await fetch("/api/garmin/publish-workout", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          plannedWorkoutId: selectedWorkout.id,
+        }),
+      });
+      const result = (await response.json()) as GarminPublishResponse;
+
+      setGarminPublishResult(result);
+      setMessage(result.message);
+      setStatus(result.ok ? "saved" : "error");
+
+      if (result.exportRecord) {
+        setWorkoutsState((currentState) => ({
+          ...currentState,
+          workoutExports: addWorkoutExportRecordIfPresent(
+            currentState.workoutExports,
+            result.exportRecord,
+          ),
+        }));
+      }
+    } catch (error) {
+      setStatus("error");
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Could not publish direct Garmin export.",
+      );
+    } finally {
+      setGarminPublishingWorkoutId(null);
+    }
+  }
+
+  async function handleDeleteGarminExport() {
+    if (!selectedWorkout) {
+      setStatus("error");
+      setMessage("Choose one planned workout before deleting from Garmin.");
+      return;
+    }
+
+    if (!canDeleteSelectedWorkoutFromGarmin) {
+      setStatus("error");
+      setMessage(
+        "Delete from Garmin is only available for synced, stale, or partial direct Garmin exports with a Garmin workout ID.",
+      );
+      return;
+    }
+
+    const confirmationMessages = [
+      "This will ask the local Garmin bridge to delete this workout from Garmin.",
+      "It will not delete the planned workout from this app.",
+      "After deletion, confirm the workout is gone in Garmin Connect and on your watch.",
+    ];
+
+    if (selectedWorkoutGarminGuardMessage) {
+      confirmationMessages.push(selectedWorkoutGarminGuardMessage);
+    }
+
+    const confirmed = window.confirm(confirmationMessages.join("\n\n"));
+
+    if (!confirmed) {
+      return;
+    }
+
+    setGarminDeletingWorkoutId(selectedWorkout.id);
+    setGarminDeleteResult(null);
+    setGarminUpdateResult(null);
+    setMessage(null);
+    setStatus("publishing");
+
+    try {
+      const response = await fetch("/api/garmin/delete-workout", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          plannedWorkoutId: selectedWorkout.id,
+        }),
+      });
+      const result = (await response.json()) as GarminDeleteResponse;
+      const trackingSucceeded =
+        result.exportRecord !== null &&
+        (result.status === "DELETED" || result.status === "UNSCHEDULED_ONLY");
+
+      setGarminDeleteResult(result);
+      setMessage(result.message);
+      setStatus(result.ok || trackingSucceeded ? "saved" : "error");
+
+      if (result.exportRecord) {
+        setWorkoutsState((currentState) => ({
+          ...currentState,
+          workoutExports: replaceWorkoutExportRecordIfPresent(
+            currentState.workoutExports,
+            result.exportRecord,
+          ),
+        }));
+      }
+    } catch (error) {
+      setStatus("error");
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Could not delete direct Garmin export.",
+      );
+    } finally {
+      setGarminDeletingWorkoutId(null);
+    }
+  }
+
+  async function handleUpdateGarminExport() {
+    if (!selectedWorkout) {
+      setStatus("error");
+      setMessage("Choose one planned workout before updating Garmin export.");
+      return;
+    }
+
+    if (!canUpdateSelectedGarminExport) {
+      setStatus("error");
+      setMessage(
+        "Update Garmin Export is only available for stale direct Garmin exports with a Garmin workout ID.",
+      );
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "This will try to remove the old Garmin workout and publish the current app version. If Garmin removal fails, a duplicate may remain in Garmin.",
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setGarminUpdatingWorkoutId(selectedWorkout.id);
+    setGarminUpdateResult(null);
+    setGarminPublishResult(null);
+    setGarminDeleteResult(null);
+    setMessage(null);
+    setStatus("publishing");
+
+    try {
+      const response = await fetch("/api/garmin/update-workout", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          plannedWorkoutId: selectedWorkout.id,
+        }),
+      });
+      const result = (await response.json()) as GarminUpdateResponse;
+      const trackedUpdate = result.exportRecord !== null;
+
+      setGarminUpdateResult(result);
+      setMessage(result.message);
+      setStatus(result.ok || trackedUpdate ? "saved" : "error");
+
+      if (result.exportRecord || result.oldExportRecord) {
+        setWorkoutsState((currentState) => ({
+          ...currentState,
+          workoutExports: mergeWorkoutExportRecords(
+            currentState.workoutExports,
+            [result.oldExportRecord, result.exportRecord],
+          ),
+        }));
+      }
+    } catch (error) {
+      setStatus("error");
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Could not update direct Garmin export.",
+      );
+    } finally {
+      setGarminUpdatingWorkoutId(null);
     }
   }
 
@@ -2077,6 +2757,10 @@ export function WorkoutLoggingPanel() {
                     null;
                   const intervalsSyncStatus =
                     intervalsSync?.sync_status ?? "not_synced";
+                  const garminExport =
+                    garminExportByPlannedWorkoutId.get(workout.id) ?? null;
+                  const garminExportStatus =
+                    getEffectiveGarminExportStatus(garminExport);
 
                   return (
                     <button
@@ -2118,6 +2802,18 @@ export function WorkoutLoggingPanel() {
                           >
                             {getIntervalsSyncStatusLabel(intervalsSync)}
                           </span>
+                          {isGarminBridgeConfigured ? (
+                            <span
+                              className={`w-fit rounded-md border px-2 py-1 text-xs font-medium ${getGarminExportStatusBadgeClass(
+                                garminExportStatus,
+                              )}`}
+                              title={
+                                getGarminExportError(garminExport) ?? undefined
+                              }
+                            >
+                              Garmin {getGarminExportStatusLabel(garminExport)}
+                            </span>
+                          ) : null}
                         </div>
                       </div>
                       <dl className="mt-3 grid gap-3 text-slate-600 md:grid-cols-3">
@@ -2199,6 +2895,356 @@ export function WorkoutLoggingPanel() {
                       </button>
                     </div>
                   </div>
+                  {isGarminBridgeConfigured ? (
+                    <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 p-3">
+                      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                        <div>
+                          <p className="font-medium text-slate-950">
+                            Direct Garmin publishing
+                          </p>
+                          <p className="mt-1 text-slate-700">
+                            This uses an unofficial local Garmin Connect bridge. It runs only on your laptop and may break if Garmin changes internal APIs.
+                          </p>
+                          <span
+                            className={`mt-2 inline-flex w-fit rounded-md border px-2 py-1 text-xs font-medium ${getGarminExportStatusBadgeClass(
+                              getEffectiveGarminExportStatus(
+                                selectedWorkoutGarminExport,
+                              ),
+                            )}`}
+                            title={
+                              getGarminExportError(
+                                selectedWorkoutGarminExport,
+                              ) ??
+                              undefined
+                            }
+                          >
+                            Garmin{" "}
+                            {getGarminExportStatusLabel(
+                              selectedWorkoutGarminExport,
+                            )}
+                          </span>
+                          {selectedWorkoutGarminExport?.provider_workout_id ? (
+                            <p className="mt-2 text-sm text-slate-700">
+                              Garmin workout ID:{" "}
+                              {selectedWorkoutGarminExport.provider_workout_id}
+                            </p>
+                          ) : null}
+                          {getGarminExportError(selectedWorkoutGarminExport) ? (
+                            <p className="mt-2 text-sm text-red-700">
+                              {getGarminExportError(selectedWorkoutGarminExport)}
+                            </p>
+                          ) : null}
+                          {selectedWorkoutGarminGuardMessage ? (
+                            <p
+                              className={`mt-2 text-sm ${
+                                selectedWorkoutGarminEffectiveStatus === "synced"
+                                  ? "text-emerald-700"
+                                  : "text-amber-800"
+                              }`}
+                            >
+                              {selectedWorkoutGarminGuardMessage}
+                            </p>
+                          ) : null}
+                          {garminBridgeStatus ? (
+                            <p className="mt-2 text-sm text-slate-700">
+                              Bridge status: {garminBridgeStatus.message}
+                            </p>
+                          ) : null}
+                        </div>
+                        <div className="flex flex-col gap-2 sm:flex-row md:flex-col">
+                          <button
+                            className="w-fit rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
+                            disabled={
+                              !canPreviewSelectedWorkoutToGarmin ||
+                              isBusy ||
+                              garminBridgeStatus?.status === "DISABLED"
+                            }
+                            onClick={() => void handlePreviewGarminExport()}
+                            type="button"
+                          >
+                            {garminPreviewingWorkoutId === selectedWorkout.id
+                              ? "Previewing..."
+                              : "Preview Garmin Export"}
+                          </button>
+                          <button
+                            className="w-fit rounded-md border border-amber-300 bg-white px-3 py-2 text-sm font-medium text-amber-950 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
+                            disabled={!canPublishSelectedWorkout || isBusy}
+                            onClick={() => void handlePublishGarminExport()}
+                            type="button"
+                          >
+                            {getGarminPublishButtonLabel(
+                              selectedWorkoutGarminExport,
+                              garminPublishingWorkoutId === selectedWorkout.id,
+                            )}
+                          </button>
+                          {canUpdateSelectedGarminExport ? (
+                            <button
+                              className="w-fit rounded-md border border-blue-200 bg-white px-3 py-2 text-sm font-medium text-blue-800 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
+                              disabled={isBusy}
+                              onClick={() => void handleUpdateGarminExport()}
+                              type="button"
+                            >
+                              {garminUpdatingWorkoutId === selectedWorkout.id
+                                ? "Updating..."
+                                : "Update Garmin Export"}
+                            </button>
+                          ) : null}
+                          {canDeleteSelectedWorkoutFromGarmin ? (
+                            <button
+                              className="w-fit rounded-md border border-red-200 bg-white px-3 py-2 text-sm font-medium text-red-800 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
+                              disabled={isBusy}
+                              onClick={() => void handleDeleteGarminExport()}
+                              type="button"
+                            >
+                              {garminDeletingWorkoutId === selectedWorkout.id
+                                ? "Deleting..."
+                                : "Delete from Garmin"}
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+
+                      {garminPreviewResult?.plannedWorkoutId ===
+                      selectedWorkout.id ? (
+                        <div className="mt-4 rounded-md border border-amber-200 bg-white p-3 text-sm">
+                          <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                            <div>
+                              <p className="font-medium text-slate-950">
+                                Latest Garmin preview
+                              </p>
+                              <p className="mt-1 text-slate-700">
+                                {garminPreviewResult.message}
+                              </p>
+                            </div>
+                            <span
+                              className={`w-fit rounded-md border px-2 py-1 text-xs font-medium ${getPublishResultBadgeClass(
+                                garminPreviewResult.ok,
+                              )}`}
+                            >
+                              {garminPreviewResult.ok ? "Ready" : "Failed"}
+                            </span>
+                          </div>
+                          {garminPreviewResult.preview ? (
+                            <div className="mt-3 grid gap-3 md:grid-cols-3">
+                              <div>
+                                <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                                  Steps
+                                </p>
+                                <p className="mt-1 text-slate-800">
+                                  {garminPreviewResult.preview.step_count}
+                                </p>
+                              </div>
+                              <div>
+                                <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                                  Pace targets
+                                </p>
+                                <p className="mt-1 text-slate-800">
+                                  {
+                                    garminPreviewResult.preview
+                                      .pace_target_count
+                                  }
+                                </p>
+                              </div>
+                              <div>
+                                <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                                  Target
+                                </p>
+                                <p className="mt-1 text-slate-800">
+                                  {
+                                    garminPreviewResult.preview.target_summary
+                                      .display
+                                  }
+                                </p>
+                              </div>
+                            </div>
+                          ) : null}
+                          {garminPreviewResult.preview?.warnings.length ? (
+                            <ul className="mt-3 list-disc space-y-1 pl-5 text-slate-700">
+                              {garminPreviewResult.preview.warnings.map(
+                                (warning) => (
+                                  <li key={warning}>{warning}</li>
+                                ),
+                              )}
+                            </ul>
+                          ) : null}
+                        </div>
+                      ) : null}
+
+                      {garminPublishResult?.plannedWorkoutId ===
+                      selectedWorkout.id ? (
+                        <div className="mt-4 rounded-md border border-amber-200 bg-white p-3 text-sm">
+                          <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                            <div>
+                              <p className="font-medium text-slate-950">
+                                Latest Garmin publish result
+                              </p>
+                              <p className="mt-1 text-slate-700">
+                                {garminPublishResult.message}
+                              </p>
+                            </div>
+                            <span
+                              className={`w-fit rounded-md border px-2 py-1 text-xs font-medium ${getGarminExportStatusBadgeClass(
+                                garminPublishResult.exportRecord
+                                  ?.sync_status ??
+                                  (garminPublishResult.ok
+                                    ? "synced"
+                                    : "failed"),
+                              )}`}
+                            >
+                              {garminPublishResult.exportRecord
+                                ? getGarminExportStatusLabel(
+                                    garminPublishResult.exportRecord,
+                                  )
+                                : garminPublishResult.ok
+                                  ? "Synced"
+                                  : "Failed"}
+                            </span>
+                          </div>
+                          {garminPublishResult.publish?.garmin_workout_id ? (
+                            <p className="mt-3 text-slate-700">
+                              Garmin workout ID:{" "}
+                              {garminPublishResult.publish.garmin_workout_id}
+                            </p>
+                          ) : null}
+                          {garminPublishResult.publish?.error ? (
+                            <p className="mt-2 text-red-700">
+                              {garminPublishResult.publish.error}
+                            </p>
+                          ) : null}
+                          {garminPublishResult.trackingError ? (
+                            <p className="mt-2 text-red-700">
+                              Export tracking error:{" "}
+                              {garminPublishResult.trackingError}
+                            </p>
+                          ) : null}
+                        </div>
+                      ) : null}
+
+                      {garminUpdateResult?.plannedWorkoutId ===
+                      selectedWorkout.id ? (
+                        <div className="mt-4 rounded-md border border-amber-200 bg-white p-3 text-sm">
+                          <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                            <div>
+                              <p className="font-medium text-slate-950">
+                                Latest Garmin update result
+                              </p>
+                              <p className="mt-1 text-slate-700">
+                                {garminUpdateResult.message}
+                              </p>
+                            </div>
+                            <span
+                              className={`w-fit rounded-md border px-2 py-1 text-xs font-medium ${getGarminExportStatusBadgeClass(
+                                garminUpdateResult.exportRecord?.sync_status ??
+                                  (garminUpdateResult.ok ? "synced" : "failed"),
+                              )}`}
+                            >
+                              {garminUpdateResult.exportRecord
+                                ? getGarminExportStatusLabel(
+                                    garminUpdateResult.exportRecord,
+                                  )
+                                : garminUpdateResult.ok
+                                  ? "Synced"
+                                  : "Failed"}
+                            </span>
+                          </div>
+                          {garminUpdateResult.publish?.garmin_workout_id ? (
+                            <p className="mt-3 text-slate-700">
+                              New Garmin workout ID:{" "}
+                              {garminUpdateResult.publish.garmin_workout_id}
+                            </p>
+                          ) : null}
+                          {garminUpdateResult.deleteResult?.garmin_workout_id ? (
+                            <p className="mt-2 text-slate-700">
+                              Old Garmin workout ID:{" "}
+                              {
+                                garminUpdateResult.deleteResult
+                                  .garmin_workout_id
+                              }
+                            </p>
+                          ) : null}
+                          {garminUpdateResult.exportRecord?.warnings.length ? (
+                            <ul className="mt-3 list-disc space-y-1 pl-5 text-slate-700">
+                              {garminUpdateResult.exportRecord.warnings.map(
+                                (warning) => (
+                                  <li key={warning}>{warning}</li>
+                                ),
+                              )}
+                            </ul>
+                          ) : null}
+                          {garminUpdateResult.publish?.error ? (
+                            <p className="mt-2 text-red-700">
+                              {garminUpdateResult.publish.error}
+                            </p>
+                          ) : null}
+                          {garminUpdateResult.trackingError ? (
+                            <p className="mt-2 text-red-700">
+                              Export tracking error:{" "}
+                              {garminUpdateResult.trackingError}
+                            </p>
+                          ) : null}
+                        </div>
+                      ) : null}
+
+                      {garminDeleteResult?.plannedWorkoutId ===
+                      selectedWorkout.id ? (
+                        <div className="mt-4 rounded-md border border-amber-200 bg-white p-3 text-sm">
+                          <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                            <div>
+                              <p className="font-medium text-slate-950">
+                                Latest Garmin delete result
+                              </p>
+                              <p className="mt-1 text-slate-700">
+                                {garminDeleteResult.message}
+                              </p>
+                            </div>
+                            <span
+                              className={`w-fit rounded-md border px-2 py-1 text-xs font-medium ${getGarminExportStatusBadgeClass(
+                                garminDeleteResult.exportRecord?.sync_status ??
+                                  (garminDeleteResult.ok ? "deleted" : "failed"),
+                              )}`}
+                            >
+                              {garminDeleteResult.exportRecord
+                                ? getGarminExportStatusLabel(
+                                    garminDeleteResult.exportRecord,
+                                  )
+                                : garminDeleteResult.ok
+                                  ? "Deleted"
+                                  : "Failed"}
+                            </span>
+                          </div>
+                          {garminDeleteResult.deleteResult?.garmin_workout_id ? (
+                            <p className="mt-3 text-slate-700">
+                              Garmin workout ID:{" "}
+                              {
+                                garminDeleteResult.deleteResult
+                                  .garmin_workout_id
+                              }
+                            </p>
+                          ) : null}
+                          {garminDeleteResult.deleteResult?.warnings.length ? (
+                            <ul className="mt-3 list-disc space-y-1 pl-5 text-slate-700">
+                              {garminDeleteResult.deleteResult.warnings.map(
+                                (warning) => (
+                                  <li key={warning}>{warning}</li>
+                                ),
+                              )}
+                            </ul>
+                          ) : null}
+                          {garminDeleteResult.deleteResult?.error ? (
+                            <p className="mt-2 text-red-700">
+                              {garminDeleteResult.deleteResult.error}
+                            </p>
+                          ) : null}
+                          {garminDeleteResult.trackingError ? (
+                            <p className="mt-2 text-red-700">
+                              Export tracking error:{" "}
+                              {garminDeleteResult.trackingError}
+                            </p>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
               ) : (
                 <div className="mt-4 rounded-md border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">

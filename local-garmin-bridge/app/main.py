@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from importlib import metadata
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,13 +7,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.garmin_auth import GarminAuthService
 from app.garmin_client import GarminClient
 from app.models import (
+    DebugSummary,
     GarminAuthStartResponse,
     GarminStatusResponse,
-    GarminWorkoutPreviewRequest,
+    GarminWorkoutDeleteRequest,
+    GarminWorkoutDeleteResponse,
     GarminWorkoutPreviewResponse,
     GarminWorkoutPublishRequest,
     GarminWorkoutPublishResponse,
     HealthResponse,
+    TargetSummary,
 )
 from app.security import (
     ALLOWED_CORS_ORIGINS,
@@ -22,7 +26,10 @@ from app.security import (
     unauthorized_bridge_response,
     validate_bridge_key,
 )
-from app.workout_mapper import GarminWorkoutMappingError, build_garmin_preview
+from app.workout_mapper import (
+    GarminWorkoutMappingError,
+    build_garmin_preview,
+)
 
 APP_VERSION = "0.1.0"
 
@@ -82,26 +89,101 @@ def garmin_auth_start() -> GarminAuthStartResponse:
     response_model=GarminWorkoutPreviewResponse,
 )
 def preview_workout(
-    request: GarminWorkoutPreviewRequest,
+    request: GarminWorkoutPublishRequest,
 ) -> GarminWorkoutPreviewResponse:
     try:
-        preview, garmin_payload, warnings = build_garmin_preview(request.workout)
+        result = build_garmin_preview(request)
     except GarminWorkoutMappingError as error:
-        return GarminWorkoutPreviewResponse(
-            ok=False,
-            message=str(error),
-            preview=None,
-            garmin_payload=None,
-            warnings=[str(error)],
-        )
+        return invalid_preview_response(error)
 
     return GarminWorkoutPreviewResponse(
         ok=True,
-        message="Garmin workout preview generated. No Garmin API call was made.",
-        preview=preview,
-        garmin_payload=garmin_payload,
-        warnings=warnings,
+        target_summary=result.target_summary,
+        step_count=result.step_count,
+        repeat_count=result.repeat_count,
+        pace_target_count=result.pace_target_count,
+        hr_target_count=result.hr_target_count,
+        warnings=result.warnings,
+        error=None,
+        garmin_payload_preview=result.garmin_payload,
     )
+
+
+def invalid_preview_response(
+    error: GarminWorkoutMappingError,
+) -> GarminWorkoutPreviewResponse:
+    stats = getattr(error, "stats", None)
+    target_summary = getattr(stats, "first_pace_target", None) or TargetSummary()
+
+    return GarminWorkoutPreviewResponse(
+        ok=False,
+        target_summary=target_summary,
+        step_count=getattr(stats, "step_count", 0),
+        repeat_count=getattr(stats, "repeat_count", 0),
+        pace_target_count=getattr(stats, "pace_target_count", 0),
+        hr_target_count=getattr(stats, "hr_target_count", 0),
+        warnings=[str(error)],
+        error=str(error),
+        garmin_payload_preview=None,
+    )
+
+
+def build_dry_run_response(
+    request: GarminWorkoutPublishRequest,
+) -> GarminWorkoutPublishResponse:
+    try:
+        result = build_garmin_preview(request)
+    except GarminWorkoutMappingError as error:
+        return invalid_workout_response(request, str(error))
+
+    return GarminWorkoutPublishResponse(
+        ok=True,
+        status="DRY_RUN",
+        planned_workout_id=request.planned_workout_id,
+        scheduled_date=result.preview.scheduled_date,
+        warnings=[*result.warnings, "Dry run only: no Garmin API call was made."],
+        error=None,
+        target_summary=result.target_summary,
+        debug_summary=build_debug_summary(
+            request=request,
+            generated_step_count=result.step_count,
+        ),
+    )
+
+
+def invalid_workout_response(
+    request: GarminWorkoutPublishRequest,
+    error: str,
+) -> GarminWorkoutPublishResponse:
+    return GarminWorkoutPublishResponse(
+        ok=False,
+        status="INVALID_WORKOUT",
+        planned_workout_id=request.planned_workout_id,
+        scheduled_date=request.workout_date.isoformat(),
+        warnings=[error],
+        error=error,
+        target_summary=TargetSummary(),
+        debug_summary=build_debug_summary(request=request, generated_step_count=0),
+    )
+
+
+def build_debug_summary(
+    *,
+    request: GarminWorkoutPublishRequest,
+    generated_step_count: int,
+) -> DebugSummary:
+    return DebugSummary(
+        dry_run=request.dry_run,
+        client_version=garminconnect_version(),
+        generated_step_count=generated_step_count,
+    )
+
+
+def garminconnect_version() -> str | None:
+    try:
+        return metadata.version("garminconnect")
+    except metadata.PackageNotFoundError:
+        return None
 
 
 @app.post(
@@ -111,32 +193,34 @@ def preview_workout(
 def publish_workout(
     request: GarminWorkoutPublishRequest,
 ) -> GarminWorkoutPublishResponse:
+    if request.dry_run:
+        return build_dry_run_response(request)
+
     try:
-        preview, garmin_payload, warnings = build_garmin_preview(
-            request.workout,
-            schedule_date=request.schedule_date,
-        )
+        result = build_garmin_preview(request)
     except GarminWorkoutMappingError as error:
-        return GarminWorkoutPublishResponse(
-            ok=False,
-            status="invalid_workout",
-            message=str(error),
-            garmin_workout_id=None,
-            schedule_result=None,
-            preview=None,
-            garmin_payload=None,
-            warnings=[str(error)],
-        )
+        return invalid_workout_response(request, str(error))
 
-    response = GarminClient().publish_workout(preview, garmin_payload)
-
-    return GarminWorkoutPublishResponse(
-        ok=response.ok,
-        status=response.status,
-        message=response.message,
-        garmin_workout_id=response.garmin_workout_id,
-        schedule_result=response.schedule_result,
-        preview=response.preview,
-        garmin_payload=response.garmin_payload,
-        warnings=[*warnings, *response.warnings],
+    response = GarminClient().publish_workout(
+        request=request,
+        preview=result.preview,
+        garmin_payload=result.garmin_payload,
+        warnings=result.warnings,
+        target_summary=result.target_summary,
+        debug_summary=build_debug_summary(
+            request=request,
+            generated_step_count=result.step_count,
+        ),
     )
+
+    return response
+
+
+@app.post(
+    "/garmin/workouts/delete",
+    response_model=GarminWorkoutDeleteResponse,
+)
+def delete_workout(
+    request: GarminWorkoutDeleteRequest,
+) -> GarminWorkoutDeleteResponse:
+    return GarminClient().delete_workout(request)

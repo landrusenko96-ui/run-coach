@@ -44,12 +44,13 @@ Current build priority:
 7. Plan adjustment
 8. Dashboard
 9. Intervals.icu planned-workout publishing
-10. Strava import
-11. Gear tracking
-12. AI-generated feedback
+10. Direct Garmin local bridge lifecycle safety
+11. Strava import
+12. Gear tracking
+13. AI-generated feedback
 
 Do not build these until explicitly requested:
-- Direct Garmin API integration
+- Official/public Direct Garmin API integration
 - Spotify integration
 - Route generation
 - 3D avatar
@@ -77,6 +78,18 @@ Database utilities should live in:
 Intervals.icu planned-workout publishing logic should live in:
 
 - `/lib/intervals`
+
+The experimental local Direct Garmin bridge is already part of Milestone 6C.
+
+Direct Garmin rules:
+
+- Keep Intervals.icu as the primary supported export path.
+- Keep the Garmin bridge local-only and experimental.
+- Bridge code lives in `/local-garmin-bridge`.
+- Next.js server-only bridge helpers live in `/lib/garminBridge`.
+- Do not expose `GARMIN_BRIDGE_API_KEY`, Garmin tokens, cookies, passwords, or full Garmin responses to the browser or database.
+- Do not add official/public Garmin API integration unless explicitly requested later.
+- Do not silently delete or update Garmin workouts; Garmin cleanup must remain explicit and user-confirmed.
 
 Strava logic should live in:
 

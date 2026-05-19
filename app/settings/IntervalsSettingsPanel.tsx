@@ -166,7 +166,8 @@ export function IntervalsSettingsPanel({
           Intervals.icu
         </h2>
         <p className="mt-2 text-sm leading-6 text-slate-600">
-          Save the athlete ID here. Keep the API key in .env.local or Vercel
+          Save the athlete ID here for app status. Publishing currently uses
+          INTERVALS_ATHLETE_ID and INTERVALS_API_KEY from .env.local or Vercel
           environment variables.
         </p>
       </div>
@@ -257,8 +258,9 @@ export function IntervalsSettingsPanel({
         </label>
 
         <div className="rounded-md border border-slate-200 bg-slate-50 p-4 text-sm leading-6 text-slate-600">
-          The API key is not stored or typed here. Set INTERVALS_API_KEY in
-          .env.local for local development and in Vercel for deployment.
+          The API key is not stored or typed here. Set INTERVALS_API_KEY and
+          INTERVALS_ATHLETE_ID in .env.local for local development and in
+          Vercel for deployment.
         </div>
 
         <button
