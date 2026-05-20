@@ -6,7 +6,7 @@ Run.B*tch.app is a private web app for adaptive marathon preparation. The long-t
 
 Runner profile -> Race goal -> Training plan -> Workout logging -> Workout evaluation -> Plan adjustment -> Updated plan
 
-The most important feature is the adaptive training plan. This repository now contains the early private MVP flow for profile setup, race goals, rule-based plan generation, manual workout logging, workout scoring, plan adjustment, dashboard status, Intervals.icu planned-workout publishing, and an experimental local-only direct Garmin export bridge.
+The most important feature is the adaptive training plan. This repository now contains the early private MVP flow for profile setup, race goals, rule-based plan generation, manual workout logging, workout scoring, plan adjustment, dashboard status, Intervals.icu planned-workout publishing, an experimental local-only direct Garmin export bridge, and manual Strava run import.
 
 ## How to run locally
 
@@ -55,7 +55,9 @@ npm test
 - Direct Garmin manual delete, manual stale-update, bulk publish, bulk maintenance, and explicit plan-deletion cleanup choices are available.
 - Known limitation: automatic Garmin deletion/update is not built. The app only changes Garmin workouts after a direct user action.
 - Settings includes a Direct Garmin Bridge troubleshooting panel.
-- Strava import, authentication, RLS policies, gear tracking, and AI feedback are not built yet.
+- Strava OAuth connection and manual run import are available from Settings and Workouts.
+- Strava import skips duplicate activities, non-runs, invalid runs, pre-plan runs, and active-plan days already covered by logged workouts.
+- Gear tracking and AI feedback are not built yet.
 
 ## Environment variables
 
@@ -104,6 +106,53 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8765
 
 Garmin login happens only in the local bridge terminal. Do not store Garmin usernames, passwords, tokens, cookies, or session files in Supabase, Next.js, `.env.local`, screenshots, docs, or commits.
 
+Strava import:
+
+```text
+STRAVA_CLIENT_ID
+STRAVA_CLIENT_SECRET
+NEXT_PUBLIC_APP_URL
+```
+
+For local development:
+
+```text
+NEXT_PUBLIC_APP_URL=http://localhost:3000
+```
+
+Keep `STRAVA_CLIENT_SECRET` server-only. Do not prefix it with `NEXT_PUBLIC_`. The browser should only start the connect flow and read safe connection status; access tokens and refresh tokens stay in server routes and Supabase.
+
+## Strava Import Setup
+
+Manual Strava import lets you connect Strava, then import recent runs from the last 7 or 14 days. It does not use Strava webhooks.
+
+To set it up locally:
+
+1. Create a Strava API app at `https://www.strava.com/settings/api`.
+2. Set the authorization callback domain to your local app host, usually `localhost`.
+3. Put these values in `.env.local`:
+
+```text
+STRAVA_CLIENT_ID=your-strava-client-id
+STRAVA_CLIENT_SECRET=your-strava-client-secret
+NEXT_PUBLIC_APP_URL=http://localhost:3000
+```
+
+4. Make sure the Supabase migration for Milestone 7 has been applied so `strava_connections`, `strava_activities`, and `logged_workouts.source_activity_id` exist.
+5. In Supabase Auth settings, make sure anonymous sign-ins are enabled for this MVP auth flow.
+6. Start the app with `npm run dev`.
+7. Open Settings, click Connect Strava, approve `read` and `activity:read_all`, then return to the app.
+8. Click Import latest Strava runs from Settings or Workouts.
+
+Manual test expectations:
+
+- Running activities with sport type `Run`, `TrailRun`, or `VirtualRun` can import.
+- Rides, swims, walks, hikes, strength workouts, and unknown sport types are skipped.
+- Runs before the active plan start are skipped as before-plan.
+- A day that already has a manual logged workout is skipped as already logged.
+- Already imported Strava activities are skipped as duplicates.
+- The import summary lists each pulled Strava activity with name, date, distance, average pace, and status.
+
 ## Direct Garmin Bridge Notes
 
 Intervals.icu remains the primary supported export path. The Direct Garmin bridge is experimental, local-only, and personal-use only.
@@ -135,7 +184,7 @@ Common fixes:
 /lib/db            Supabase database utilities
 /lib/intervals     Intervals.icu publishing utilities
 /lib/garminBridge  Server-only Next.js client for the local Garmin bridge
-/lib/strava        Future Strava import utilities
+/lib/strava        Server-only Strava OAuth and manual import utilities
 /local-garmin-bridge  Separate local Python FastAPI Garmin bridge
 /supabase          Database migrations
 /tests             Node test suite for training and integration helpers

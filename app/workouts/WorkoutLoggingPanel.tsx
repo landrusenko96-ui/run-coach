@@ -2,16 +2,13 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { StravaImportSummary } from "@/components/StravaImportSummary";
 import {
-  buildSavePlanAdjustmentInput,
   deletePlanAdjustmentsForLoggedWorkout,
-  fetchFuturePlannedWorkouts,
   fetchPlanAdjustmentsAffectingWorkouts,
   fetchPlanAdjustmentsForLoggedWorkout,
   fetchPlanAdjustmentsForLoggedWorkouts,
   restoreFuturePlannedWorkoutsFromRollbackUpdates,
-  savePlanAdjustment,
-  updateFuturePlannedWorkoutsForAdjustment,
 } from "@/lib/db/planAdjustments";
 import {
   fetchIntervalsWorkoutSyncsForTrainingPlan,
@@ -29,12 +26,8 @@ import {
   deleteWorkoutEvaluationsForLoggedWorkout,
   fetchLoggedWorkoutsForPlannedWorkout,
   fetchLoggedWorkoutsForTrainingPlan,
-  fetchPlannedWorkoutById,
   fetchWorkoutEvaluationsForTrainingPlan,
-  markPlannedWorkoutCompleted,
   markPlannedWorkoutPlanned,
-  saveLoggedWorkout,
-  saveWorkoutEvaluation,
   type SaveLoggedWorkoutInput,
 } from "@/lib/db/workouts";
 import {
@@ -42,7 +35,6 @@ import {
   isWorkoutInIntervalsBulkPublishWindow,
   type IntervalsBulkPublishWindowDays,
 } from "@/lib/intervals/publishSelection";
-import { suggestPlanAdjustment } from "@/lib/training/planAdjustment";
 import {
   buildPlanAdjustmentByLoggedWorkoutId,
   formatAdjustmentTypeLabel,
@@ -52,13 +44,12 @@ import {
   buildRollbackUpdatesFromAdjustments,
   filterRollbackUpdatesBlockedByNewerAdjustments,
 } from "@/lib/training/planAdjustmentRollback";
-import { scoreWorkout } from "@/lib/training/workoutScoring";
+import { saveLoggedWorkoutWithCompletion } from "@/lib/training/workoutLogging";
 import type {
   LoggedWorkout,
   LoggedWorkoutType,
   PlanAdjustment,
   PlannedWorkout,
-  PlanAdjustmentDecision,
   WorkoutEvaluation,
   Profile,
   RaceGoal,
@@ -68,6 +59,9 @@ import type {
   IntervalsPublishWorkoutResult,
   IntervalsWorkoutSync,
   IntervalsWorkoutSyncStatus,
+  StravaImportDays,
+  StravaImportResponse,
+  StravaStatusResponse,
   WorkoutExport,
   WorkoutExportSyncStatus,
 } from "@/types";
@@ -99,6 +93,8 @@ type GarminBridgeStatusResponse = {
   status: string;
   message: string;
 };
+
+type StravaLoadState = "loading" | "ready" | "error";
 
 type GarminTargetSummary = {
   target_type: string;
@@ -239,6 +235,8 @@ const emptyBulkPublishSelection: BulkPublishSelectionState = {
   defaultKey: "",
   selectedWorkoutIds: [],
 };
+
+const stravaImportDayOptions: StravaImportDays[] = [7, 14];
 
 const runWorkoutTypes: WorkoutType[] = [
   "easy",
@@ -691,62 +689,6 @@ function addLoggedWorkoutIfMissing(
   return [...loggedWorkouts, loggedWorkout];
 }
 
-function addWorkoutEvaluationIfMissing(
-  evaluations: WorkoutEvaluation[],
-  evaluation: WorkoutEvaluation,
-): WorkoutEvaluation[] {
-  if (
-    evaluations.some(
-      (currentEvaluation) => currentEvaluation.id === evaluation.id,
-    )
-  ) {
-    return evaluations;
-  }
-
-  return [evaluation, ...evaluations];
-}
-
-function getRecentLoggedWorkouts(
-  loggedWorkouts: LoggedWorkout[],
-  savedLoggedWorkout: LoggedWorkout,
-): LoggedWorkout[] {
-  return addLoggedWorkoutIfMissing(loggedWorkouts, savedLoggedWorkout)
-    .sort((firstWorkout, secondWorkout) =>
-      secondWorkout.workout_date.localeCompare(firstWorkout.workout_date),
-    )
-    .slice(0, 5);
-}
-
-function getRecentWorkoutEvaluations(
-  evaluations: WorkoutEvaluation[],
-  savedEvaluation: WorkoutEvaluation,
-): WorkoutEvaluation[] {
-  return addWorkoutEvaluationIfMissing(evaluations, savedEvaluation)
-    .sort((firstEvaluation, secondEvaluation) =>
-      secondEvaluation.created_at.localeCompare(firstEvaluation.created_at),
-    )
-    .slice(0, 5);
-}
-
-function buildFallbackNoneDecision(
-  error: unknown,
-  failedDecision: PlanAdjustmentDecision | null,
-): PlanAdjustmentDecision {
-  const errorMessage =
-    error instanceof Error ? error.message : "Unknown adjustment error.";
-
-  return {
-    adjustment_type: "none",
-    reason: "Plan adjustment failed after workout logging.",
-    explanation: `The workout and score were saved, but the planned workout updates or adjustment record failed: ${errorMessage}. The plan was left unchanged.`,
-    affected_workout_ids: [],
-    before_snapshot: failedDecision?.before_snapshot ?? null,
-    after_snapshot: null,
-    updatedFuturePlannedWorkouts:
-      failedDecision?.updatedFuturePlannedWorkouts ?? [],
-  };
-}
-
 async function markUpdatedIntervalsSyncsNeedsResync(
   updatedWorkouts: PlannedWorkout[],
 ): Promise<string | null> {
@@ -789,90 +731,6 @@ async function markUpdatedGarminExportsStale(
 
 function combineSyncWarnings(...warnings: Array<string | null>): string {
   return warnings.filter((warning): warning is string => Boolean(warning)).join("");
-}
-
-async function applyPlanAdjustmentAfterLogging(input: {
-  profile: Profile;
-  raceGoal: RaceGoal;
-  plan: TrainingPlan;
-  loggedWorkout: LoggedWorkout;
-  plannedWorkout: PlannedWorkout;
-  workoutEvaluation: WorkoutEvaluation;
-  recentLoggedWorkouts: LoggedWorkout[];
-  recentWorkoutEvaluations: WorkoutEvaluation[];
-}): Promise<string> {
-  let decision: PlanAdjustmentDecision | null = null;
-  let intervalsSyncWarning: string | null = null;
-  let garminExportWarning: string | null = null;
-
-  try {
-    const futurePlannedWorkouts = await fetchFuturePlannedWorkouts(
-      input.plan.id,
-      input.loggedWorkout.workout_date,
-    );
-    decision = suggestPlanAdjustment({
-      profile: input.profile,
-      raceGoal: input.raceGoal,
-      trainingPlan: input.plan,
-      loggedWorkout: input.loggedWorkout,
-      workoutEvaluation: input.workoutEvaluation,
-      plannedWorkout: input.plannedWorkout,
-      futurePlannedWorkouts,
-      recentLoggedWorkouts: input.recentLoggedWorkouts,
-      recentWorkoutEvaluations: input.recentWorkoutEvaluations,
-    });
-
-    if (decision.adjustment_type !== "none") {
-      const updatedWorkouts = await updateFuturePlannedWorkoutsForAdjustment({
-        updatedFuturePlannedWorkouts: decision.updatedFuturePlannedWorkouts,
-        affectedWorkoutIds: decision.affected_workout_ids,
-        loggedWorkoutDate: input.loggedWorkout.workout_date,
-      });
-      intervalsSyncWarning =
-        await markUpdatedIntervalsSyncsNeedsResync(updatedWorkouts);
-      garminExportWarning = await markUpdatedGarminExportsStale(updatedWorkouts);
-    }
-
-    await savePlanAdjustment(
-      buildSavePlanAdjustmentInput({
-        profileId: input.profile.id,
-        raceGoalId: input.raceGoal.id,
-        trainingPlanId: input.plan.id,
-        loggedWorkoutId: input.loggedWorkout.id,
-        workoutEvaluationId: input.workoutEvaluation.id,
-        decision,
-      }),
-    );
-  } catch (error) {
-    const fallbackDecision = buildFallbackNoneDecision(error, decision);
-
-    try {
-      await savePlanAdjustment(
-        buildSavePlanAdjustmentInput({
-          profileId: input.profile.id,
-          raceGoalId: input.raceGoal.id,
-          trainingPlanId: input.plan.id,
-          loggedWorkoutId: input.loggedWorkout.id,
-          workoutEvaluationId: input.workoutEvaluation.id,
-          decision: fallbackDecision,
-        }),
-      );
-    } catch {
-      // The workout and score are already saved. If the audit row also fails,
-      // leave the plan adjustment untouched and report partial success.
-    }
-
-    return "Workout saved and score generated, but plan adjustment failed. The plan was left unchanged.";
-  }
-
-  if (decision.adjustment_type === "none") {
-    return "Workout saved, score generated, and plan unchanged.";
-  }
-
-  return `Workout saved, score generated, and plan adjusted.${combineSyncWarnings(
-    intervalsSyncWarning,
-    garminExportWarning,
-  )}`;
 }
 
 async function rollbackPlanAdjustmentBeforeDeletingWorkout(input: {
@@ -1246,6 +1104,7 @@ function buildLoggedWorkoutInput(
     workout_date: form.workout_date,
     workout_type: getLoggedWorkoutType(selectedWorkout),
     source: "manual",
+    source_activity_id: null,
     distance_km: Number(distanceKm.toFixed(2)),
     duration_sec: durationSec,
     avg_pace_sec_per_km: avgPaceSecPerKm,
@@ -1287,6 +1146,16 @@ export function WorkoutLoggingPanel() {
   const [bulkPublishResults, setBulkPublishResults] = useState<
     IntervalsPublishWorkoutResult[]
   >([]);
+  const [stravaLoadState, setStravaLoadState] =
+    useState<StravaLoadState>("loading");
+  const [stravaStatus, setStravaStatus] =
+    useState<StravaStatusResponse | null>(null);
+  const [stravaImportDays, setStravaImportDays] =
+    useState<StravaImportDays>(7);
+  const [stravaImporting, setStravaImporting] = useState(false);
+  const [stravaImportSummary, setStravaImportSummary] =
+    useState<StravaImportResponse | null>(null);
+  const [stravaMessage, setStravaMessage] = useState<string | null>(null);
   const [garminBridgeStatus, setGarminBridgeStatus] =
     useState<GarminBridgeStatusResponse | null>(null);
   const [garminPreviewingWorkoutId, setGarminPreviewingWorkoutId] =
@@ -1322,6 +1191,29 @@ export function WorkoutLoggingPanel() {
     }
   }, []);
 
+  const loadStravaStatus = useCallback(async () => {
+    setStravaLoadState("loading");
+
+    try {
+      const response = await fetch("/api/strava/status");
+      const result = (await response.json()) as StravaStatusResponse;
+
+      if (!response.ok) {
+        throw new Error(result.message || "Could not load Strava status.");
+      }
+
+      setStravaStatus(result);
+      setStravaMessage(result.message);
+      setStravaLoadState("ready");
+    } catch (error) {
+      setStravaStatus(null);
+      setStravaMessage(
+        error instanceof Error ? error.message : "Could not load Strava status.",
+      );
+      setStravaLoadState("error");
+    }
+  }, []);
+
   const loadWorkouts = useCallback(async (successMessage?: string) => {
     try {
       const profile = await fetchFirstProfile();
@@ -1331,6 +1223,7 @@ export function WorkoutLoggingPanel() {
         setForm(emptyForm);
         setBulkPublishing(false);
         setBulkPublishResults([]);
+        setStravaImporting(false);
         setMessage(successMessage ?? "Create and save a Profile first.");
         setStatus("ready");
         return;
@@ -1353,6 +1246,7 @@ export function WorkoutLoggingPanel() {
         setForm(emptyForm);
         setBulkPublishing(false);
         setBulkPublishResults([]);
+        setStravaImporting(false);
         setMessage(
           successMessage ??
             "Generate or select an active training plan on the Plan page before logging workouts.",
@@ -1403,6 +1297,7 @@ export function WorkoutLoggingPanel() {
       setGarminDeletingWorkoutId(null);
       setGarminUpdatingWorkoutId(null);
       setBulkPublishing(false);
+      setStravaImporting(false);
       setForm(resetFormForWorkout(firstLoggableWorkout));
       setMessage(
         successMessage ??
@@ -1418,6 +1313,7 @@ export function WorkoutLoggingPanel() {
           : "Could not load planned workouts.",
       );
       setBulkPublishing(false);
+      setStravaImporting(false);
       setStatus("error");
     }
   }, []);
@@ -1429,6 +1325,10 @@ export function WorkoutLoggingPanel() {
   useEffect(() => {
     void Promise.resolve().then(() => loadGarminBridgeStatus());
   }, [loadGarminBridgeStatus]);
+
+  useEffect(() => {
+    void Promise.resolve().then(() => loadStravaStatus());
+  }, [loadStravaStatus]);
 
   const runWorkouts = useMemo(
     () => workoutsState.plannedWorkouts.filter(isRunRelatedWorkout),
@@ -1520,8 +1420,12 @@ export function WorkoutLoggingPanel() {
     garminDeletingWorkoutId !== null ||
     garminUpdatingWorkoutId !== null;
   const isPublishing =
-    publishingWorkoutId !== null || bulkPublishing || isGarminBusy;
+    publishingWorkoutId !== null ||
+    bulkPublishing ||
+    isGarminBusy ||
+    stravaImporting;
   const isBusy = isSaving || isDeleting || isPublishing;
+  const isStravaConnected = stravaStatus?.connected === true;
   const isGarminBridgeConfigured = garminBridgeStatus?.enabled === true;
   const selectedWorkoutIntervalsSync = selectedWorkout
     ? intervalsWorkoutSyncByPlannedWorkoutId.get(selectedWorkout.id) ?? null
@@ -1980,6 +1884,42 @@ export function WorkoutLoggingPanel() {
     }
   }
 
+  async function handleImportStravaRuns() {
+    if (!isStravaConnected) {
+      setStravaMessage("Connect Strava in Settings before importing runs.");
+      return;
+    }
+
+    setStravaImporting(true);
+    setStravaImportSummary(null);
+    setStravaMessage(null);
+
+    try {
+      const response = await fetch("/api/strava/import", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ days: stravaImportDays }),
+      });
+      const result = (await response.json()) as StravaImportResponse;
+
+      if (!response.ok) {
+        throw new Error(result.message || "Could not import Strava runs.");
+      }
+
+      setStravaImportSummary(result);
+      setStravaMessage(result.message);
+      await loadWorkouts(result.message);
+    } catch (error) {
+      setStravaMessage(
+        error instanceof Error ? error.message : "Could not import Strava runs.",
+      );
+    } finally {
+      setStravaImporting(false);
+    }
+  }
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const { profile, raceGoal, plan } = workoutsState;
@@ -2009,146 +1949,41 @@ export function WorkoutLoggingPanel() {
       return;
     }
 
-    let savedLoggedWorkout: LoggedWorkout;
-
     try {
-      savedLoggedWorkout = await saveLoggedWorkout(loggedWorkoutInput);
+      const completionResult = await saveLoggedWorkoutWithCompletion({
+        profile,
+        raceGoal,
+        plan,
+        loggedWorkoutInput,
+        plannedWorkout: selectedWorkout,
+        recentLoggedWorkouts: workoutsState.loggedWorkouts,
+        recentWorkoutEvaluations: workoutsState.workoutEvaluations,
+      });
+
+      try {
+        await loadWorkouts(completionResult.message);
+        setStatus(completionResult.ok ? "saved" : "error");
+      } catch (error) {
+        setWorkoutsState((currentState) => ({
+          ...currentState,
+          loggedWorkouts: addLoggedWorkoutIfMissing(
+            currentState.loggedWorkouts,
+            completionResult.loggedWorkout,
+          ),
+        }));
+        setStatus("error");
+        setMessage(
+          error instanceof Error
+            ? `${completionResult.message} Could not reload workouts: ${error.message}`
+            : `${completionResult.message} Could not reload workouts.`,
+        );
+      }
     } catch (error) {
       setStatus("error");
       setMessage(
         error instanceof Error
           ? `Could not save workout log: ${error.message}`
           : "Could not save workout log.",
-      );
-      return;
-    }
-
-    const plannedWorkoutId =
-      savedLoggedWorkout.planned_workout_id ??
-      loggedWorkoutInput.planned_workout_id;
-
-    if (!plannedWorkoutId) {
-      setWorkoutsState((currentState) => ({
-        ...currentState,
-        loggedWorkouts: addLoggedWorkoutIfMissing(
-          currentState.loggedWorkouts,
-          savedLoggedWorkout,
-        ),
-      }));
-      setStatus("error");
-      setMessage(
-        "Workout log was saved, but scoring could not run because the log is not linked to a planned workout.",
-      );
-      return;
-    }
-
-    let linkedPlannedWorkout: PlannedWorkout;
-
-    try {
-      linkedPlannedWorkout = await fetchPlannedWorkoutById(plannedWorkoutId);
-    } catch (error) {
-      setWorkoutsState((currentState) => ({
-        ...currentState,
-        loggedWorkouts: addLoggedWorkoutIfMissing(
-          currentState.loggedWorkouts,
-          savedLoggedWorkout,
-        ),
-      }));
-      setStatus("error");
-      setMessage(
-        error instanceof Error
-          ? `Workout log was saved, but the linked planned workout could not be loaded for scoring: ${error.message}`
-          : "Workout log was saved, but the linked planned workout could not be loaded for scoring.",
-      );
-      return;
-    }
-
-    let savedEvaluation: WorkoutEvaluation;
-
-    try {
-      const evaluationInput = scoreWorkout(
-        savedLoggedWorkout,
-        linkedPlannedWorkout,
-      );
-      savedEvaluation = await saveWorkoutEvaluation(evaluationInput);
-    } catch (error) {
-      setWorkoutsState((currentState) => ({
-        ...currentState,
-        loggedWorkouts: addLoggedWorkoutIfMissing(
-          currentState.loggedWorkouts,
-          savedLoggedWorkout,
-        ),
-      }));
-      setStatus("error");
-      setMessage(
-        error instanceof Error
-          ? `Workout log was saved, but the score could not be saved: ${error.message}`
-          : "Workout log was saved, but the score could not be saved.",
-      );
-      return;
-    }
-
-    try {
-      await markPlannedWorkoutCompleted(plannedWorkoutId);
-    } catch (error) {
-      setWorkoutsState((currentState) => ({
-        ...currentState,
-        loggedWorkouts: addLoggedWorkoutIfMissing(
-          currentState.loggedWorkouts,
-          savedLoggedWorkout,
-        ),
-        workoutEvaluations: addWorkoutEvaluationIfMissing(
-          currentState.workoutEvaluations,
-          savedEvaluation,
-        ),
-      }));
-      setStatus("error");
-      setMessage(
-        error instanceof Error
-          ? `Workout log and score were saved, but the planned workout status was not updated: ${error.message}`
-          : "Workout log and score were saved, but the planned workout status was not updated.",
-      );
-      return;
-    }
-
-    const recentLoggedWorkouts = getRecentLoggedWorkouts(
-      workoutsState.loggedWorkouts,
-      savedLoggedWorkout,
-    );
-    const recentWorkoutEvaluations = getRecentWorkoutEvaluations(
-      workoutsState.workoutEvaluations,
-      savedEvaluation,
-    );
-    const successMessage = await applyPlanAdjustmentAfterLogging({
-      profile,
-      raceGoal,
-      plan,
-      loggedWorkout: savedLoggedWorkout,
-      plannedWorkout: linkedPlannedWorkout,
-      workoutEvaluation: savedEvaluation,
-      recentLoggedWorkouts,
-      recentWorkoutEvaluations,
-    });
-
-    try {
-      await loadWorkouts(successMessage);
-    } catch (error) {
-      setWorkoutsState((currentState) => ({
-        ...currentState,
-        loggedWorkouts: addLoggedWorkoutIfMissing(
-          currentState.loggedWorkouts,
-          savedLoggedWorkout,
-        ),
-        workoutEvaluations: addWorkoutEvaluationIfMissing(
-          currentState.workoutEvaluations,
-          savedEvaluation,
-        ),
-      }));
-      setStatus("error");
-      setMessage(
-        error instanceof Error
-          ? `${successMessage} Could not reload workouts: ${error.message}`
-          : `${successMessage} Could not reload workouts.`,
       );
     }
   }
@@ -2288,6 +2123,83 @@ export function WorkoutLoggingPanel() {
 
       {profile && plan ? (
         <>
+          <section className="rounded-md border border-slate-200 bg-white p-6">
+            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div>
+                <h2 className="text-base font-medium text-slate-950">
+                  Strava import
+                </h2>
+                <p className="mt-1 text-sm text-slate-600">
+                  Import recent Strava runs into this active plan.
+                </p>
+              </div>
+              <button
+                className="w-fit rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
+                disabled={isBusy || stravaLoadState === "loading"}
+                onClick={() => void loadStravaStatus()}
+                type="button"
+              >
+                {stravaLoadState === "loading" ? "Checking..." : "Refresh status"}
+              </button>
+            </div>
+
+            {stravaMessage ? (
+              <div
+                className={`mt-4 rounded-md border px-4 py-3 text-sm ${
+                  stravaLoadState === "error"
+                    ? "border-red-200 bg-red-50 text-red-800"
+                    : "border-slate-200 bg-slate-50 text-slate-700"
+                }`}
+              >
+                {stravaMessage}
+              </div>
+            ) : null}
+
+            {!isStravaConnected ? (
+              <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-900">
+                Connect Strava in{" "}
+                <Link className="font-medium underline" href="/settings">
+                  Settings
+                </Link>{" "}
+                before importing Strava runs.
+              </div>
+            ) : (
+              <div className="mt-4 flex flex-col gap-3 md:flex-row md:flex-wrap md:items-center">
+                <div className="flex w-fit rounded-md border border-slate-300 bg-white p-1">
+                  {stravaImportDayOptions.map((days) => (
+                    <button
+                      aria-pressed={stravaImportDays === days}
+                      className={`rounded px-3 py-1.5 text-sm font-medium ${
+                        stravaImportDays === days
+                          ? "bg-slate-900 text-white"
+                          : "text-slate-700 hover:bg-slate-50"
+                      }`}
+                      disabled={isBusy}
+                      key={days}
+                      onClick={() => setStravaImportDays(days)}
+                      type="button"
+                    >
+                      Last {days} days
+                    </button>
+                  ))}
+                </div>
+
+                <button
+                  className="w-fit rounded-md bg-slate-950 px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:bg-slate-400"
+                  disabled={isBusy}
+                  onClick={() => void handleImportStravaRuns()}
+                  type="button"
+                >
+                  {stravaImporting ? "Importing..." : "Import latest Strava runs"}
+                </button>
+              </div>
+            )}
+
+            <div className="mt-5">
+              <StravaImportSummary summary={stravaImportSummary} />
+            </div>
+          </section>
+
           <section className="rounded-md border border-slate-200 bg-white p-6">
             <div>
               <h2 className="text-base font-medium text-slate-950">

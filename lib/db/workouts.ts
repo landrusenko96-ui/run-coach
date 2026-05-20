@@ -1,4 +1,4 @@
-import { getSupabaseClient } from "@/lib/db/supabaseClient";
+import { getSupabaseClient } from "./supabaseClient.ts";
 import type {
   LoggedWorkout,
   PlannedWorkout,

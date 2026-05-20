@@ -1,5 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { getSupabasePublicConfig } from "@/lib/supabase/config";
+import { getSupabasePublicConfig } from "../supabase/config.ts";
 
 export type SupabaseConfig = {
   url: string;

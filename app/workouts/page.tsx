@@ -6,7 +6,7 @@ export default function WorkoutsPage() {
     <>
       <PageHeader
         title="Workouts"
-        description="Log completed runs manually before Strava import is added."
+        description="Log completed runs manually or import recent Strava runs."
       />
       <WorkoutLoggingPanel />
     </>

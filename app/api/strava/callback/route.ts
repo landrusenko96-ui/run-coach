@@ -1,0 +1,80 @@
+import { NextRequest, NextResponse } from "next/server";
+import { saveStravaConnection } from "@/lib/db/stravaConnections";
+import {
+  exchangeStravaCodeForToken,
+  hasRequiredStravaScopes,
+} from "@/lib/strava/client";
+import {
+  isValidStravaOAuthState,
+  STRAVA_OAUTH_STATE_COOKIE_NAME,
+} from "@/lib/strava/oauthState";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
+
+export const dynamic = "force-dynamic";
+
+function redirectToSettings(request: NextRequest, status: string): NextResponse {
+  const url = new URL("/settings", request.url);
+  url.searchParams.set("strava", status);
+
+  const response = NextResponse.redirect(url);
+  response.cookies.set(STRAVA_OAUTH_STATE_COOKIE_NAME, "", {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    maxAge: 0,
+    path: "/",
+  });
+
+  return response;
+}
+
+export async function GET(request: NextRequest) {
+  const callbackUrl = new URL(request.url);
+  const error = callbackUrl.searchParams.get("error");
+  const code = callbackUrl.searchParams.get("code");
+  const state = callbackUrl.searchParams.get("state");
+  const scope = callbackUrl.searchParams.get("scope") ?? "";
+  const expectedState = request.cookies.get(STRAVA_OAUTH_STATE_COOKIE_NAME)?.value ?? null;
+
+  if (!isValidStravaOAuthState(state, expectedState)) {
+    return redirectToSettings(request, "state_error");
+  }
+
+  if (error) {
+    return redirectToSettings(request, "denied");
+  }
+
+  if (!code) {
+    return redirectToSettings(request, "missing_code");
+  }
+
+  if (!hasRequiredStravaScopes(scope)) {
+    return redirectToSettings(request, "missing_scope");
+  }
+
+  const supabase = await createSupabaseServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return redirectToSettings(request, "sign_in_required");
+  }
+
+  try {
+    const tokenExchange = await exchangeStravaCodeForToken(code);
+
+    await saveStravaConnection(supabase, {
+      userId: user.id,
+      scope,
+      accessToken: tokenExchange.accessToken,
+      refreshToken: tokenExchange.refreshToken,
+      tokenExpiresAt: tokenExchange.tokenExpiresAt,
+      athlete: tokenExchange.athlete,
+    });
+
+    return redirectToSettings(request, "connected");
+  } catch {
+    return redirectToSettings(request, "error");
+  }
+}

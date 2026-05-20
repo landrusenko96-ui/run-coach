@@ -1,12 +1,12 @@
 import {
   buildPlannedWorkoutAdjustmentUpdate,
   type SavePlanAdjustmentInput,
-} from "@/lib/db/planAdjustmentShapes";
-import { getSupabaseClient } from "@/lib/db/supabaseClient";
+} from "./planAdjustmentShapes.ts";
+import { getSupabaseClient } from "./supabaseClient.ts";
 import {
   buildPlannedWorkoutRollbackUpdate,
   type PlannedWorkoutRollbackUpdate,
-} from "@/lib/training/planAdjustmentRollback";
+} from "../training/planAdjustmentRollback.ts";
 import type { PlanAdjustment, PlannedWorkout } from "@/types/training";
 
 export type PlanAdjustmentDashboardSummary = {
@@ -17,7 +17,7 @@ export type PlanAdjustmentDashboardSummary = {
 export {
   buildPlannedWorkoutAdjustmentUpdate,
   buildSavePlanAdjustmentInput,
-} from "@/lib/db/planAdjustmentShapes";
+} from "./planAdjustmentShapes.ts";
 
 export async function savePlanAdjustment(
   planAdjustment: SavePlanAdjustmentInput,

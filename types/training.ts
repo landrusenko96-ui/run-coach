@@ -413,6 +413,7 @@ export type LoggedWorkout = {
   workout_date: string;
   workout_type: LoggedWorkoutType;
   source: LoggedWorkoutSource;
+  source_activity_id: string | null;
   distance_km: number | null;
   duration_sec: number | null;
   avg_pace_sec_per_km: number | null;

@@ -1,5 +1,6 @@
 import { DirectGarminBridgeStatusPanel } from "@/app/settings/DirectGarminBridgeStatusPanel";
 import { IntervalsSettingsPanel } from "@/app/settings/IntervalsSettingsPanel";
+import { StravaSettingsPanel } from "@/app/settings/StravaSettingsPanel";
 import { PageHeader } from "@/components/PageHeader";
 import { getIntervalsServerConfigStatus } from "@/lib/intervals/config";
 
@@ -14,6 +15,7 @@ export default function SettingsPage() {
       />
       <div className="space-y-6">
         <IntervalsSettingsPanel envStatus={intervalsEnvStatus} />
+        <StravaSettingsPanel />
         <DirectGarminBridgeStatusPanel />
 
         <section className="rounded-md border border-slate-200 bg-white p-6">
