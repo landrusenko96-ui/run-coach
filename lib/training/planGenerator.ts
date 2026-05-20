@@ -1,4 +1,8 @@
 import { getEffectiveRunningDaysPerWeek } from "./runningDays.ts";
+import {
+  getLocalDateText,
+  validatePlanStartDate,
+} from "./planStart.ts";
 import { buildStructuredWorkout } from "./structuredWorkout.ts";
 import type {
   GeneratedPlannedWorkout,
@@ -120,31 +124,27 @@ export function generateTrainingPlan(
     assumptions,
     warnings,
   );
-  let runningDays = selectRunningDaysForPlan({
+  const runningDays = selectRunningDaysForPlan({
     availableTrainingDays,
     runningDaysPerWeek: effectiveRunningDaysPerWeek,
     preferredLongRunDay: runnerProfile.preferred_long_run_day,
   });
   const terrainAvailable = getTerrainAvailable(runnerProfile, assumptions);
-  const todayDate = parseDateOnly(getTodayDateText());
-  const requestedStartDate = parseDateOnly(options.startDate ?? getTodayDateText());
-  const earliestStartDate = requestedStartDate > todayDate ? requestedStartDate : todayDate;
+  const todayDateText = getLocalDateText();
+  const startDateText = options.startDate ?? todayDateText;
+  const startDateValidationMessage = validatePlanStartDate({
+    startDateText,
+    raceDateText: raceGoal.race_date,
+    raceDistance: raceGoal.distance,
+    todayDateText,
+  });
+
+  if (startDateValidationMessage) {
+    throw new Error(startDateValidationMessage);
+  }
+
+  const startDate = parseDateOnly(startDateText);
   const raceDate = parseDateOnly(raceGoal.race_date);
-
-  if (raceDate < todayDate) {
-    throw new Error("Race date is in the past. Update the active Race Goal before generating a plan.");
-  }
-
-  let startDate = findFirstAvailableDate(earliestStartDate, runningDays);
-
-  if (startDate > raceDate) {
-    const startDay = getTrainingDay(earliestStartDate);
-    warnings.push(
-      "Race day is too soon to wait for the next saved training day, so the plan starts as soon as possible with a calibration workout.",
-    );
-    runningDays = sortTrainingDays([...new Set([...runningDays, startDay])]);
-    startDate = earliestStartDate;
-  }
 
   const longRunDay = getLongRunDay(
     runnerProfile,
@@ -1066,21 +1066,6 @@ export function buildDefaultTrainingPlanName(raceGoal: RaceGoal): string {
   return `${raceGoal.race_name} ${distanceLabel} Plan`;
 }
 
-function findFirstAvailableDate(
-  startDate: Date,
-  availableTrainingDays: TrainingDay[],
-): Date {
-  for (let dayOffset = 0; dayOffset < 7; dayOffset += 1) {
-    const candidateDate = addDays(startDate, dayOffset);
-
-    if (availableTrainingDays.includes(getTrainingDay(candidateDate))) {
-      return candidateDate;
-    }
-  }
-
-  return startDate;
-}
-
 function sortTrainingDays(trainingDays: TrainingDay[]): TrainingDay[] {
   return [...trainingDays].sort(
     (firstDay, secondDay) =>
@@ -1091,10 +1076,6 @@ function sortTrainingDays(trainingDays: TrainingDay[]): TrainingDay[] {
 function parseDateOnly(dateText: string): Date {
   const [year, month, day] = dateText.split("-").map(Number);
   return new Date(year, month - 1, day);
-}
-
-function getTodayDateText(): string {
-  return formatDateOnly(new Date());
 }
 
 function formatDateOnly(date: Date): string {

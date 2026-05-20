@@ -42,9 +42,10 @@ npm test
 - Basic navigation exists for Dashboard, Profile, Goal, Plan, Workouts, and Settings.
 - Profile and race goal forms save to Supabase.
 - Rule-based plan generation creates planned workouts and structured workout documents.
+- New plans start today by default, can start on a selected future date, and block starts that are in the past or too close to race day.
 - Manual workout logging saves completed workouts and generates rule-based workout scores.
 - Plan adjustment logic can update future planned workouts with an audit record.
-- Dashboard shows current plan status, recent logs, recent scores, and latest adjustment summary.
+- Dashboard acts as a weekly command center with today's workout, the next workout, this-week status, export health, attention items, recent logs, recent scores, and plan-change summaries.
 - Intervals.icu publishing exists for planned run workouts using server-only environment variables. It remains the primary export path.
 - Direct Garmin publishing exists as an experimental local-only bridge in `local-garmin-bridge/`.
 - The Direct Garmin bridge uses `python-garminconnect==0.3.3`, a locally saved Garmin session, and a FastAPI service bound to `127.0.0.1`.
@@ -196,7 +197,7 @@ Common fixes:
 Continue tightening the adaptive training loop before adding broad new features:
 
 - keep training logic deterministic and rule-based;
-- finish the dashboard projection work;
+- keep tightening the dashboard and active-plan reliability work;
 - keep Intervals.icu as the primary workout export path;
 - treat the direct Garmin local bridge as experimental even though pace-target publishing has been manually verified;
 - keep Garmin cleanup explicit and user-confirmed; do not add silent automatic Garmin deletion/update.

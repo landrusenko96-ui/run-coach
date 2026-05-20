@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { generateTrainingPlan } from "../lib/training/planGenerator.ts";
+import {
+  getLocalDateText,
+  subtractDaysFromDateText,
+} from "../lib/training/planStart.ts";
 
 const profile = {
   id: "profile-1",
@@ -42,6 +46,31 @@ const raceGoal = {
 };
 
 describe("generateTrainingPlan", () => {
+  it("starts by default on today's local date", () => {
+    const todayDateText = getLocalDateText();
+    const generatedPlan = generateTrainingPlan(profile, raceGoal);
+
+    assert.equal(generatedPlan.trainingPlan.start_date, todayDateText);
+    assert.equal(generatedPlan.plannedWorkouts[0].workout_date, todayDateText);
+  });
+
+  it("uses an explicit future start date exactly even when it is not a running day", () => {
+    const generatedPlan = generateTrainingPlan(profile, raceGoal, {
+      startDate: "2030-05-07",
+    });
+
+    assert.equal(generatedPlan.trainingPlan.start_date, "2030-05-07");
+    assert.equal(generatedPlan.plannedWorkouts[0].workout_date, "2030-05-07");
+    assert.equal(generatedPlan.plannedWorkouts[0].workout_type, "rest");
+
+    const firstRun = generatedPlan.plannedWorkouts.find(
+      (workout) => workout.workout_type !== "rest",
+    );
+
+    assert.equal(firstRun?.workout_date, "2030-05-08");
+    assert.equal(firstRun?.workout_type, "calibration");
+  });
+
   it("adds structured workouts to generated run workouts only", () => {
     const generatedPlan = generateTrainingPlan(profile, raceGoal, {
       startDate: "2030-05-06",
@@ -75,5 +104,64 @@ describe("generateTrainingPlan", () => {
     for (const workout of nonRunWorkouts) {
       assert.equal(workout.structured_workout, null);
     }
+  });
+
+  it("rejects plan start dates in the past", () => {
+    assert.throws(
+      () =>
+        generateTrainingPlan(profile, raceGoal, {
+          startDate: "2020-01-01",
+        }),
+      /cannot be in the past/,
+    );
+  });
+
+  it("requires marathon plans to start at least 42 days before race day", () => {
+    const latestAllowedStartDate = subtractDaysFromDateText(
+      raceGoal.race_date,
+      42,
+    );
+
+    assert.equal(
+      generateTrainingPlan(profile, raceGoal, {
+        startDate: latestAllowedStartDate,
+      }).trainingPlan.start_date,
+      latestAllowedStartDate,
+    );
+
+    assert.throws(
+      () =>
+        generateTrainingPlan(profile, raceGoal, {
+          startDate: "2030-09-09",
+        }),
+      /at least 6 weeks/,
+    );
+  });
+
+  it("requires half marathon plans to start at least 21 days before race day", () => {
+    const halfMarathonGoal = {
+      ...raceGoal,
+      race_name: "Spring Half Marathon",
+      distance: "half_marathon",
+    };
+    const latestAllowedStartDate = subtractDaysFromDateText(
+      halfMarathonGoal.race_date,
+      21,
+    );
+
+    assert.equal(
+      generateTrainingPlan(profile, halfMarathonGoal, {
+        startDate: latestAllowedStartDate,
+      }).trainingPlan.start_date,
+      latestAllowedStartDate,
+    );
+
+    assert.throws(
+      () =>
+        generateTrainingPlan(profile, halfMarathonGoal, {
+          startDate: "2030-09-30",
+        }),
+      /at least 3 weeks/,
+    );
   });
 });

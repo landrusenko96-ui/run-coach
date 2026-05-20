@@ -6,7 +6,7 @@ export default function DashboardPage() {
     <>
       <PageHeader
         title="Dashboard"
-        description="A simple overview of the active training plan, recent logs, and workout scores."
+        description="A weekly command center for today's workout, the next workout, plan changes, and export health."
       />
       <DashboardPanel />
     </>

@@ -12,6 +12,7 @@ import type { PlannedWorkout, TrainingPlan } from "@/types/training";
 type GenerateAndSaveTrainingPlanOptions = {
   planName?: string;
   replaceActivePlan?: boolean;
+  startDate?: string;
 };
 
 type GenerateAndSaveTrainingPlanResult = {
@@ -59,7 +60,9 @@ export async function generateAndSaveTrainingPlan(
       };
     }
 
-    const generatedPlan = generateTrainingPlan(profile, raceGoal);
+    const generatedPlan = generateTrainingPlan(profile, raceGoal, {
+      startDate: options.startDate,
+    });
     const customPlanName = normalizePlanName(options.planName);
     const trainingPlanInput = {
       profile_id: generatedPlan.trainingPlan.profile_id,

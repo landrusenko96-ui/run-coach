@@ -20,6 +20,11 @@ import {
   formatAffectedWorkoutLabels,
 } from "@/lib/training/planAdjustmentDisplay";
 import { buildDefaultTrainingPlanName } from "@/lib/training/planGenerator";
+import {
+  getLatestAllowedPlanStartDate,
+  getLocalDateText,
+  validatePlanStartDate,
+} from "@/lib/training/planStart";
 import type {
   PlanAdjustment,
   GarminBulkMaintenanceExecuteResponse,
@@ -539,6 +544,9 @@ export function TrainingPlanPanel() {
   );
   const [generationWarnings, setGenerationWarnings] = useState<string[]>([]);
   const [planNameInput, setPlanNameInput] = useState("");
+  const [planStartDateInput, setPlanStartDateInput] = useState(() =>
+    getLocalDateText(),
+  );
   const [isPlanPickerOpen, setIsPlanPickerOpen] = useState(false);
   const [pendingDeletePlanId, setPendingDeletePlanId] = useState<string | null>(
     null,
@@ -658,6 +666,26 @@ export function TrainingPlanPanel() {
   }, [loadGarminBridgeStatus]);
 
   async function handleGeneratePlan(replaceActivePlan: boolean) {
+    const activeRaceGoal = plansState.raceGoal;
+
+    if (!activeRaceGoal) {
+      setStatus("error");
+      setMessage("Create and save an active Race Goal before generating a plan.");
+      return;
+    }
+
+    const startDateValidationMessage = validatePlanStartDate({
+      startDateText: planStartDateInput,
+      raceDateText: activeRaceGoal.race_date,
+      raceDistance: activeRaceGoal.distance,
+    });
+
+    if (startDateValidationMessage) {
+      setStatus("error");
+      setMessage(startDateValidationMessage);
+      return;
+    }
+
     setStatus("generating");
     setMessage("Generating and saving your training plan...");
     setShowReplaceConfirmation(false);
@@ -669,6 +697,7 @@ export function TrainingPlanPanel() {
     const result = await generateAndSaveTrainingPlan({
       planName: planNameInput,
       replaceActivePlan,
+      startDate: planStartDateInput,
     });
 
     if (result.needsConfirmation) {
@@ -1078,7 +1107,22 @@ export function TrainingPlanPanel() {
     isGarminBulkBusy ||
     isGarminMaintenanceBusy;
   const isGarminBridgeConfigured = garminBridgeStatus?.enabled === true;
-  const canGeneratePlan = Boolean(profile && raceGoal);
+  const todayDateText = getLocalDateText();
+  const latestAllowedPlanStartDate = raceGoal
+    ? getLatestAllowedPlanStartDate(raceGoal.race_date, raceGoal.distance)
+    : "";
+  const planStartValidationMessage = raceGoal
+    ? validatePlanStartDate({
+        startDateText: planStartDateInput,
+        raceDateText: raceGoal.race_date,
+        raceDistance: raceGoal.distance,
+        todayDateText,
+      })
+    : null;
+  const canShowGenerationControls = Boolean(profile && raceGoal);
+  const canGeneratePlan = Boolean(
+    profile && raceGoal && !planStartValidationMessage,
+  );
   const weeklyWorkoutGroups = groupWorkoutsByWeek(workouts);
   const plannedWorkoutById = buildPlannedWorkoutById(workouts);
   const planChangingAdjustments =
@@ -1137,7 +1181,7 @@ export function TrainingPlanPanel() {
             </dl>
           </div>
 
-          {canGeneratePlan ? (
+          {canShowGenerationControls ? (
             <div className="w-full space-y-3 md:max-w-sm">
               <div>
                 <label
@@ -1162,13 +1206,42 @@ export function TrainingPlanPanel() {
                 />
               </div>
 
+              <div>
+                <label
+                  className="text-sm font-medium text-slate-700"
+                  htmlFor="new-plan-start-date"
+                >
+                  Plan start date
+                </label>
+                <input
+                  className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-950 outline-none focus:border-slate-500 disabled:cursor-not-allowed disabled:bg-slate-100"
+                  disabled={isBusy}
+                  id="new-plan-start-date"
+                  max={latestAllowedPlanStartDate}
+                  min={todayDateText}
+                  onChange={(event) =>
+                    setPlanStartDateInput(event.target.value)
+                  }
+                  type="date"
+                  value={planStartDateInput}
+                />
+                <p className="mt-1 text-xs text-slate-500">
+                  Leave this as today or choose a later start date.
+                </p>
+                {planStartValidationMessage ? (
+                  <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                    {planStartValidationMessage}
+                  </p>
+                ) : null}
+              </div>
+
               <button
                 className={`w-full rounded-md px-4 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:bg-slate-300 ${
                   activePlan
                     ? "border border-slate-300 bg-white text-slate-900"
                     : "bg-slate-950 text-white"
                 }`}
-                disabled={isBusy}
+                disabled={isBusy || !canGeneratePlan}
                 onClick={() => handleGeneratePlan(false)}
                 type="button"
               >
@@ -1209,7 +1282,7 @@ export function TrainingPlanPanel() {
             <div className="mt-3 flex flex-wrap gap-3">
               <button
                 className="rounded-md bg-amber-900 px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:bg-amber-300"
-                disabled={isBusy}
+                disabled={isBusy || !canGeneratePlan}
                 onClick={() => handleGeneratePlan(true)}
                 type="button"
               >
