@@ -42,8 +42,12 @@ export type StravaImportActivityResult = {
   date: string;
   distanceKm: number | null;
   avgPaceSecPerKm: number | null;
+  averagePace: number | null;
   status: StravaImportActivityStatus;
   statusMessage: string;
+  reason: string | null;
+  loggedWorkoutId: string | null;
+  matchedPlannedWorkoutId: string | null;
 };
 
 export type StravaImportResponse = {
@@ -62,5 +66,62 @@ export type StravaImportResponse = {
   adjusted: number;
   importedWorkouts: StravaImportedWorkoutSummary[];
   activityResults: StravaImportActivityResult[];
+  errors: string[];
+};
+
+export type StravaSingleActivityImportResponse = {
+  summary: StravaImportResponse;
+  activityResult: StravaImportActivityResult;
+};
+
+export type StravaWebhookSubscriptionInfo = {
+  exists: boolean;
+  subscriptionId: string | null;
+  callbackUrl: string | null;
+};
+
+export type StravaWebhookSubscriptionResponse =
+  StravaWebhookSubscriptionInfo & {
+    ok: boolean;
+    authenticated: boolean;
+    message: string;
+  };
+
+export type StravaWebhookProcessingStatus =
+  | "pending"
+  | "processing"
+  | "processed"
+  | "ignored"
+  | "failed";
+
+export type StravaWebhookRecentEvent = {
+  id: string;
+  receivedAt: string;
+  eventType: string;
+  objectId: string;
+  processingStatus: StravaWebhookProcessingStatus;
+  actionTaken: string | null;
+  shortError: string | null;
+};
+
+export type StravaWebhookStatusResponse = {
+  ok: boolean;
+  authenticated: boolean;
+  connected: boolean;
+  message: string;
+  pendingEvents: number;
+  failedEvents: number;
+  recentEvents: StravaWebhookRecentEvent[];
+};
+
+export type StravaWebhookProcessPendingResponse = {
+  ok: boolean;
+  authenticated: boolean;
+  connected: boolean;
+  message: string;
+  processed: number;
+  imported: number;
+  skipped: number;
+  failed: number;
   errors: string[];
 };

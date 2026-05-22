@@ -250,6 +250,18 @@ function buildStravaActivityId(value: unknown): string {
   throw new Error("Strava activity response was missing id.");
 }
 
+function getRequiredActivityIdText(value: string | number): string {
+  if (typeof value === "string" && value.trim()) {
+    return value.trim();
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+
+  throw new Error("Strava activity ID is required.");
+}
+
 function buildStravaSummaryActivity(
   rawActivity: RawStravaSummaryActivity,
 ): StravaSummaryActivity {
@@ -470,4 +482,40 @@ export async function fetchRecentStravaActivities(input: {
   return responseBody.map((activity) =>
     buildStravaSummaryActivity(activity as RawStravaSummaryActivity),
   );
+}
+
+export async function fetchStravaActivityById(input: {
+  accessToken: string;
+  activityId: string | number;
+  options?: Pick<StravaClientOptions, "fetchImpl"> & {
+    baseUrl?: string;
+  };
+}): Promise<StravaSummaryActivity> {
+  assertServerOnly();
+
+  const fetchImpl = input.options?.fetchImpl ?? fetch;
+  const baseUrl = input.options?.baseUrl ?? STRAVA_API_BASE_URL;
+  const activityId = encodeURIComponent(
+    getRequiredActivityIdText(input.activityId),
+  );
+  const url = new URL(`${baseUrl.replace(/\/+$/, "")}/activities/${activityId}`);
+
+  const response = await fetchImpl(url.toString(), {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${input.accessToken}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new StravaApiError({
+      status: response.status,
+      responseBody: await parseSafeErrorBody(response),
+    });
+  }
+
+  const responseBody = await parseJsonObjectResponse(response, "activity");
+
+  return buildStravaSummaryActivity(responseBody as RawStravaSummaryActivity);
 }

@@ -70,7 +70,13 @@ Supabase:
 NEXT_PUBLIC_SUPABASE_URL
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
 NEXT_PUBLIC_SUPABASE_ANON_KEY
+SUPABASE_SERVICE_ROLE_KEY
 ```
+
+Keep `SUPABASE_SERVICE_ROLE_KEY` server-only. Do not prefix it with
+`NEXT_PUBLIC_`, never log it, and never use it in browser/client components.
+It bypasses RLS and is only for trusted server-side tasks such as future
+Strava webhook processing.
 
 Intervals.icu:
 
@@ -113,6 +119,8 @@ Strava import:
 STRAVA_CLIENT_ID
 STRAVA_CLIENT_SECRET
 NEXT_PUBLIC_APP_URL
+STRAVA_WEBHOOK_VERIFY_TOKEN
+STRAVA_WEBHOOK_CALLBACK_URL
 ```
 
 For local development:
@@ -122,6 +130,12 @@ NEXT_PUBLIC_APP_URL=http://localhost:3000
 ```
 
 Keep `STRAVA_CLIENT_SECRET` server-only. Do not prefix it with `NEXT_PUBLIC_`. The browser should only start the connect flow and read safe connection status; access tokens and refresh tokens stay in server routes and Supabase.
+
+Keep `STRAVA_WEBHOOK_VERIFY_TOKEN` and `STRAVA_WEBHOOK_CALLBACK_URL`
+server-only too. Do not prefix them with `NEXT_PUBLIC_`, never log them, and do
+not read them from browser/client components. `STRAVA_WEBHOOK_CALLBACK_URL`
+must be a public URL when webhooks are enabled; plain `localhost` cannot receive
+Strava webhook calls directly.
 
 ## Strava Import Setup
 
@@ -137,6 +151,9 @@ To set it up locally:
 STRAVA_CLIENT_ID=your-strava-client-id
 STRAVA_CLIENT_SECRET=your-strava-client-secret
 NEXT_PUBLIC_APP_URL=http://localhost:3000
+STRAVA_WEBHOOK_VERIFY_TOKEN=replace-with-a-long-random-token
+STRAVA_WEBHOOK_CALLBACK_URL=https://your-public-app-url.example.com/api/strava/webhook
+SUPABASE_SERVICE_ROLE_KEY=your-server-only-supabase-service-role-or-secret-key
 ```
 
 4. Make sure the Supabase migration for Milestone 7 has been applied so `strava_connections`, `strava_activities`, and `logged_workouts.source_activity_id` exist.

@@ -17,6 +17,8 @@ import { fetchWorkoutExportsForTrainingPlan } from "@/lib/db/workoutExports";
 import {
   buildDashboardWeekSummary,
   buildRunProgressSummary,
+  mergeDashboardAttentionItems,
+  type DashboardAttentionItem,
   type DashboardGarminStatus,
   type DashboardIntervalsStatus,
   type DashboardWeekSummary,
@@ -46,6 +48,7 @@ type DashboardState = {
   intervalsWorkoutSyncs: IntervalsWorkoutSync[];
   workoutExports: WorkoutExport[];
   planAdjustments: PlanAdjustment[];
+  stravaWebhookAttentionItems: DashboardAttentionItem[];
   latestPlanAdjustment: PlanAdjustment | null;
   adjustmentCount: number;
 };
@@ -59,8 +62,17 @@ const emptyState: DashboardState = {
   intervalsWorkoutSyncs: [],
   workoutExports: [],
   planAdjustments: [],
+  stravaWebhookAttentionItems: [],
   latestPlanAdjustment: null,
   adjustmentCount: 0,
+};
+
+type StravaWebhookDashboardAttentionResponse = {
+  ok: boolean;
+  authenticated: boolean;
+  connected: boolean;
+  message: string;
+  attentionItems: DashboardAttentionItem[];
 };
 
 function formatDate(date: string): string {
@@ -339,6 +351,10 @@ function getAttentionBadgeClass(
     return "border-red-200 bg-red-50 text-red-800";
   }
 
+  if (attentionType === "strava_webhook") {
+    return "border-orange-200 bg-orange-50 text-orange-800";
+  }
+
   return "border-slate-200 bg-white text-slate-700";
 }
 
@@ -357,7 +373,46 @@ function formatAttentionTypeLabel(
     return "High risk";
   }
 
+  if (attentionType === "strava_webhook") {
+    return "Strava webhook";
+  }
+
   return "Missing score";
+}
+
+function getAttentionActionLabel(href: DashboardAttentionItem["href"]): string {
+  if (href === "/settings") {
+    return "Open Settings";
+  }
+
+  if (href === "/plan") {
+    return "Review Plan";
+  }
+
+  return "Review in Workouts";
+}
+
+async function fetchStravaWebhookDashboardAttentionItems(): Promise<
+  DashboardAttentionItem[]
+> {
+  try {
+    const response = await fetch("/api/strava/webhook/dashboard-attention");
+
+    if (response.status === 401) {
+      return [];
+    }
+
+    const result =
+      (await response.json()) as StravaWebhookDashboardAttentionResponse;
+
+    if (!response.ok || !result.ok) {
+      return [];
+    }
+
+    return result.attentionItems;
+  } catch {
+    return [];
+  }
 }
 
 export function DashboardPanel() {
@@ -398,6 +453,7 @@ export function DashboardPanel() {
         recentPlanAdjustments,
         intervalsWorkoutSyncs,
         workoutExports,
+        stravaWebhookAttentionItems,
       ] = await Promise.all([
         fetchLoggedWorkoutsForTrainingPlan(activePlan.plan.id),
         fetchWorkoutEvaluationsForTrainingPlan(activePlan.plan.id),
@@ -405,6 +461,7 @@ export function DashboardPanel() {
         fetchRecentPlanAdjustmentsForTrainingPlan(activePlan.plan.id, 10),
         fetchIntervalsWorkoutSyncsForTrainingPlan(activePlan.plan.id),
         fetchWorkoutExportsForTrainingPlan(activePlan.plan.id),
+        fetchStravaWebhookDashboardAttentionItems(),
       ]);
 
       setDashboardState({
@@ -416,6 +473,7 @@ export function DashboardPanel() {
         intervalsWorkoutSyncs,
         workoutExports,
         planAdjustments: recentPlanAdjustments,
+        stravaWebhookAttentionItems,
         latestPlanAdjustment: planAdjustmentSummary.latestPlanAdjustment,
         adjustmentCount: planAdjustmentSummary.adjustmentCount,
       });
@@ -444,6 +502,7 @@ export function DashboardPanel() {
     intervalsWorkoutSyncs,
     workoutExports,
     planAdjustments,
+    stravaWebhookAttentionItems,
     latestPlanAdjustment,
     adjustmentCount,
   } = dashboardState;
@@ -473,6 +532,14 @@ export function DashboardPanel() {
       workoutExports,
       planAdjustments,
     ],
+  );
+  const dashboardAttentionItems = useMemo(
+    () =>
+      mergeDashboardAttentionItems({
+        baseItems: dashboardWeek.exportHealth.attentionItems,
+        additionalItems: stravaWebhookAttentionItems,
+      }),
+    [dashboardWeek.exportHealth.attentionItems, stravaWebhookAttentionItems],
   );
   const runProgress = useMemo(
     () => buildRunProgressSummary(plannedWorkouts, loggedWorkouts),
@@ -787,13 +854,13 @@ export function DashboardPanel() {
               </Link>
             </div>
 
-            {dashboardWeek.exportHealth.attentionItems.length === 0 ? (
+            {dashboardAttentionItems.length === 0 ? (
               <p className="mt-4 text-sm text-slate-600">
                 No attention-needed items found for the active plan.
               </p>
             ) : (
               <div className="mt-4 divide-y divide-slate-100 rounded-md border border-slate-200">
-                {dashboardWeek.exportHealth.attentionItems
+                {dashboardAttentionItems
                   .slice(0, 8)
                   .map((attentionItem) => (
                     <div
@@ -809,13 +876,21 @@ export function DashboardPanel() {
                           {attentionItem.message}
                         </p>
                       </div>
-                      <span
-                        className={`w-fit rounded-md border px-2 py-1 text-xs font-medium ${getAttentionBadgeClass(
-                          attentionItem.type,
-                        )}`}
-                      >
-                        {formatAttentionTypeLabel(attentionItem.type)}
-                      </span>
+                      <div className="flex flex-col gap-2 md:items-end">
+                        <span
+                          className={`w-fit rounded-md border px-2 py-1 text-xs font-medium ${getAttentionBadgeClass(
+                            attentionItem.type,
+                          )}`}
+                        >
+                          {formatAttentionTypeLabel(attentionItem.type)}
+                        </span>
+                        <Link
+                          className="w-fit text-xs font-medium text-slate-900 underline"
+                          href={attentionItem.href}
+                        >
+                          {getAttentionActionLabel(attentionItem.href)}
+                        </Link>
+                      </div>
                     </div>
                   ))}
               </div>

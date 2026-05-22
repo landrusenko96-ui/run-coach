@@ -2,12 +2,13 @@ import type { createSupabaseServerClient } from "@/lib/supabase/server";
 import {
   getStravaAthleteDisplayName,
   type SafeStravaAthleteSummary,
-} from "@/lib/strava/client";
+} from "../strava/client.ts";
 import type { SafeStravaAthlete } from "@/types/strava";
 
 type SupabaseServerClient = Awaited<
   ReturnType<typeof createSupabaseServerClient>
 >;
+type SupabaseStravaConnectionClient = Pick<SupabaseServerClient, "from">;
 
 type StravaConnectionRow = {
   id: string;
@@ -85,7 +86,7 @@ function mapPrivateStravaConnection(
 }
 
 export async function saveStravaConnection(
-  supabase: SupabaseServerClient,
+  supabase: SupabaseStravaConnectionClient,
   input: SaveStravaConnectionInput,
 ): Promise<SafeStravaConnection> {
   const { data, error } = await supabase
@@ -122,7 +123,7 @@ export async function saveStravaConnection(
 }
 
 export async function fetchSafeStravaConnectionForUser(
-  supabase: SupabaseServerClient,
+  supabase: SupabaseStravaConnectionClient,
   userId: string,
 ): Promise<SafeStravaConnection | null> {
   const { data, error } = await supabase
@@ -139,7 +140,7 @@ export async function fetchSafeStravaConnectionForUser(
 }
 
 export async function fetchPrivateStravaConnectionForUser(
-  supabase: SupabaseServerClient,
+  supabase: SupabaseStravaConnectionClient,
   userId: string,
 ): Promise<PrivateStravaConnection | null> {
   const { data, error } = await supabase
@@ -155,8 +156,25 @@ export async function fetchPrivateStravaConnectionForUser(
   return data ? mapPrivateStravaConnection(data as PrivateStravaConnectionRow) : null;
 }
 
+export async function fetchPrivateStravaConnectionForAthleteId(
+  supabase: SupabaseStravaConnectionClient,
+  stravaAthleteId: string,
+): Promise<PrivateStravaConnection | null> {
+  const { data, error } = await supabase
+    .from("strava_connections")
+    .select(PRIVATE_STRAVA_CONNECTION_COLUMNS)
+    .eq("strava_athlete_id", stravaAthleteId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return data ? mapPrivateStravaConnection(data as PrivateStravaConnectionRow) : null;
+}
+
 export async function updateStravaConnectionTokens(
-  supabase: SupabaseServerClient,
+  supabase: SupabaseStravaConnectionClient,
   input: {
     userId: string;
     accessToken: string;
@@ -179,7 +197,7 @@ export async function updateStravaConnectionTokens(
 }
 
 export async function deleteStravaConnectionForUser(
-  supabase: SupabaseServerClient,
+  supabase: SupabaseStravaConnectionClient,
   userId: string,
 ): Promise<void> {
   const { error } = await supabase

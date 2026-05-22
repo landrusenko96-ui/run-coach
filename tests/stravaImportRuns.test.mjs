@@ -4,6 +4,7 @@ import {
   buildStravaLoggedWorkoutInput,
   findExactDatePlannedWorkoutMatch,
   importStravaActivitiesForActivePlan,
+  importSingleStravaActivityForActivePlan,
   isSupportedStravaRun,
   isValidStravaRunActivity,
 } from "../lib/strava/importRuns.ts";
@@ -381,8 +382,12 @@ describe("Strava run import helpers", () => {
         date: "2026-05-18",
         distanceKm: 5,
         avgPaceSecPerKm: 360,
+        averagePace: 360,
         status: "skipped_duplicate",
         statusMessage: "Skipped: this Strava activity was already imported",
+        reason: "this Strava activity was already imported",
+        loggedWorkoutId: null,
+        matchedPlannedWorkoutId: null,
       },
     ]);
     assert.equal(calls.savedLoggedWorkoutInputs.length, 0);
@@ -456,8 +461,12 @@ describe("Strava run import helpers", () => {
         date: "2026-05-17",
         distanceKm: 5,
         avgPaceSecPerKm: 360,
+        averagePace: 360,
         status: "skipped_before_plan_start",
         statusMessage: "Skipped: before the active plan starts",
+        reason: "before the active plan starts",
+        loggedWorkoutId: null,
+        matchedPlannedWorkoutId: null,
       },
     ]);
     assert.equal(calls.savedLoggedWorkoutInputs.length, 0);
@@ -527,9 +536,13 @@ describe("Strava run import helpers", () => {
         date: "2026-05-18",
         distanceKm: 5,
         avgPaceSecPerKm: 360,
+        averagePace: 360,
         status: "skipped_already_logged",
         statusMessage:
           "Skipped: this active-plan day already has a logged workout",
+        reason: "this active-plan day already has a logged workout",
+        loggedWorkoutId: null,
+        matchedPlannedWorkoutId: null,
       },
     ]);
     assert.equal(calls.savedLoggedWorkoutInputs.length, 0);
@@ -566,9 +579,13 @@ describe("Strava run import helpers", () => {
         date: "2026-05-18",
         distanceKm: 5,
         avgPaceSecPerKm: 360,
+        averagePace: 360,
         status: "skipped_already_logged",
         statusMessage:
           "Skipped: the planned workout is already matched to another log",
+        reason: "the planned workout is already matched to another log",
+        loggedWorkoutId: null,
+        matchedPlannedWorkoutId: null,
       },
     ]);
     assert.equal(calls.savedLoggedWorkoutInputs.length, 0);
@@ -633,8 +650,12 @@ describe("Strava run import helpers", () => {
         date: "2026-05-18",
         distanceKm: 8.2,
         avgPaceSecPerKm: 324,
+        averagePace: 324,
         status: "imported_matched",
         statusMessage: "Imported: matched to planned workout",
+        reason: null,
+        loggedWorkoutId: "logged-matched-list-run",
+        matchedPlannedWorkoutId: "planned-1",
       },
       {
         stravaActivityId: "unlinked-list-run",
@@ -642,10 +663,207 @@ describe("Strava run import helpers", () => {
         date: "2026-05-19",
         distanceKm: 6,
         avgPaceSecPerKm: 348,
+        averagePace: 348,
         status: "imported_unlinked",
         statusMessage: "Imported: no planned workout match",
+        reason: null,
+        loggedWorkoutId: "logged-unlinked-list-run",
+        matchedPlannedWorkoutId: null,
       },
     ]);
+  });
+
+  it("imports one already-fetched Strava activity through the shared path", async () => {
+    const { dependencies } = createImportDependencies();
+
+    const result = await importSingleStravaActivityForActivePlan({
+      userId: "user-1",
+      profile,
+      raceGoal,
+      plan,
+      plannedWorkouts: [plannedWorkout],
+      loggedWorkouts: [],
+      workoutEvaluations: [],
+      activity: activity({ id: "single-matched-run" }),
+      dependencies,
+    });
+
+    assert.equal(result.summary.imported, 1);
+    assert.deepEqual(result.activityResult, {
+      stravaActivityId: "single-matched-run",
+      name: "Morning Run",
+      date: "2026-05-18",
+      distanceKm: 5,
+      avgPaceSecPerKm: 360,
+      averagePace: 360,
+      status: "imported_matched",
+      statusMessage: "Imported: matched to planned workout",
+      reason: null,
+      loggedWorkoutId: "logged-single-matched-run",
+      matchedPlannedWorkoutId: "planned-1",
+    });
+  });
+
+  it("imports one already-fetched unlinked Strava activity through the shared path", async () => {
+    const { dependencies } = createImportDependencies();
+
+    const result = await importSingleStravaActivityForActivePlan({
+      userId: "user-1",
+      profile,
+      raceGoal,
+      plan,
+      plannedWorkouts: [plannedWorkout],
+      loggedWorkouts: [],
+      workoutEvaluations: [],
+      activity: activity({
+        id: "single-unlinked-run",
+        startDate: "2026-05-19T11:00:00Z",
+        startDateLocal: "2026-05-19T07:00:00",
+      }),
+      dependencies,
+    });
+
+    assert.equal(result.summary.imported, 1);
+    assert.deepEqual(result.activityResult, {
+      stravaActivityId: "single-unlinked-run",
+      name: "Morning Run",
+      date: "2026-05-19",
+      distanceKm: 5,
+      avgPaceSecPerKm: 360,
+      averagePace: 360,
+      status: "imported_unlinked",
+      statusMessage: "Imported: no planned workout match",
+      reason: null,
+      loggedWorkoutId: "logged-single-unlinked-run",
+      matchedPlannedWorkoutId: null,
+    });
+  });
+
+  it("returns structured skip reasons for one already-fetched Strava activity", async () => {
+    const cases = [
+      {
+        name: "duplicate",
+        activity: activity({ id: "single-duplicate" }),
+        plannedWorkouts: [plannedWorkout],
+        loggedWorkouts: [],
+        dependencies: createImportDependencies({
+          isDuplicate: async () => true,
+        }).dependencies,
+        expectedStatus: "skipped_duplicate",
+        expectedReason: "this Strava activity was already imported",
+      },
+      {
+        name: "non-run",
+        activity: activity({ id: "single-ride", sportType: "Ride" }),
+        plannedWorkouts: [plannedWorkout],
+        loggedWorkouts: [],
+        dependencies: createImportDependencies().dependencies,
+        expectedStatus: "skipped_non_run",
+        expectedReason: "not a supported run type",
+      },
+      {
+        name: "invalid",
+        activity: activity({ id: "single-invalid", movingTimeSec: 0 }),
+        plannedWorkouts: [plannedWorkout],
+        loggedWorkouts: [],
+        dependencies: createImportDependencies().dependencies,
+        expectedStatus: "skipped_invalid",
+        expectedReason: "missing or zero distance or moving time",
+      },
+      {
+        name: "before-plan",
+        activity: activity({
+          id: "single-before-plan",
+          startDate: "2026-05-17T11:00:00Z",
+          startDateLocal: "2026-05-17T07:00:00",
+        }),
+        plannedWorkouts: [plannedWorkout],
+        loggedWorkouts: [],
+        dependencies: createImportDependencies().dependencies,
+        expectedStatus: "skipped_before_plan_start",
+        expectedReason: "before the active plan starts",
+      },
+      {
+        name: "already-logged",
+        activity: activity({ id: "single-already-logged" }),
+        plannedWorkouts: [plannedWorkout],
+        loggedWorkouts: [
+          loggedWorkout({
+            id: "manual-log-1",
+            source: "manual",
+            source_activity_id: null,
+            workout_date: "2026-05-18",
+          }),
+        ],
+        dependencies: createImportDependencies().dependencies,
+        expectedStatus: "skipped_already_logged",
+        expectedReason: "this active-plan day already has a logged workout",
+      },
+      {
+        name: "already-matched",
+        activity: activity({ id: "single-already-matched" }),
+        plannedWorkouts: [plannedWorkout],
+        loggedWorkouts: [
+          loggedWorkout({
+            id: "linked-log-1",
+            planned_workout_id: "planned-1",
+            workout_date: "2026-05-17",
+          }),
+        ],
+        dependencies: createImportDependencies().dependencies,
+        expectedStatus: "skipped_already_logged",
+        expectedReason: "the planned workout is already matched to another log",
+      },
+    ];
+
+    for (const testCase of cases) {
+      const result = await importSingleStravaActivityForActivePlan({
+        userId: "user-1",
+        profile,
+        raceGoal,
+        plan,
+        plannedWorkouts: testCase.plannedWorkouts,
+        loggedWorkouts: testCase.loggedWorkouts,
+        workoutEvaluations: [],
+        activity: testCase.activity,
+        dependencies: testCase.dependencies,
+      });
+
+      assert.equal(
+        result.activityResult.status,
+        testCase.expectedStatus,
+        testCase.name,
+      );
+      assert.equal(result.activityResult.reason, testCase.expectedReason);
+      assert.equal(result.activityResult.loggedWorkoutId, null);
+      assert.equal(result.activityResult.matchedPlannedWorkoutId, null);
+    }
+  });
+
+  it("returns structured failure details for one already-fetched Strava activity", async () => {
+    const { dependencies } = createImportDependencies({
+      saveLoggedWorkoutWithCompletion: async () => {
+        throw new Error("Database insert failed.");
+      },
+    });
+
+    const result = await importSingleStravaActivityForActivePlan({
+      userId: "user-1",
+      profile,
+      raceGoal,
+      plan,
+      plannedWorkouts: [plannedWorkout],
+      loggedWorkouts: [],
+      workoutEvaluations: [],
+      activity: activity({ id: "single-error-run" }),
+      dependencies,
+    });
+
+    assert.equal(result.summary.imported, 0);
+    assert.equal(result.activityResult.status, "skipped_error");
+    assert.equal(result.activityResult.reason, "Database insert failed.");
+    assert.equal(result.activityResult.loggedWorkoutId, null);
+    assert.equal(result.activityResult.matchedPlannedWorkoutId, null);
   });
 
   it("counts duplicate, non-run, invalid, matched, scored, adjusted, and error outcomes", async () => {
@@ -743,5 +961,53 @@ describe("Strava run import helpers", () => {
     assert.equal(savedAuditRows[0].planned_workout_id, "planned-1");
     assert.equal(savedAuditRows[1].strava_activity_id, "unlinked-run");
     assert.equal(savedAuditRows[1].planned_workout_id, null);
+  });
+
+  it("keeps manual multi-activity import behavior clear after webhook refactor", async () => {
+    const { calls, dependencies } = createImportDependencies({
+      isDuplicate: async (stravaActivityId) =>
+        stravaActivityId === "manual-duplicate-run",
+    });
+    const summary = await importStravaActivitiesForActivePlan({
+      userId: "user-1",
+      profile,
+      raceGoal,
+      plan,
+      plannedWorkouts: [plannedWorkout],
+      loggedWorkouts: [],
+      workoutEvaluations: [],
+      activities: [
+        activity({ id: "manual-duplicate-run" }),
+        activity({ id: "manual-ride", sportType: "Ride" }),
+        activity({ id: "manual-matched-run" }),
+        activity({
+          id: "manual-unlinked-run",
+          startDate: "2026-05-19T11:00:00Z",
+          startDateLocal: "2026-05-19T07:00:00",
+        }),
+      ],
+      dependencies,
+    });
+
+    assert.equal(summary.imported, 2);
+    assert.equal(summary.skippedDuplicates, 1);
+    assert.equal(summary.skippedNonRuns, 1);
+    assert.equal(summary.linkedToPlanned, 1);
+    assert.equal(summary.importedUnlinked, 1);
+    assert.deepEqual(
+      summary.activityResults.map((result) => result.status),
+      [
+        "skipped_duplicate",
+        "skipped_non_run",
+        "imported_matched",
+        "imported_unlinked",
+      ],
+    );
+    assert.deepEqual(
+      summary.importedWorkouts.map((workout) => workout.matchStatus),
+      ["matched", "unlinked"],
+    );
+    assert.equal(calls.savedLoggedWorkoutInputs.length, 2);
+    assert.equal(calls.savedAuditRows.length, 2);
   });
 });

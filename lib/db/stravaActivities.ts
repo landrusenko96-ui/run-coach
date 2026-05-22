@@ -3,6 +3,7 @@ import type { createSupabaseServerClient } from "@/lib/supabase/server";
 type SupabaseServerClient = Awaited<
   ReturnType<typeof createSupabaseServerClient>
 >;
+type SupabaseStravaActivityClient = Pick<SupabaseServerClient, "from">;
 
 type StravaActivityImportRow = {
   strava_activity_id: string;
@@ -31,7 +32,7 @@ export type SaveStravaActivityInput = {
 };
 
 export async function fetchExistingStravaImportIds(
-  supabase: SupabaseServerClient,
+  supabase: SupabaseStravaActivityClient,
   input: {
     userId: string;
     stravaActivityIds: string[];
@@ -83,7 +84,7 @@ export async function fetchExistingStravaImportIds(
 }
 
 export async function saveStravaActivity(
-  supabase: SupabaseServerClient,
+  supabase: SupabaseStravaActivityClient,
   activity: SaveStravaActivityInput,
 ): Promise<void> {
   const { error } = await supabase

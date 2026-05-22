@@ -15,6 +15,7 @@ import type {
   StravaImportActivityResult,
   StravaImportedWorkoutSummary,
   StravaImportResponse,
+  StravaSingleActivityImportResponse,
 } from "@/types/strava";
 import type { StravaSummaryActivity } from "./client.ts";
 
@@ -51,6 +52,13 @@ export type ImportStravaActivitiesInput = {
   workoutEvaluations: WorkoutEvaluation[];
   activities: StravaSummaryActivity[];
   dependencies: StravaActivityImportDependencies;
+};
+
+export type ImportSingleStravaActivityInput = Omit<
+  ImportStravaActivitiesInput,
+  "activities"
+> & {
+  activity: StravaSummaryActivity;
 };
 
 export function buildEmptyStravaImportSummary(): StravaImportResponse {
@@ -335,15 +343,26 @@ function buildActivityResult(input: {
   activity: StravaSummaryActivity;
   status: StravaImportActivityResult["status"];
   statusMessage: string;
+  loggedWorkoutId?: string | null;
+  matchedPlannedWorkoutId?: string | null;
 }): StravaImportActivityResult {
+  const averagePace = getDisplayPaceSecPerKm(input.activity);
+  const reason = input.status.startsWith("skipped_")
+    ? input.statusMessage.replace(/^Skipped:\s*/, "")
+    : null;
+
   return {
     stravaActivityId: input.activity.id,
     name: input.activity.name,
     date: getStravaActivityDate(input.activity),
     distanceKm: getDisplayDistanceKm(input.activity),
-    avgPaceSecPerKm: getDisplayPaceSecPerKm(input.activity),
+    avgPaceSecPerKm: averagePace,
+    averagePace,
     status: input.status,
     statusMessage: input.statusMessage,
+    reason,
+    loggedWorkoutId: input.loggedWorkoutId ?? null,
+    matchedPlannedWorkoutId: input.matchedPlannedWorkoutId ?? null,
   };
 }
 
@@ -353,9 +372,15 @@ function addActivityResult(
     activity: StravaSummaryActivity;
     status: StravaImportActivityResult["status"];
     statusMessage: string;
+    loggedWorkoutId?: string | null;
+    matchedPlannedWorkoutId?: string | null;
   },
-): void {
-  summary.activityResults.push(buildActivityResult(input));
+): StravaImportActivityResult {
+  const result = buildActivityResult(input);
+
+  summary.activityResults.push(result);
+
+  return result;
 }
 
 function addLoggedWorkoutForNextMatch(
@@ -548,6 +573,8 @@ export async function importStravaActivitiesForActivePlan(
         statusMessage: plannedWorkout
           ? "Imported: matched to planned workout"
           : "Imported: no planned workout match",
+        loggedWorkoutId: completionResult.loggedWorkout.id,
+        matchedPlannedWorkoutId: plannedWorkout?.id ?? null,
       });
       recordedActivityResult = true;
 
@@ -592,4 +619,23 @@ export async function importStravaActivitiesForActivePlan(
   }
 
   return finishImportSummary(summary);
+}
+
+export async function importSingleStravaActivityForActivePlan(
+  input: ImportSingleStravaActivityInput,
+): Promise<StravaSingleActivityImportResponse> {
+  const summary = await importStravaActivitiesForActivePlan({
+    ...input,
+    activities: [input.activity],
+  });
+  const activityResult = summary.activityResults[0];
+
+  if (!activityResult) {
+    throw new Error("Single Strava activity import did not return a result.");
+  }
+
+  return {
+    summary,
+    activityResult,
+  };
 }

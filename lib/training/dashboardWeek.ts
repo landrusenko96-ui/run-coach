@@ -54,7 +54,8 @@ export type DashboardAttentionType =
   | "intervals"
   | "garmin"
   | "missing_score"
-  | "high_risk_score";
+  | "high_risk_score"
+  | "strava_webhook";
 
 export type DashboardAttentionItem = {
   id: string;
@@ -62,7 +63,7 @@ export type DashboardAttentionItem = {
   workoutDate: string;
   title: string;
   message: string;
-  href: "/workouts" | "/plan";
+  href: "/workouts" | "/plan" | "/settings";
   isTodayOrFuture: boolean;
 };
 
@@ -277,6 +278,13 @@ export function buildRunProgressSummary(
       ? clampPercentage((completedRuns / plannedRunWorkouts.length) * 100)
       : 0,
   };
+}
+
+export function mergeDashboardAttentionItems(input: {
+  baseItems: DashboardAttentionItem[];
+  additionalItems: DashboardAttentionItem[];
+}): DashboardAttentionItem[] {
+  return [...input.additionalItems, ...input.baseItems];
 }
 
 function buildExportHealthSummary({

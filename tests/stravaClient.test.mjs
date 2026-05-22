@@ -10,6 +10,7 @@ import {
   buildStravaAuthorizationUrl,
   exchangeStravaCodeForToken,
   fetchRecentStravaActivities,
+  fetchStravaActivityById,
   getStravaAthleteDisplayName,
   hasRequiredStravaScopes,
   refreshStravaAccessToken,
@@ -252,6 +253,104 @@ describe("Strava client", () => {
         max_heartrate: 172,
       },
     });
+  });
+
+  it("fetches one full Strava activity by activity id", async () => {
+    const mockFetch = createMockFetch(
+      jsonResponse({
+        id: 123456789,
+        name: "Lunch Run",
+        sport_type: "Run",
+        start_date: "2026-05-19T16:30:00Z",
+        start_date_local: "2026-05-19T12:30:00",
+        distance: 5000,
+        moving_time: 1500,
+        elapsed_time: 1560,
+        total_elevation_gain: 18,
+        average_heartrate: 142.5,
+        max_heartrate: 170,
+        perceived_exertion: 4,
+      }),
+    );
+
+    const activity = await fetchStravaActivityById({
+      accessToken: "access-token",
+      activityId: 123456789,
+      options: {
+        fetchImpl: mockFetch.fetchImpl,
+      },
+    });
+    const requestedUrl = new URL(mockFetch.calls[0].url);
+
+    assert.equal(
+      requestedUrl.origin + requestedUrl.pathname,
+      `${STRAVA_API_BASE_URL}/activities/123456789`,
+    );
+    assert.equal(mockFetch.calls[0].init.method, "GET");
+    assert.equal(
+      mockFetch.calls[0].init.headers.Authorization,
+      "Bearer access-token",
+    );
+    assert.deepEqual(activity, {
+      id: "123456789",
+      name: "Lunch Run",
+      sportType: "Run",
+      startDate: "2026-05-19T16:30:00Z",
+      startDateLocal: "2026-05-19T12:30:00",
+      distanceM: 5000,
+      movingTimeSec: 1500,
+      elapsedTimeSec: 1560,
+      totalElevationGainM: 18,
+      averageHeartRate: 142.5,
+      maxHeartRate: 170,
+      rawSummary: {
+        id: 123456789,
+        name: "Lunch Run",
+        sport_type: "Run",
+        start_date: "2026-05-19T16:30:00Z",
+        start_date_local: "2026-05-19T12:30:00",
+        distance: 5000,
+        moving_time: 1500,
+        elapsed_time: 1560,
+        total_elevation_gain: 18,
+        average_heartrate: 142.5,
+        max_heartrate: 170,
+        perceived_exertion: 4,
+      },
+    });
+  });
+
+  it("throws safe API errors when fetching one activity fails", async () => {
+    for (const status of [401, 404, 429, 500]) {
+      const mockFetch = createMockFetch(
+        jsonResponse(
+          {
+            message: "Strava request failed",
+          },
+          {
+            status,
+          },
+        ),
+      );
+      let thrownError = null;
+
+      try {
+        await fetchStravaActivityById({
+          accessToken: "secret-access-token",
+          activityId: 123456789,
+          options: {
+            fetchImpl: mockFetch.fetchImpl,
+          },
+        });
+      } catch (error) {
+        thrownError = error;
+      }
+
+      assert.ok(thrownError instanceof StravaApiError);
+      assert.equal(thrownError.status, status);
+      assert.equal(thrownError.responseBody, "Strava request failed");
+      assert.doesNotMatch(thrownError.message, /secret-access-token/);
+    }
   });
 
   it("builds safe athlete display information", () => {

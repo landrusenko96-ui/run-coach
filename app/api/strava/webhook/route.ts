@@ -1,0 +1,37 @@
+import { createServiceRoleClient } from "@/lib/supabase/serviceRole";
+import {
+  buildStravaWebhookErrorResponse,
+  handleStravaWebhookGet,
+  handleStravaWebhookPost,
+} from "@/lib/strava/webhookRoute";
+
+export const dynamic = "force-dynamic";
+
+function getWebhookVerifyToken(): string {
+  const token = process.env.STRAVA_WEBHOOK_VERIFY_TOKEN?.trim();
+
+  if (!token) {
+    throw new Error("Missing STRAVA_WEBHOOK_VERIFY_TOKEN server environment variable.");
+  }
+
+  return token;
+}
+
+export async function GET(request: Request) {
+  let expectedToken: string;
+
+  try {
+    expectedToken = getWebhookVerifyToken();
+  } catch {
+    return buildStravaWebhookErrorResponse(
+      "Strava webhook verification is not configured.",
+      500,
+    );
+  }
+
+  return handleStravaWebhookGet(request, expectedToken);
+}
+
+export async function POST(request: Request) {
+  return handleStravaWebhookPost(request, createServiceRoleClient());
+}

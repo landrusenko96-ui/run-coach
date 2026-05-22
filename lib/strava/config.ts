@@ -5,6 +5,11 @@ export type StravaServerConfig = {
   callbackUrl: string;
 };
 
+export type StravaWebhookServerConfig = StravaServerConfig & {
+  webhookCallbackUrl: string;
+  webhookVerifyToken: string;
+};
+
 function assertServerOnly() {
   if (typeof window !== "undefined") {
     throw new Error("Strava API credentials can only be read on the server.");
@@ -37,6 +42,32 @@ function normalizeAppUrl(value: string): string {
   return value.replace(/\/+$/, "");
 }
 
+function normalizeWebhookCallbackUrl(value: string): string {
+  let parsedUrl: URL;
+
+  try {
+    parsedUrl = new URL(value);
+  } catch {
+    throw new Error("STRAVA_WEBHOOK_CALLBACK_URL must be a valid URL.");
+  }
+
+  if (!["http:", "https:"].includes(parsedUrl.protocol)) {
+    throw new Error("STRAVA_WEBHOOK_CALLBACK_URL must use http or https.");
+  }
+
+  if (parsedUrl.search || parsedUrl.hash) {
+    throw new Error(
+      "STRAVA_WEBHOOK_CALLBACK_URL must not include a query string or hash.",
+    );
+  }
+
+  if (value.length > 255) {
+    throw new Error("STRAVA_WEBHOOK_CALLBACK_URL must be 255 characters or less.");
+  }
+
+  return value;
+}
+
 export function getStravaServerConfig(): StravaServerConfig {
   assertServerOnly();
 
@@ -47,5 +78,17 @@ export function getStravaServerConfig(): StravaServerConfig {
     clientSecret: getRequiredEnvValue("STRAVA_CLIENT_SECRET"),
     appUrl,
     callbackUrl: `${appUrl}/api/strava/callback`,
+  };
+}
+
+export function getStravaWebhookServerConfig(): StravaWebhookServerConfig {
+  assertServerOnly();
+
+  return {
+    ...getStravaServerConfig(),
+    webhookCallbackUrl: normalizeWebhookCallbackUrl(
+      getRequiredEnvValue("STRAVA_WEBHOOK_CALLBACK_URL"),
+    ),
+    webhookVerifyToken: getRequiredEnvValue("STRAVA_WEBHOOK_VERIFY_TOKEN"),
   };
 }

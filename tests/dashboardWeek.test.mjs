@@ -6,6 +6,7 @@ import {
   getNextPlannedRun,
   getNextSevenCalendarDaysWorkouts,
   getTodayWorkout,
+  mergeDashboardAttentionItems,
 } from "../lib/training/dashboardWeek.ts";
 
 function plannedWorkout(overrides = {}) {
@@ -300,6 +301,39 @@ describe("dashboard week helpers", () => {
       ).length,
       3,
     );
+  });
+
+  it("merges webhook warnings with existing dashboard attention items", () => {
+    const webhookWarning = {
+      id: "strava-webhook-pending-events",
+      type: "strava_webhook",
+      workoutDate: "2026-05-20",
+      title: "Strava webhook events pending",
+      message: "1 event is waiting. Process pending webhook events.",
+      href: "/settings",
+      isTodayOrFuture: true,
+    };
+    const intervalsWarning = {
+      id: "intervals-planned-1",
+      type: "intervals",
+      workoutDate: "2026-05-20",
+      title: "Easy run",
+      message: "Intervals.icu export failed.",
+      href: "/workouts",
+      isTodayOrFuture: true,
+    };
+
+    const merged = mergeDashboardAttentionItems({
+      baseItems: [intervalsWarning],
+      additionalItems: [webhookWarning],
+    });
+
+    assert.deepEqual(
+      merged.map((item) => item.id),
+      ["strava-webhook-pending-events", "intervals-planned-1"],
+    );
+    assert.equal(merged[0].type, "strava_webhook");
+    assert.equal(merged[0].href, "/settings");
   });
 
   it("summarizes the latest plan change with affected workout labels", () => {
