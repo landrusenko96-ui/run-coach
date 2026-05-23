@@ -5,6 +5,7 @@ import {
   STRAVA_OAUTH_STATE_COOKIE_NAME,
   STRAVA_OAUTH_STATE_MAX_AGE_SECONDS,
 } from "@/lib/strava/oauthState";
+import { AuthRequiredError, requireServerUser } from "@/lib/supabase/auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
@@ -18,11 +19,14 @@ function redirectToSettings(request: NextRequest, status: string): NextResponse 
 
 export async function GET(request: NextRequest) {
   const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
 
-  if (!user) {
+  try {
+    await requireServerUser(supabase);
+  } catch (error) {
+    if (error instanceof AuthRequiredError) {
+      return redirectToSettings(request, "sign_in_required");
+    }
+
     return redirectToSettings(request, "sign_in_required");
   }
 

@@ -17,8 +17,8 @@ export async function createSupabaseServerClient() {
             cookieStore.set(name, value, options);
           });
         } catch {
-          // Server Components cannot write cookies. Middleware can refresh
-          // sessions later when authentication routes are added.
+          // Server Components cannot write cookies. Middleware refreshes
+          // sessions for protected app pages.
         }
       },
     },

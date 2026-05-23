@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { StravaImportSummary } from "@/components/StravaImportSummary";
-import { createSupabaseBrowserClient } from "@/lib/supabase/browser";
 import type {
   StravaImportDays,
   StravaImportResponse,
@@ -336,24 +335,7 @@ export function StravaSettingsPanel() {
     setMessage(null);
     setImportSummary(null);
 
-    try {
-      if (!isAuthenticated) {
-        const supabase = createSupabaseBrowserClient();
-        const {
-          data: { session },
-        } = await supabase.auth.getSession();
-
-        if (!session) {
-          const { error } = await supabase.auth.signInAnonymously();
-
-          if (error) {
-            throw new Error(
-              `Could not start the app session needed before Strava. Make sure Anonymous sign-ins are enabled in Supabase Auth. Details: ${error.message}`,
-            );
-          }
-        }
-      }
-
+  try {
       window.location.assign("/api/strava/connect");
     } catch (error) {
       setMessage(
@@ -492,7 +474,6 @@ export function StravaSettingsPanel() {
   }
 
   const isConnected = status?.connected === true;
-  const isAuthenticated = status?.authenticated === true;
   const isWebhookBusy =
     isCheckingWebhook ||
     isCreatingWebhook ||
@@ -553,14 +534,6 @@ export function StravaSettingsPanel() {
           </p>
           <p className="mt-1">Strava athlete ID: {status.athlete?.stravaAthleteId}</p>
         </div>
-      ) : null}
-
-      {!isConnected && !isAuthenticated ? (
-        <p className="mt-4 text-sm leading-6 text-slate-600">
-          This button first creates a private app session in this browser, then
-          sends you to Strava. The app session is needed so your Strava
-          connection belongs only to you.
-        </p>
       ) : null}
 
       <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">

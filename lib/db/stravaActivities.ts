@@ -67,6 +67,7 @@ export async function fetchExistingStravaImportIds(
   const { data: loggedWorkoutRows, error: loggedWorkoutError } = await supabase
     .from("logged_workouts")
     .select("source_activity_id")
+    .eq("user_id", input.userId)
     .eq("source", "strava")
     .in("source_activity_id", uniqueActivityIds);
 

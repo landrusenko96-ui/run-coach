@@ -24,6 +24,8 @@ import {
   buildEmptyStravaImportSummary,
   importStravaActivitiesForActivePlan,
 } from "@/lib/strava/importRuns";
+import { AuthRequiredError, requireServerUser } from "@/lib/supabase/auth";
+import { createServiceRoleClient } from "@/lib/supabase/serviceRole";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { saveLoggedWorkoutWithCompletion } from "@/lib/training/workoutLogging";
 import type { StravaImportDays, StravaImportResponse } from "@/types/strava";
@@ -100,11 +102,21 @@ export async function POST(request: Request) {
   }
 
   const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  let user: Awaited<ReturnType<typeof requireServerUser>>;
 
-  if (!user) {
+  try {
+    user = await requireServerUser(supabase);
+  } catch (error) {
+    if (!(error instanceof AuthRequiredError)) {
+      return jsonResponse(
+        buildSummaryResponse({
+          ok: false,
+          message: "Could not check your sign-in session.",
+        }),
+        500,
+      );
+    }
+
     return jsonResponse(
       buildSummaryResponse({
         ok: false,
@@ -114,8 +126,13 @@ export async function POST(request: Request) {
     );
   }
 
-  const connection = await fetchPrivateStravaConnectionForUser(
+  const dbOptions = {
     supabase,
+    userId: user.id,
+  };
+  const serviceRoleSupabase = createServiceRoleClient();
+  const connection = await fetchPrivateStravaConnectionForUser(
+    serviceRoleSupabase,
     user.id,
   );
 
@@ -137,7 +154,7 @@ export async function POST(request: Request) {
         connection.refreshToken,
       );
 
-      await updateStravaConnectionTokens(supabase, {
+      await updateStravaConnectionTokens(serviceRoleSupabase, {
         userId: user.id,
         accessToken: refreshedToken.accessToken,
         refreshToken: refreshedToken.refreshToken,
@@ -156,7 +173,7 @@ export async function POST(request: Request) {
     );
   }
 
-  const profile = await fetchFirstProfile();
+  const profile = await fetchFirstProfile(dbOptions);
 
   if (!profile) {
     return jsonResponse(
@@ -168,7 +185,10 @@ export async function POST(request: Request) {
     );
   }
 
-  const activePlan = await fetchActiveTrainingPlanWithWorkouts(profile.id);
+  const activePlan = await fetchActiveTrainingPlanWithWorkouts(
+    profile.id,
+    dbOptions,
+  );
 
   if (!activePlan) {
     return jsonResponse(
@@ -198,9 +218,9 @@ export async function POST(request: Request) {
   }
 
   const [raceGoal, loggedWorkouts, workoutEvaluations] = await Promise.all([
-    fetchRaceGoalById(activePlan.plan.race_goal_id),
-    fetchLoggedWorkoutsForTrainingPlan(activePlan.plan.id),
-    fetchWorkoutEvaluationsForTrainingPlan(activePlan.plan.id),
+    fetchRaceGoalById(activePlan.plan.race_goal_id, dbOptions),
+    fetchLoggedWorkoutsForTrainingPlan(activePlan.plan.id, dbOptions),
+    fetchWorkoutEvaluationsForTrainingPlan(activePlan.plan.id, dbOptions),
   ]);
   const existingActivityIds = await fetchExistingStravaImportIds(supabase, {
     userId: user.id,
@@ -224,6 +244,7 @@ export async function POST(request: Request) {
           raceGoal,
           plan: activePlan.plan,
           ...input,
+          db: dbOptions,
         }),
       saveStravaActivity: async (input) => {
         await saveStravaActivity(supabase, input);

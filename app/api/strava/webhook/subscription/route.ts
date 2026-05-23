@@ -6,6 +6,7 @@ import {
   type StravaWebhookSubscriptionResult,
 } from "@/lib/strava/webhookSubscriptions";
 import { readDeleteStravaWebhookSubscriptionRequest } from "@/lib/strava/webhookSubscriptionRoute";
+import { requireServerUser } from "@/lib/supabase/auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type { StravaWebhookSubscriptionResponse } from "@/types/strava";
 
@@ -44,11 +45,13 @@ function getResultStatus(result: StravaWebhookSubscriptionResult): number {
 
 async function requireSignedInUser(): Promise<boolean> {
   const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
 
-  return Boolean(user);
+  try {
+    await requireServerUser(supabase);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function GET() {

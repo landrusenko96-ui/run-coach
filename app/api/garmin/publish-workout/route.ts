@@ -1,5 +1,12 @@
 import { NextResponse } from "next/server";
+import {
+  fetchWorkoutExportsForPlannedWorkout,
+  saveWorkoutExport,
+} from "@/lib/db/workoutExports";
+import { fetchPlannedWorkoutById } from "@/lib/db/workouts";
 import { publishGarminWorkout } from "@/lib/garminBridge/client";
+import { AuthRequiredError, requireServerUser } from "@/lib/supabase/auth";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 type PublishGarminWorkoutRequest = {
   plannedWorkoutId?: unknown;
@@ -40,7 +47,32 @@ export async function POST(request: Request) {
     );
   }
 
-  const result = await publishGarminWorkout(requestBody.plannedWorkoutId);
+  const supabase = await createSupabaseServerClient();
+  let user: Awaited<ReturnType<typeof requireServerUser>>;
+
+  try {
+    user = await requireServerUser(supabase);
+  } catch (error) {
+    return errorResponse(
+      error instanceof AuthRequiredError
+        ? error.message
+        : "Could not check your sign-in session.",
+      error instanceof AuthRequiredError ? 401 : 500,
+    );
+  }
+
+  const dbOptions = {
+    supabase,
+    userId: user.id,
+  };
+  const result = await publishGarminWorkout(requestBody.plannedWorkoutId, {
+    fetchPlannedWorkoutById: (plannedWorkoutId) =>
+      fetchPlannedWorkoutById(plannedWorkoutId, dbOptions),
+    fetchWorkoutExportsForPlannedWorkout: (plannedWorkoutId) =>
+      fetchWorkoutExportsForPlannedWorkout(plannedWorkoutId, dbOptions),
+    saveWorkoutExport: (workoutExport) =>
+      saveWorkoutExport(workoutExport, dbOptions),
+  });
 
   return NextResponse.json(result, { status: 200 });
 }

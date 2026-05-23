@@ -1,4 +1,8 @@
-import { getSupabaseClient } from "@/lib/db/supabaseClient";
+import {
+  getAuthenticatedUserId,
+  getDbClient,
+  type UserScopedDbOptions,
+} from "@/lib/db/supabaseClient";
 import {
   buildFutureGarminPlanDeleteCandidates,
   toGarminPlanDeletePreviewWorkout,
@@ -13,12 +17,12 @@ import type {
 
 export type SaveTrainingPlanInput = Omit<
   TrainingPlan,
-  "id" | "created_at" | "updated_at"
+  "id" | "user_id" | "created_at" | "updated_at"
 >;
 
 export type SavePlannedWorkoutInput = Omit<
   PlannedWorkout,
-  "id" | "created_at" | "updated_at"
+  "id" | "user_id" | "created_at" | "updated_at"
 >;
 
 export type TrainingPlanWithWorkouts = {
@@ -49,12 +53,15 @@ type IdRow = {
 
 export async function fetchTrainingPlans(
   profileId: string,
+  options?: UserScopedDbOptions,
 ): Promise<TrainingPlan[]> {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient(options);
+  const userId = await getAuthenticatedUserId(options);
 
   const { data, error } = await supabase
     .from("training_plans")
     .select("*")
+    .eq("user_id", userId)
     .eq("profile_id", profileId)
     .order("created_at", { ascending: false });
 
@@ -67,12 +74,15 @@ export async function fetchTrainingPlans(
 
 export async function fetchActiveTrainingPlan(
   profileId: string,
+  options?: UserScopedDbOptions,
 ): Promise<TrainingPlan | null> {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient(options);
+  const userId = await getAuthenticatedUserId(options);
 
   const { data, error } = await supabase
     .from("training_plans")
     .select("*")
+    .eq("user_id", userId)
     .eq("profile_id", profileId)
     .eq("status", "active")
     .order("created_at", { ascending: false })
@@ -88,12 +98,15 @@ export async function fetchActiveTrainingPlan(
 
 export async function fetchTrainingPlanById(
   trainingPlanId: string,
+  options?: UserScopedDbOptions,
 ): Promise<TrainingPlan> {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient(options);
+  const userId = await getAuthenticatedUserId(options);
 
   const { data, error } = await supabase
     .from("training_plans")
     .select("*")
+    .eq("user_id", userId)
     .eq("id", trainingPlanId)
     .maybeSingle();
 
@@ -110,12 +123,15 @@ export async function fetchTrainingPlanById(
 
 export async function fetchPlannedWorkouts(
   trainingPlanId: string,
+  options?: UserScopedDbOptions,
 ): Promise<PlannedWorkout[]> {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient(options);
+  const userId = await getAuthenticatedUserId(options);
 
   const { data, error } = await supabase
     .from("planned_workouts")
     .select("*")
+    .eq("user_id", userId)
     .eq("training_plan_id", trainingPlanId)
     .order("workout_date", { ascending: true });
 
@@ -128,14 +144,15 @@ export async function fetchPlannedWorkouts(
 
 export async function fetchActiveTrainingPlanWithWorkouts(
   profileId: string,
+  options?: UserScopedDbOptions,
 ): Promise<TrainingPlanWithWorkouts | null> {
-  const plan = await fetchActiveTrainingPlan(profileId);
+  const plan = await fetchActiveTrainingPlan(profileId, options);
 
   if (!plan) {
     return null;
   }
 
-  const workouts = await fetchPlannedWorkouts(plan.id);
+  const workouts = await fetchPlannedWorkouts(plan.id, options);
 
   return {
     plan,
@@ -145,8 +162,10 @@ export async function fetchActiveTrainingPlanWithWorkouts(
 
 export async function activateTrainingPlan(
   trainingPlanId: string,
+  options?: UserScopedDbOptions,
 ): Promise<TrainingPlan> {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient(options);
+  await getAuthenticatedUserId(options);
 
   const { data, error } = await supabase
     .rpc("activate_training_plan", {
@@ -167,12 +186,17 @@ export async function activateTrainingPlan(
 
 export async function saveTrainingPlan(
   trainingPlan: SaveTrainingPlanInput,
+  options?: UserScopedDbOptions,
 ): Promise<TrainingPlan> {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient(options);
+  const userId = await getAuthenticatedUserId(options);
 
   const { data, error } = await supabase
     .from("training_plans")
-    .insert(trainingPlan)
+    .insert({
+      ...trainingPlan,
+      user_id: userId,
+    })
     .select("*")
     .single();
 
@@ -189,13 +213,16 @@ export async function saveTrainingPlan(
 
 export async function fetchTrainingPlanDeletePreview(
   trainingPlanId: string,
+  options?: UserScopedDbOptions,
 ): Promise<TrainingPlanDeletePreview> {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient(options);
+  const userId = await getAuthenticatedUserId(options);
 
   const { data: plannedWorkoutRows, error: plannedWorkoutError } =
     await supabase
       .from("planned_workouts")
       .select("*")
+      .eq("user_id", userId)
       .eq("training_plan_id", trainingPlanId);
 
   if (plannedWorkoutError) {
@@ -210,10 +237,11 @@ export async function fetchTrainingPlanDeletePreview(
   const loggedWorkoutIds = new Set<string>();
 
   const { data: planEvaluationRows, error: planEvaluationError } =
-    await supabase
-      .from("workout_evaluations")
-      .select("id")
-      .eq("training_plan_id", trainingPlanId);
+      await supabase
+        .from("workout_evaluations")
+        .select("id")
+        .eq("user_id", userId)
+        .eq("training_plan_id", trainingPlanId);
 
   if (planEvaluationError) {
     throw new Error(planEvaluationError.message);
@@ -228,6 +256,7 @@ export async function fetchTrainingPlanDeletePreview(
       await supabase
         .from("workout_evaluations")
         .select("id")
+        .eq("user_id", userId)
         .in("planned_workout_id", plannedWorkoutIds);
 
     if (workoutEvaluationError) {
@@ -243,6 +272,7 @@ export async function fetchTrainingPlanDeletePreview(
     await supabase
       .from("logged_workouts")
       .select("id")
+      .eq("user_id", userId)
       .eq("training_plan_id", trainingPlanId);
 
   if (planLoggedWorkoutError) {
@@ -258,6 +288,7 @@ export async function fetchTrainingPlanDeletePreview(
       await supabase
         .from("logged_workouts")
         .select("id")
+        .eq("user_id", userId)
         .in("planned_workout_id", plannedWorkoutIds);
 
     if (plannedLoggedWorkoutError) {
@@ -278,6 +309,7 @@ export async function fetchTrainingPlanDeletePreview(
     } = await supabase
       .from("workout_evaluations")
       .select("id")
+      .eq("user_id", userId)
       .in("logged_workout_id", linkedLoggedWorkoutIds);
 
     if (loggedWorkoutEvaluationError) {
@@ -292,6 +324,7 @@ export async function fetchTrainingPlanDeletePreview(
   const { data: workoutExportRows, error: workoutExportError } = await supabase
     .from("workout_exports")
     .select("*")
+    .eq("user_id", userId)
     .eq("training_plan_id", trainingPlanId)
     .eq("export_provider", "garmin_direct");
 
@@ -316,8 +349,10 @@ export async function fetchTrainingPlanDeletePreview(
 
 export async function deleteTrainingPlanAndRelatedData(
   trainingPlanId: string,
+  options?: UserScopedDbOptions,
 ): Promise<DeleteTrainingPlanResult> {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient(options);
+  await getAuthenticatedUserId(options);
 
   const { data, error } = await supabase
     .rpc("delete_training_plan_and_related_data", {
@@ -338,16 +373,23 @@ export async function deleteTrainingPlanAndRelatedData(
 
 export async function savePlannedWorkouts(
   plannedWorkouts: SavePlannedWorkoutInput[],
+  options?: UserScopedDbOptions,
 ): Promise<PlannedWorkout[]> {
   if (plannedWorkouts.length === 0) {
     return [];
   }
 
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient(options);
+  const userId = await getAuthenticatedUserId(options);
 
   const { data, error } = await supabase
     .from("planned_workouts")
-    .insert(plannedWorkouts)
+    .insert(
+      plannedWorkouts.map((plannedWorkout) => ({
+        ...plannedWorkout,
+        user_id: userId,
+      })),
+    )
     .select("*")
     .order("workout_date", { ascending: true });
 

@@ -1,15 +1,26 @@
-import { getSupabaseClient } from "@/lib/db/supabaseClient";
+import {
+  getAuthenticatedUserId,
+  getDbClient,
+  type UserScopedDbOptions,
+} from "@/lib/db/supabaseClient";
 
 export type SupabaseConnectionTestResult = {
   ok: boolean;
   message: string;
 };
 
-export async function testSupabaseConnection(): Promise<SupabaseConnectionTestResult> {
+export async function testSupabaseConnection(
+  options?: UserScopedDbOptions,
+): Promise<SupabaseConnectionTestResult> {
   try {
-    const supabase = getSupabaseClient();
+    const supabase = getDbClient(options);
+    const userId = await getAuthenticatedUserId(options);
 
-    const { error } = await supabase.from("profiles").select("id").limit(1);
+    const { error } = await supabase
+      .from("profiles")
+      .select("id")
+      .eq("user_id", userId)
+      .limit(1);
 
     if (error) {
       return {

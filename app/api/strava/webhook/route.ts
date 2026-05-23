@@ -33,5 +33,7 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  // Strava webhook calls do not include this app's Supabase session cookie, so
+  // intake and inline processing must use the server-only service role client.
   return handleStravaWebhookPost(request, createServiceRoleClient());
 }

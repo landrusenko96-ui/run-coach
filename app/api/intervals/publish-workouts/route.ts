@@ -3,6 +3,8 @@ import { saveIntervalsWorkoutSync } from "@/lib/db/intervalsWorkoutSyncs";
 import { fetchTrainingPlanById } from "@/lib/db/trainingPlans";
 import { fetchPlannedWorkoutsByIds } from "@/lib/db/workouts";
 import { publishIntervalsWorkoutsForPlan } from "@/lib/intervals/publishWorkouts";
+import { AuthRequiredError, requireServerUser } from "@/lib/supabase/auth";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type { IntervalsBulkPublishWorkoutsResponse } from "@/types/training";
 
 type PublishWorkoutsRequest = {
@@ -64,8 +66,29 @@ export async function POST(request: Request) {
     return errorResponse("Select at least one planned workout to publish.", 400);
   }
 
+  const supabase = await createSupabaseServerClient();
+  let user: Awaited<ReturnType<typeof requireServerUser>>;
+
   try {
-    const trainingPlan = await fetchTrainingPlanById(requestBody.trainingPlanId);
+    user = await requireServerUser(supabase);
+  } catch (error) {
+    if (error instanceof AuthRequiredError) {
+      return errorResponse(error.message, 401);
+    }
+
+    return errorResponse("Could not check your sign-in session.", 500);
+  }
+
+  const dbOptions = {
+    supabase,
+    userId: user.id,
+  };
+
+  try {
+    const trainingPlan = await fetchTrainingPlanById(
+      requestBody.trainingPlanId,
+      dbOptions,
+    );
 
     if (trainingPlan.status !== "active") {
       return errorResponse(
@@ -74,7 +97,10 @@ export async function POST(request: Request) {
       );
     }
 
-    const plannedWorkouts = await fetchPlannedWorkoutsByIds(plannedWorkoutIds);
+    const plannedWorkouts = await fetchPlannedWorkoutsByIds(
+      plannedWorkoutIds,
+      dbOptions,
+    );
     const result = await publishIntervalsWorkoutsForPlan(
       {
         trainingPlanId: trainingPlan.id,
@@ -82,7 +108,8 @@ export async function POST(request: Request) {
         plannedWorkouts,
       },
       {
-        saveIntervalsWorkoutSync,
+        saveIntervalsWorkoutSync: (sync) =>
+          saveIntervalsWorkoutSync(sync, dbOptions),
       },
     );
 

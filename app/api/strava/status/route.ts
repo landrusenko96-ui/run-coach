@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { fetchSafeStravaConnectionForUser } from "@/lib/db/stravaConnections";
+import { AuthRequiredError, requireServerUser } from "@/lib/supabase/auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type { StravaStatusResponse } from "@/types/strava";
 
@@ -14,11 +15,26 @@ function jsonResponse(
 
 export async function GET() {
   const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  let user: Awaited<ReturnType<typeof requireServerUser>>;
 
-  if (!user) {
+  try {
+    user = await requireServerUser(supabase);
+  } catch (error) {
+    if (!(error instanceof AuthRequiredError)) {
+      return jsonResponse(
+        {
+          ok: false,
+          connected: false,
+          authenticated: false,
+          message: "Could not check your sign-in session.",
+          athlete: null,
+          scope: null,
+          tokenExpiresAt: null,
+        },
+        500,
+      );
+    }
+
     return jsonResponse(
       {
         ok: true,
@@ -29,7 +45,7 @@ export async function GET() {
         scope: null,
         tokenExpiresAt: null,
       },
-      200,
+      401,
     );
   }
 

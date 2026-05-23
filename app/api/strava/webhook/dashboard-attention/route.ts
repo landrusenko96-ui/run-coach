@@ -8,6 +8,7 @@ import {
   fetchStravaWebhookDashboardAttentionData,
   type StravaWebhookDashboardAttentionResponse,
 } from "@/lib/strava/webhookDashboardAttention";
+import { AuthRequiredError, requireServerUser } from "@/lib/supabase/auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { getLocalTodayDateText } from "@/lib/training/dashboardWeek";
 
@@ -32,11 +33,24 @@ async function fetchSubscriptionExists(): Promise<boolean | null> {
 
 export async function GET() {
   const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  let user: Awaited<ReturnType<typeof requireServerUser>>;
 
-  if (!user) {
+  try {
+    user = await requireServerUser(supabase);
+  } catch (error) {
+    if (!(error instanceof AuthRequiredError)) {
+      return jsonResponse(
+        {
+          ok: false,
+          authenticated: false,
+          connected: false,
+          message: "Could not check your sign-in session.",
+          attentionItems: [],
+        },
+        500,
+      );
+    }
+
     return jsonResponse(buildUnauthenticatedWebhookDashboardAttentionResponse(), 401);
   }
 

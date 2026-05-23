@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { fetchWorkoutExportsForTrainingPlan } from "@/lib/db/workoutExports";
 import { fetchPlannedWorkouts, fetchTrainingPlanById } from "@/lib/db/trainingPlans";
 import { previewGarminWorkout } from "@/lib/garminBridge/client";
+import { AuthRequiredError, requireServerUser } from "@/lib/supabase/auth";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 import {
   buildGarminBulkPublishCandidates,
   getTodayDateText,
@@ -112,8 +114,30 @@ export async function POST(request: Request) {
     return errorResponse("windowDays must be 7 or 14.", 400);
   }
 
+  const supabase = await createSupabaseServerClient();
+  let user: Awaited<ReturnType<typeof requireServerUser>>;
+
   try {
-    const trainingPlan = await fetchTrainingPlanById(requestBody.trainingPlanId);
+    user = await requireServerUser(supabase);
+  } catch (error) {
+    return errorResponse(
+      error instanceof AuthRequiredError
+        ? error.message
+        : "Could not check your sign-in session.",
+      error instanceof AuthRequiredError ? 401 : 500,
+    );
+  }
+
+  const dbOptions = {
+    supabase,
+    userId: user.id,
+  };
+
+  try {
+    const trainingPlan = await fetchTrainingPlanById(
+      requestBody.trainingPlanId,
+      dbOptions,
+    );
 
     if (trainingPlan.status !== "active") {
       return errorResponse(
@@ -123,8 +147,8 @@ export async function POST(request: Request) {
     }
 
     const [plannedWorkouts, workoutExports] = await Promise.all([
-      fetchPlannedWorkouts(trainingPlan.id),
-      fetchWorkoutExportsForTrainingPlan(trainingPlan.id),
+      fetchPlannedWorkouts(trainingPlan.id, dbOptions),
+      fetchWorkoutExportsForTrainingPlan(trainingPlan.id, dbOptions),
     ]);
     const workoutById = new Map(
       plannedWorkouts.map((workout) => [workout.id, workout]),

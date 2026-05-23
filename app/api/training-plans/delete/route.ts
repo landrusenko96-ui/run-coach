@@ -12,6 +12,8 @@ import {
   fetchPlannedWorkouts,
 } from "@/lib/db/trainingPlans";
 import { deleteTrainingPlanWithIntervalsCleanup } from "@/lib/intervals/deleteCleanup";
+import { AuthRequiredError, requireServerUser } from "@/lib/supabase/auth";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type { GarminPlanDeleteCleanupMode } from "@/types/training";
 
 type DeleteTrainingPlanRequest = {
@@ -74,6 +76,38 @@ export async function POST(request: Request) {
     );
   }
 
+  const supabase = await createSupabaseServerClient();
+  let user: Awaited<ReturnType<typeof requireServerUser>>;
+
+  try {
+    user = await requireServerUser(supabase);
+  } catch (error) {
+    if (error instanceof AuthRequiredError) {
+      return NextResponse.json(
+        {
+          ok: false,
+          message: error.message,
+          result: null,
+        },
+        { status: 401 },
+      );
+    }
+
+    return NextResponse.json(
+      {
+        ok: false,
+        message: "Could not check your sign-in session.",
+        result: null,
+      },
+      { status: 500 },
+    );
+  }
+
+  const dbOptions = {
+    supabase,
+    userId: user.id,
+  };
+
   try {
     const result = await deleteTrainingPlanWithIntervalsCleanup(
       {
@@ -81,12 +115,18 @@ export async function POST(request: Request) {
         garminCleanupMode,
       },
       {
-        fetchPlannedWorkouts,
-        fetchIntervalsWorkoutSyncsForTrainingPlan,
-        markIntervalsWorkoutSyncsFailedByIds,
-        fetchWorkoutExportsForTrainingPlan,
-        updateGarminWorkoutExportAfterDelete,
-        deleteTrainingPlanAndRelatedData,
+        fetchPlannedWorkouts: (trainingPlanId) =>
+          fetchPlannedWorkouts(trainingPlanId, dbOptions),
+        fetchIntervalsWorkoutSyncsForTrainingPlan: (trainingPlanId) =>
+          fetchIntervalsWorkoutSyncsForTrainingPlan(trainingPlanId, dbOptions),
+        markIntervalsWorkoutSyncsFailedByIds: (syncIds, lastError) =>
+          markIntervalsWorkoutSyncsFailedByIds(syncIds, lastError, dbOptions),
+        fetchWorkoutExportsForTrainingPlan: (trainingPlanId) =>
+          fetchWorkoutExportsForTrainingPlan(trainingPlanId, dbOptions),
+        updateGarminWorkoutExportAfterDelete: (workoutExport) =>
+          updateGarminWorkoutExportAfterDelete(workoutExport, dbOptions),
+        deleteTrainingPlanAndRelatedData: (trainingPlanId) =>
+          deleteTrainingPlanAndRelatedData(trainingPlanId, dbOptions),
       },
     );
 

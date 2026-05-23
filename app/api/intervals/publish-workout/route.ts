@@ -6,6 +6,9 @@ import {
 import { fetchPlannedWorkoutById } from "@/lib/db/workouts";
 import { bulkUpsertCalendarEvents } from "@/lib/intervals/client";
 import { buildIntervalsCalendarEventPayload } from "@/lib/intervals/workoutDocuments";
+import { AuthRequiredError, requireServerUser } from "@/lib/supabase/auth";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
+import type { UserScopedDbOptions } from "@/lib/db/supabaseClient";
 import type {
   IntervalsWorkoutSync,
   PlannedWorkout,
@@ -69,6 +72,7 @@ function validatePublishableWorkout(plannedWorkout: PlannedWorkout) {
 async function saveFailedSync(
   plannedWorkout: PlannedWorkout,
   error: unknown,
+  dbOptions: UserScopedDbOptions,
 ): Promise<IntervalsWorkoutSync | null> {
   const errorMessage =
     error instanceof Error ? error.message : "Unknown Intervals.icu publish error.";
@@ -82,6 +86,7 @@ async function saveFailedSync(
         lastSyncedAt: null,
         lastError: errorMessage,
       }),
+      dbOptions,
     );
   } catch {
     return null;
@@ -122,10 +127,44 @@ export async function POST(request: Request) {
     );
   }
 
+  const supabase = await createSupabaseServerClient();
+  let user: Awaited<ReturnType<typeof requireServerUser>>;
+
+  try {
+    user = await requireServerUser(supabase);
+  } catch (error) {
+    if (error instanceof AuthRequiredError) {
+      return jsonResponse(
+        {
+          ok: false,
+          message: error.message,
+          sync: null,
+        },
+        401,
+      );
+    }
+
+    return jsonResponse(
+      {
+        ok: false,
+        message: "Could not check your sign-in session.",
+        sync: null,
+      },
+      500,
+    );
+  }
+
+  const dbOptions = {
+    supabase,
+    userId: user.id,
+  };
   let plannedWorkout: PlannedWorkout;
 
   try {
-    plannedWorkout = await fetchPlannedWorkoutById(requestBody.plannedWorkoutId);
+    plannedWorkout = await fetchPlannedWorkoutById(
+      requestBody.plannedWorkoutId,
+      dbOptions,
+    );
     validatePublishableWorkout(plannedWorkout);
   } catch (error) {
     return jsonResponse(
@@ -156,6 +195,7 @@ export async function POST(request: Request) {
           lastSyncedAt: now,
           lastError: null,
         }),
+        dbOptions,
       );
     } catch (error) {
       const errorMessage =
@@ -182,7 +222,7 @@ export async function POST(request: Request) {
       200,
     );
   } catch (error) {
-    const sync = await saveFailedSync(plannedWorkout, error);
+    const sync = await saveFailedSync(plannedWorkout, error, dbOptions);
     const errorMessage =
       error instanceof Error ? error.message : "Unknown Intervals.icu publish error.";
 

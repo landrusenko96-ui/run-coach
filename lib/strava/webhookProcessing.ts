@@ -26,7 +26,7 @@ import {
 } from "./importRuns.ts";
 
 type ServiceRoleClient = ReturnType<typeof createServiceRoleClient>;
-type WebhookProcessingSupabaseClient = Pick<ServiceRoleClient, "from">;
+type WebhookProcessingSupabaseClient = Pick<ServiceRoleClient, "auth" | "from" | "rpc">;
 
 type WebhookProcessingStatus =
   | "pending"
@@ -476,7 +476,10 @@ async function fetchPriorSkippedActivityEvent(
   return (data as SkippedActivityWebhookEventRow | null) ?? null;
 }
 
-async function loadImportContext(): Promise<ActiveImportContext> {
+async function loadImportContext(input: {
+  supabase: WebhookProcessingSupabaseClient;
+  userId: string;
+}): Promise<ActiveImportContext> {
   const [
     profiles,
     raceGoals,
@@ -488,7 +491,11 @@ async function loadImportContext(): Promise<ActiveImportContext> {
     import("../db/trainingPlans.ts"),
     import("../db/workouts.ts"),
   ]);
-  const profile = await profiles.fetchFirstProfile();
+  const dbOptions = {
+    supabase: input.supabase,
+    userId: input.userId,
+  };
+  const profile = await profiles.fetchFirstProfile(dbOptions);
 
   if (!profile) {
     throw new SafeWebhookProcessingError(
@@ -498,6 +505,7 @@ async function loadImportContext(): Promise<ActiveImportContext> {
 
   const activePlan = await trainingPlans.fetchActiveTrainingPlanWithWorkouts(
     profile.id,
+    dbOptions,
   );
 
   if (!activePlan) {
@@ -507,9 +515,12 @@ async function loadImportContext(): Promise<ActiveImportContext> {
   }
 
   const [raceGoal, loggedWorkouts, workoutEvaluations] = await Promise.all([
-    raceGoals.fetchRaceGoalById(activePlan.plan.race_goal_id),
-    workouts.fetchLoggedWorkoutsForTrainingPlan(activePlan.plan.id),
-    workouts.fetchWorkoutEvaluationsForTrainingPlan(activePlan.plan.id),
+    raceGoals.fetchRaceGoalById(activePlan.plan.race_goal_id, dbOptions),
+    workouts.fetchLoggedWorkoutsForTrainingPlan(activePlan.plan.id, dbOptions),
+    workouts.fetchWorkoutEvaluationsForTrainingPlan(
+      activePlan.plan.id,
+      dbOptions,
+    ),
   ]);
 
   return {
@@ -608,6 +619,10 @@ async function processActivityCreateEvent(input: {
           raceGoal: importContext.raceGoal,
           plan: importContext.plan,
           ...loggedWorkoutInput,
+          db: {
+            supabase: input.supabase,
+            userId: fetchResult.userId,
+          },
         }),
       saveStravaActivity: async (stravaActivity) => {
         await input.dependencies.saveStravaActivity(

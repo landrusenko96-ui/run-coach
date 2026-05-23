@@ -14,6 +14,7 @@ import {
 import { markSyncedGarminWorkoutExportsStale } from "../db/workoutExports.ts";
 import { suggestPlanAdjustment } from "./planAdjustment.ts";
 import { scoreWorkout } from "./workoutScoring.ts";
+import type { UserScopedDbOptions } from "../db/supabaseClient.ts";
 import type {
   LoggedWorkout,
   PlanAdjustmentDecision,
@@ -64,6 +65,7 @@ export type SaveLoggedWorkoutWithCompletionInput = {
   plannedWorkout: PlannedWorkout | null;
   recentLoggedWorkouts: LoggedWorkout[];
   recentWorkoutEvaluations: WorkoutEvaluation[];
+  db?: UserScopedDbOptions;
   dependencies?: Partial<WorkoutLoggingDependencies>;
 };
 
@@ -159,6 +161,7 @@ function buildFallbackNoneDecision(
 async function markUpdatedIntervalsSyncsNeedsResync(
   updatedWorkouts: PlannedWorkout[],
   dependencies: WorkoutLoggingDependencies,
+  db?: UserScopedDbOptions,
 ): Promise<string | null> {
   if (updatedWorkouts.length === 0) {
     return null;
@@ -167,6 +170,7 @@ async function markUpdatedIntervalsSyncsNeedsResync(
   try {
     await dependencies.markSyncedIntervalsWorkoutSyncsNeedsResync(
       updatedWorkouts.map((workout) => workout.id),
+      db,
     );
 
     return null;
@@ -180,6 +184,7 @@ async function markUpdatedIntervalsSyncsNeedsResync(
 async function markUpdatedGarminExportsStale(
   updatedWorkouts: PlannedWorkout[],
   dependencies: WorkoutLoggingDependencies,
+  db?: UserScopedDbOptions,
 ): Promise<string | null> {
   if (updatedWorkouts.length === 0) {
     return null;
@@ -188,6 +193,7 @@ async function markUpdatedGarminExportsStale(
   try {
     await dependencies.markSyncedGarminWorkoutExportsStale(
       updatedWorkouts.map((workout) => workout.id),
+      db,
     );
 
     return null;
@@ -211,6 +217,7 @@ async function applyPlanAdjustmentAfterLogging(input: {
   workoutEvaluation: WorkoutEvaluation;
   recentLoggedWorkouts: LoggedWorkout[];
   recentWorkoutEvaluations: WorkoutEvaluation[];
+  db?: UserScopedDbOptions;
   dependencies: WorkoutLoggingDependencies;
 }): Promise<PlanAdjustmentResult> {
   let decision: PlanAdjustmentDecision | null = null;
@@ -221,6 +228,7 @@ async function applyPlanAdjustmentAfterLogging(input: {
     const futurePlannedWorkouts = await input.dependencies.fetchFuturePlannedWorkouts(
       input.plan.id,
       input.loggedWorkout.workout_date,
+      input.db,
     );
     decision = input.dependencies.suggestPlanAdjustment({
       profile: input.profile,
@@ -240,15 +248,17 @@ async function applyPlanAdjustmentAfterLogging(input: {
           updatedFuturePlannedWorkouts: decision.updatedFuturePlannedWorkouts,
           affectedWorkoutIds: decision.affected_workout_ids,
           loggedWorkoutDate: input.loggedWorkout.workout_date,
-        });
+        }, input.db);
       intervalsSyncWarning =
         await markUpdatedIntervalsSyncsNeedsResync(
           updatedWorkouts,
           input.dependencies,
+          input.db,
         );
       garminExportWarning = await markUpdatedGarminExportsStale(
         updatedWorkouts,
         input.dependencies,
+        input.db,
       );
     }
 
@@ -261,6 +271,7 @@ async function applyPlanAdjustmentAfterLogging(input: {
         workoutEvaluationId: input.workoutEvaluation.id,
         decision,
       }),
+      input.db,
     );
   } catch (error) {
     const fallbackDecision = buildFallbackNoneDecision(error, decision);
@@ -275,6 +286,7 @@ async function applyPlanAdjustmentAfterLogging(input: {
           workoutEvaluationId: input.workoutEvaluation.id,
           decision: fallbackDecision,
         }),
+        input.db,
       );
     } catch {
       // The workout and score are already saved. If the audit row also fails,
@@ -313,6 +325,7 @@ export async function saveLoggedWorkoutWithCompletion(
   const dependencies = getWorkoutLoggingDependencies(input.dependencies);
   const savedLoggedWorkout = await dependencies.saveLoggedWorkout(
     input.loggedWorkoutInput,
+    input.db,
   );
 
   if (!input.plannedWorkout) {
@@ -334,7 +347,10 @@ export async function saveLoggedWorkoutWithCompletion(
       savedLoggedWorkout,
       input.plannedWorkout,
     );
-    savedEvaluation = await dependencies.saveWorkoutEvaluation(evaluationInput);
+    savedEvaluation = await dependencies.saveWorkoutEvaluation(
+      evaluationInput,
+      input.db,
+    );
   } catch (error) {
     const message =
       error instanceof Error
@@ -353,7 +369,10 @@ export async function saveLoggedWorkoutWithCompletion(
   }
 
   try {
-    await dependencies.markPlannedWorkoutCompleted(input.plannedWorkout.id);
+    await dependencies.markPlannedWorkoutCompleted(
+      input.plannedWorkout.id,
+      input.db,
+    );
   } catch (error) {
     const message =
       error instanceof Error
@@ -386,6 +405,7 @@ export async function saveLoggedWorkoutWithCompletion(
       input.recentWorkoutEvaluations,
       savedEvaluation,
     ),
+    db: input.db,
     dependencies,
   });
 

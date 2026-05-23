@@ -8,7 +8,7 @@ import type {
 
 export type WorkoutEvaluationInput = Omit<
   WorkoutEvaluation,
-  "id" | "created_at" | "updated_at"
+  "id" | "user_id" | "created_at" | "updated_at"
 >;
 
 type EffortTarget = {

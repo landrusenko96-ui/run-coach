@@ -8,6 +8,8 @@ import {
   isValidStravaOAuthState,
   STRAVA_OAUTH_STATE_COOKIE_NAME,
 } from "@/lib/strava/oauthState";
+import { AuthRequiredError, requireServerUser } from "@/lib/supabase/auth";
+import { createServiceRoleClient } from "@/lib/supabase/serviceRole";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
@@ -53,18 +55,24 @@ export async function GET(request: NextRequest) {
   }
 
   const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  let user: Awaited<ReturnType<typeof requireServerUser>>;
 
-  if (!user) {
+  try {
+    user = await requireServerUser(supabase);
+  } catch (authError) {
+    if (authError instanceof AuthRequiredError) {
+      return redirectToSettings(request, "sign_in_required");
+    }
+
     return redirectToSettings(request, "sign_in_required");
   }
 
   try {
     const tokenExchange = await exchangeStravaCodeForToken(code);
 
-    await saveStravaConnection(supabase, {
+    // Strava tokens are private. Token writes use the server-only service role
+    // after this route has verified the signed-in app user.
+    await saveStravaConnection(createServiceRoleClient(), {
       userId: user.id,
       scope,
       accessToken: tokenExchange.accessToken,

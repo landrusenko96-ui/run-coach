@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { deleteStravaConnectionForUser } from "@/lib/db/stravaConnections";
+import { AuthRequiredError, requireServerUser } from "@/lib/supabase/auth";
+import { createServiceRoleClient } from "@/lib/supabase/serviceRole";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 type DisconnectResponse = {
@@ -20,11 +22,23 @@ function jsonResponse(
 
 export async function POST() {
   const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  let user: Awaited<ReturnType<typeof requireServerUser>>;
 
-  if (!user) {
+  try {
+    user = await requireServerUser(supabase);
+  } catch (error) {
+    if (!(error instanceof AuthRequiredError)) {
+      return jsonResponse(
+        {
+          ok: false,
+          connected: false,
+          authenticated: false,
+          message: "Could not check your sign-in session.",
+        },
+        500,
+      );
+    }
+
     return jsonResponse(
       {
         ok: false,
@@ -37,7 +51,7 @@ export async function POST() {
   }
 
   try {
-    await deleteStravaConnectionForUser(supabase, user.id);
+    await deleteStravaConnectionForUser(createServiceRoleClient(), user.id);
 
     return jsonResponse(
       {

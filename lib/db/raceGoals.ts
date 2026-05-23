@@ -1,19 +1,26 @@
-import { getSupabaseClient } from "@/lib/db/supabaseClient";
+import {
+  getAuthenticatedUserId,
+  getDbClient,
+  type UserScopedDbOptions,
+} from "@/lib/db/supabaseClient";
 import type { RaceGoal } from "@/types/training";
 
 export type SaveRaceGoalInput = Omit<
   RaceGoal,
-  "id" | "created_at" | "updated_at"
+  "id" | "user_id" | "created_at" | "updated_at"
 >;
 
 export async function fetchActiveRaceGoal(
   profileId: string,
+  options?: UserScopedDbOptions,
 ): Promise<RaceGoal | null> {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient(options);
+  const userId = await getAuthenticatedUserId(options);
 
   const { data, error } = await supabase
     .from("race_goals")
     .select("*")
+    .eq("user_id", userId)
     .eq("profile_id", profileId)
     .eq("is_active", true)
     .order("created_at", { ascending: true })
@@ -27,12 +34,17 @@ export async function fetchActiveRaceGoal(
   return data as RaceGoal | null;
 }
 
-export async function fetchRaceGoalById(raceGoalId: string): Promise<RaceGoal> {
-  const supabase = getSupabaseClient();
+export async function fetchRaceGoalById(
+  raceGoalId: string,
+  options?: UserScopedDbOptions,
+): Promise<RaceGoal> {
+  const supabase = getDbClient(options);
+  const userId = await getAuthenticatedUserId(options);
 
   const { data, error } = await supabase
     .from("race_goals")
     .select("*")
+    .eq("user_id", userId)
     .eq("id", raceGoalId)
     .maybeSingle();
 
@@ -50,12 +62,22 @@ export async function fetchRaceGoalById(raceGoalId: string): Promise<RaceGoal> {
 export async function saveRaceGoal(
   raceGoal: SaveRaceGoalInput,
   existingRaceGoalId?: string,
+  options?: UserScopedDbOptions,
 ): Promise<RaceGoal> {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient(options);
+  const userId = await getAuthenticatedUserId(options);
+  const raceGoalWithUser = {
+    ...raceGoal,
+    user_id: userId,
+  };
 
   const query = existingRaceGoalId
-    ? supabase.from("race_goals").update(raceGoal).eq("id", existingRaceGoalId)
-    : supabase.from("race_goals").insert(raceGoal);
+    ? supabase
+        .from("race_goals")
+        .update(raceGoalWithUser)
+        .eq("id", existingRaceGoalId)
+        .eq("user_id", userId)
+    : supabase.from("race_goals").insert(raceGoalWithUser);
 
   const { data, error } = await query.select("*").single();
 

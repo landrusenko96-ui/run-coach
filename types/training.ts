@@ -264,6 +264,7 @@ export type GarminPlanDeletePreviewWorkout = {
 
 export type Profile = {
   id: string;
+  user_id: string;
   username: string;
   display_name: string;
   birth_year: number | null;
@@ -288,6 +289,7 @@ export type Profile = {
 
 export type RaceGoal = {
   id: string;
+  user_id: string;
   profile_id: string;
   race_name: string;
   race_date: string;
@@ -303,6 +305,7 @@ export type RaceGoal = {
 
 export type IntervalsConnection = {
   id: string;
+  user_id: string;
   profile_id: string;
   athlete_id: string;
   api_key_encrypted_or_placeholder: IntervalsApiKeyPlaceholder;
@@ -313,6 +316,7 @@ export type IntervalsConnection = {
 
 export type IntervalsWorkoutSync = {
   id: string;
+  user_id: string;
   planned_workout_id: string;
   training_plan_id: string;
   profile_id: string;
@@ -327,6 +331,7 @@ export type IntervalsWorkoutSync = {
 
 export type WorkoutExport = {
   id: string;
+  user_id: string;
   planned_workout_id: string | null;
   training_plan_id: string | null;
   profile_id: string;
@@ -349,6 +354,7 @@ export type RunnerProfile = Profile;
 
 export type TrainingPlan = {
   id: string;
+  user_id: string;
   profile_id: string;
   race_goal_id: string;
   name: string;
@@ -362,7 +368,7 @@ export type TrainingPlan = {
 
 export type GeneratedTrainingPlanMetadata = Omit<
   TrainingPlan,
-  "id" | "created_at" | "updated_at"
+  "id" | "user_id" | "created_at" | "updated_at"
 > & {
   assumptions: string[];
   warnings: string[];
@@ -371,6 +377,7 @@ export type GeneratedTrainingPlanMetadata = Omit<
 
 export type PlannedWorkout = {
   id: string;
+  user_id: string;
   training_plan_id: string;
   profile_id: string;
   race_goal_id: string;
@@ -396,7 +403,7 @@ export type PlannedWorkout = {
 
 export type GeneratedPlannedWorkout = Omit<
   PlannedWorkout,
-  "id" | "training_plan_id" | "created_at" | "updated_at"
+  "id" | "user_id" | "training_plan_id" | "created_at" | "updated_at"
 >;
 
 export type GeneratedTrainingPlan = {
@@ -406,6 +413,7 @@ export type GeneratedTrainingPlan = {
 
 export type LoggedWorkout = {
   id: string;
+  user_id: string;
   profile_id: string;
   race_goal_id: string | null;
   training_plan_id: string | null;
@@ -429,6 +437,7 @@ export type LoggedWorkout = {
 
 export type WorkoutEvaluation = {
   id: string;
+  user_id: string;
   logged_workout_id: string;
   planned_workout_id: string | null;
   profile_id: string;
@@ -447,6 +456,7 @@ export type WorkoutEvaluation = {
 
 export type PlanAdjustment = {
   id: string;
+  user_id: string;
   profile_id: string;
   race_goal_id: string;
   training_plan_id: string;

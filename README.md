@@ -40,6 +40,8 @@ npm test
 
 - Next.js App Router, TypeScript, and Tailwind CSS are configured.
 - Basic navigation exists for Dashboard, Profile, Goal, Plan, Workouts, and Settings.
+- Email one-time-code login uses Supabase Auth. App pages require a signed-in non-anonymous user.
+- User-owned Supabase tables are protected with `user_id` ownership and RLS policies from Milestone 9.5.
 - Profile and race goal forms save to Supabase.
 - Rule-based plan generation creates planned workouts and structured workout documents.
 - New plans start today by default, can start on a selected future date, and block starts that are in the past or too close to race day.
@@ -75,8 +77,29 @@ SUPABASE_SERVICE_ROLE_KEY
 
 Keep `SUPABASE_SERVICE_ROLE_KEY` server-only. Do not prefix it with
 `NEXT_PUBLIC_`, never log it, and never use it in browser/client components.
-It bypasses RLS and is only for trusted server-side tasks such as future
-Strava webhook processing.
+It bypasses RLS and is only for trusted server-side tasks such as Strava OAuth
+token writes and Strava webhook processing.
+
+## Supabase Auth + RLS Setup
+
+Milestone 9.5 adds real Supabase Auth and Row Level Security.
+
+Before using a fresh Supabase project:
+
+1. Review and apply the local Supabase migrations, including
+   `supabase/migrations/20260522125923_milestone_9_5_auth_rls_hardening.sql`.
+2. In Supabase Dashboard, open Authentication -> Email Templates -> Magic Link.
+3. Make sure the email template shows the one-time code token, for example:
+
+```html
+<h2>Your Run.B*tch.app sign-in code</h2>
+<p>Enter this code in the app:</p>
+<p>{{ .Token }}</p>
+```
+
+4. Sign in from `/login` with your email and the code from the email.
+
+If app data looks missing after enabling RLS, check `docs/AUTH_RLS.md`.
 
 Intervals.icu:
 
@@ -156,8 +179,9 @@ STRAVA_WEBHOOK_CALLBACK_URL=https://your-public-app-url.example.com/api/strava/w
 SUPABASE_SERVICE_ROLE_KEY=your-server-only-supabase-service-role-or-secret-key
 ```
 
-4. Make sure the Supabase migration for Milestone 7 has been applied so `strava_connections`, `strava_activities`, and `logged_workouts.source_activity_id` exist.
-5. In Supabase Auth settings, make sure anonymous sign-ins are enabled for this MVP auth flow.
+4. Make sure the Supabase migrations for Milestone 7 and Milestone 9.5 have
+   been applied so Strava tables exist and user-owned rows are protected by RLS.
+5. Sign in to the app with the email one-time-code flow.
 6. Start the app with `npm run dev`.
 7. Open Settings, click Connect Strava, approve `read` and `activity:read_all`, then return to the app.
 8. Click Import latest Strava runs from Settings or Workouts.

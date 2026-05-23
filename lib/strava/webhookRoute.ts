@@ -8,7 +8,10 @@ import { processSingleStravaWebhookEvent } from "./webhookProcessing.ts";
 
 type WebhookEventSupabaseClient = Parameters<
   typeof storeStravaWebhookEvent
->[0]["supabase"];
+>[0]["supabase"] &
+  NonNullable<
+    NonNullable<Parameters<typeof processSingleStravaWebhookEvent>[1]>["supabase"]
+  >;
 
 type WebhookErrorResponse = {
   ok: false;

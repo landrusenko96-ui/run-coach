@@ -7,7 +7,7 @@ import type {
 
 export type SavePlanAdjustmentInput = Omit<
   PlanAdjustment,
-  "id" | "created_at"
+  "id" | "user_id" | "created_at"
 >;
 
 export type BuildSavePlanAdjustmentInputOptions = {

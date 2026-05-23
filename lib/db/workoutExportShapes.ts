@@ -2,7 +2,12 @@ import type { WorkoutExport, WorkoutExportSyncStatus } from "../../types/trainin
 
 export type SaveWorkoutExportInput = Omit<
   WorkoutExport,
-  "id" | "created_at" | "updated_at" | "planned_workout_id" | "training_plan_id"
+  | "id"
+  | "user_id"
+  | "created_at"
+  | "updated_at"
+  | "planned_workout_id"
+  | "training_plan_id"
 > & {
   planned_workout_id: string;
   training_plan_id: string;

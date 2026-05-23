@@ -1,4 +1,8 @@
-import { getSupabaseClient } from "@/lib/db/supabaseClient";
+import {
+  getAuthenticatedUserId,
+  getDbClient,
+  type UserScopedDbOptions,
+} from "@/lib/db/supabaseClient";
 import type {
   IntervalsApiKeyPlaceholder,
   IntervalsConnection,
@@ -15,12 +19,15 @@ export type SaveIntervalsConnectionInput = {
 
 export async function fetchIntervalsConnectionForProfile(
   profileId: string,
+  options?: UserScopedDbOptions,
 ): Promise<IntervalsConnection | null> {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient(options);
+  const userId = await getAuthenticatedUserId(options);
 
   const { data, error } = await supabase
     .from("intervals_connections")
     .select("*")
+    .eq("user_id", userId)
     .eq("profile_id", profileId)
     .order("is_active", { ascending: false })
     .order("updated_at", { ascending: false })
@@ -36,12 +43,15 @@ export async function fetchIntervalsConnectionForProfile(
 
 export async function fetchActiveIntervalsConnection(
   profileId: string,
+  options?: UserScopedDbOptions,
 ): Promise<IntervalsConnection | null> {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient(options);
+  const userId = await getAuthenticatedUserId(options);
 
   const { data, error } = await supabase
     .from("intervals_connections")
     .select("*")
+    .eq("user_id", userId)
     .eq("profile_id", profileId)
     .eq("is_active", true)
     .order("updated_at", { ascending: false })
@@ -58,10 +68,13 @@ export async function fetchActiveIntervalsConnection(
 export async function saveIntervalsConnection(
   connection: SaveIntervalsConnectionInput,
   existingConnectionId?: string,
+  options?: UserScopedDbOptions,
 ): Promise<IntervalsConnection> {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient(options);
+  const userId = await getAuthenticatedUserId(options);
   const connectionWithPlaceholder = {
     ...connection,
+    user_id: userId,
     api_key_encrypted_or_placeholder: INTERVALS_API_KEY_PLACEHOLDER,
   };
 
@@ -70,6 +83,7 @@ export async function saveIntervalsConnection(
         .from("intervals_connections")
         .update(connectionWithPlaceholder)
         .eq("id", existingConnectionId)
+        .eq("user_id", userId)
     : supabase.from("intervals_connections").insert(connectionWithPlaceholder);
 
   const { data, error } = await query.select("*").single();

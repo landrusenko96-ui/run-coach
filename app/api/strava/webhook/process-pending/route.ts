@@ -6,6 +6,7 @@ import {
   type ProcessPendingWebhookSummary,
 } from "@/lib/strava/webhookProcessPendingRoute";
 import { processPendingStravaWebhookEvents } from "@/lib/strava/webhookProcessing";
+import { AuthRequiredError, requireServerUser } from "@/lib/supabase/auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 type ProcessPendingWebhookResponse = ProcessPendingWebhookSummary & {
@@ -54,11 +55,24 @@ export async function POST(request: Request) {
   }
 
   const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  let user: Awaited<ReturnType<typeof requireServerUser>>;
 
-  if (!user) {
+  try {
+    user = await requireServerUser(supabase);
+  } catch (error) {
+    if (!(error instanceof AuthRequiredError)) {
+      return jsonResponse(
+        {
+          ok: false,
+          authenticated: false,
+          connected: false,
+          message: "Could not check your sign-in session.",
+          ...buildEmptySummary(),
+        },
+        500,
+      );
+    }
+
     return jsonResponse(
       {
         ok: false,
