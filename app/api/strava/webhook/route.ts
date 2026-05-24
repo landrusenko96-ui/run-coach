@@ -1,5 +1,9 @@
 import { createServiceRoleClient } from "@/lib/supabase/serviceRole";
 import {
+  getSupabaseServiceRoleConfigMessage,
+  isSupabaseServiceRoleConfigError,
+} from "@/lib/integrationConfig";
+import {
   buildStravaWebhookErrorResponse,
   handleStravaWebhookGet,
   handleStravaWebhookPost,
@@ -25,7 +29,7 @@ export async function GET(request: Request) {
   } catch {
     return buildStravaWebhookErrorResponse(
       "Strava webhook verification is not configured.",
-      500,
+      503,
     );
   }
 
@@ -35,5 +39,14 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   // Strava webhook calls do not include this app's Supabase session cookie, so
   // intake and inline processing must use the server-only service role client.
-  return handleStravaWebhookPost(request, createServiceRoleClient());
+  try {
+    return handleStravaWebhookPost(request, createServiceRoleClient());
+  } catch (error) {
+    return buildStravaWebhookErrorResponse(
+      isSupabaseServiceRoleConfigError(error)
+        ? getSupabaseServiceRoleConfigMessage(error)
+        : "Strava webhook intake is not available.",
+      isSupabaseServiceRoleConfigError(error) ? 503 : 500,
+    );
+  }
 }

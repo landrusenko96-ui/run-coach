@@ -21,6 +21,10 @@ import {
   type StravaSummaryActivity,
 } from "@/lib/strava/client";
 import {
+  getSupabaseServiceRoleConfigMessage,
+  isSupabaseServiceRoleConfigError,
+} from "@/lib/integrationConfig";
+import {
   buildEmptyStravaImportSummary,
   importStravaActivitiesForActivePlan,
 } from "@/lib/strava/importRuns";
@@ -130,7 +134,22 @@ export async function POST(request: Request) {
     supabase,
     userId: user.id,
   };
-  const serviceRoleSupabase = createServiceRoleClient();
+  let serviceRoleSupabase: ReturnType<typeof createServiceRoleClient>;
+
+  try {
+    serviceRoleSupabase = createServiceRoleClient();
+  } catch (error) {
+    return jsonResponse(
+      buildSummaryResponse({
+        ok: false,
+        message: isSupabaseServiceRoleConfigError(error)
+          ? getSupabaseServiceRoleConfigMessage(error)
+          : "Could not prepare secure Strava import access.",
+      }),
+      isSupabaseServiceRoleConfigError(error) ? 503 : 500,
+    );
+  }
+
   const connection = await fetchPrivateStravaConnectionForUser(
     serviceRoleSupabase,
     user.id,

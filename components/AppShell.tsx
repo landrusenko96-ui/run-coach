@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { SignOutButton } from "@/components/SignOutButton";
 
 const navigationItems = [
   { href: "/dashboard", label: "Dashboard" },
@@ -27,6 +28,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 {item.label}
               </Link>
             ))}
+            <SignOutButton />
           </nav>
         </div>
       </header>

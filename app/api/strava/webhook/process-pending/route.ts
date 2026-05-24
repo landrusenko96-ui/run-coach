@@ -6,7 +6,12 @@ import {
   type ProcessPendingWebhookSummary,
 } from "@/lib/strava/webhookProcessPendingRoute";
 import { processPendingStravaWebhookEvents } from "@/lib/strava/webhookProcessing";
+import {
+  getSupabaseServiceRoleConfigMessage,
+  isSupabaseServiceRoleConfigError,
+} from "@/lib/integrationConfig";
 import { AuthRequiredError, requireServerUser } from "@/lib/supabase/auth";
+import { createServiceRoleClient } from "@/lib/supabase/serviceRole";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 type ProcessPendingWebhookResponse = ProcessPendingWebhookSummary & {
@@ -115,11 +120,31 @@ export async function POST(request: Request) {
     );
   }
 
+  let serviceRoleSupabase: ReturnType<typeof createServiceRoleClient>;
+
+  try {
+    serviceRoleSupabase = createServiceRoleClient();
+  } catch (error) {
+    return jsonResponse(
+      {
+        ok: false,
+        authenticated: true,
+        connected: true,
+        message: isSupabaseServiceRoleConfigError(error)
+          ? getSupabaseServiceRoleConfigMessage(error)
+          : "Could not prepare secure Strava webhook processing access.",
+        ...buildEmptySummary(),
+      },
+      isSupabaseServiceRoleConfigError(error) ? 503 : 500,
+    );
+  }
+
   try {
     const results = await processPendingStravaWebhookEvents({
       ownerId: connection.athlete.stravaAthleteId,
       includeFailed: requestOptions.retryFailed,
       limit: requestOptions.limit,
+      supabase: serviceRoleSupabase,
     });
     const summary = buildProcessPendingWebhookSummary(results);
 

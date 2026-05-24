@@ -66,6 +66,9 @@ export function LoginForm({
 
       const { error } = await supabase.auth.signInWithOtp({
         email: trimmedEmail,
+        options: {
+          shouldCreateUser: false,
+        },
       });
 
       if (error) {

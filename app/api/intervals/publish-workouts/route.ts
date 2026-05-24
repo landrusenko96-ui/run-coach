@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { saveIntervalsWorkoutSync } from "@/lib/db/intervalsWorkoutSyncs";
 import { fetchTrainingPlanById } from "@/lib/db/trainingPlans";
 import { fetchPlannedWorkoutsByIds } from "@/lib/db/workouts";
+import { getIntervalsConfigProblem } from "@/lib/integrationConfig";
+import { getIntervalsServerConfigStatus } from "@/lib/intervals/config";
 import { publishIntervalsWorkoutsForPlan } from "@/lib/intervals/publishWorkouts";
 import { AuthRequiredError, requireServerUser } from "@/lib/supabase/auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -83,6 +85,14 @@ export async function POST(request: Request) {
     supabase,
     userId: user.id,
   };
+
+  const intervalsConfigProblem = getIntervalsConfigProblem(
+    getIntervalsServerConfigStatus(),
+  );
+
+  if (intervalsConfigProblem) {
+    return errorResponse(intervalsConfigProblem, 503);
+  }
 
   try {
     const trainingPlan = await fetchTrainingPlanById(

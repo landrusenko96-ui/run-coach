@@ -11,6 +11,10 @@ import {
   deleteTrainingPlanAndRelatedData,
   fetchPlannedWorkouts,
 } from "@/lib/db/trainingPlans";
+import {
+  INTERVALS_NOT_CONFIGURED_MESSAGE,
+  isIntervalsConfigError,
+} from "@/lib/integrationConfig";
 import { deleteTrainingPlanWithIntervalsCleanup } from "@/lib/intervals/deleteCleanup";
 import { AuthRequiredError, requireServerUser } from "@/lib/supabase/auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -136,16 +140,20 @@ export async function POST(request: Request) {
       result,
     });
   } catch (error) {
+    const isConfigError = isIntervalsConfigError(error);
+
     return NextResponse.json(
       {
         ok: false,
         message:
-          error instanceof Error
-            ? error.message
-            : "Could not delete training plan.",
+          isConfigError
+            ? INTERVALS_NOT_CONFIGURED_MESSAGE
+            : error instanceof Error
+              ? error.message
+              : "Could not delete training plan.",
         result: null,
       },
-      { status: 500 },
+      { status: isConfigError ? 503 : 500 },
     );
   }
 }

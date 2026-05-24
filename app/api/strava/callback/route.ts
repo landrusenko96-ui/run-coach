@@ -5,6 +5,10 @@ import {
   hasRequiredStravaScopes,
 } from "@/lib/strava/client";
 import {
+  isStravaOAuthConfigError,
+  isSupabaseServiceRoleConfigError,
+} from "@/lib/integrationConfig";
+import {
   isValidStravaOAuthState,
   STRAVA_OAUTH_STATE_COOKIE_NAME,
 } from "@/lib/strava/oauthState";
@@ -82,7 +86,14 @@ export async function GET(request: NextRequest) {
     });
 
     return redirectToSettings(request, "connected");
-  } catch {
+  } catch (error) {
+    if (
+      isStravaOAuthConfigError(error) ||
+      isSupabaseServiceRoleConfigError(error)
+    ) {
+      return redirectToSettings(request, "config_error");
+    }
+
     return redirectToSettings(request, "error");
   }
 }

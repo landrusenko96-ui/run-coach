@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
 import { deleteStravaConnectionForUser } from "@/lib/db/stravaConnections";
+import {
+  getSupabaseServiceRoleConfigMessage,
+  isSupabaseServiceRoleConfigError,
+} from "@/lib/integrationConfig";
 import { AuthRequiredError, requireServerUser } from "@/lib/supabase/auth";
 import { createServiceRoleClient } from "@/lib/supabase/serviceRole";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -50,8 +54,26 @@ export async function POST() {
     );
   }
 
+  let serviceRoleSupabase: ReturnType<typeof createServiceRoleClient>;
+
   try {
-    await deleteStravaConnectionForUser(createServiceRoleClient(), user.id);
+    serviceRoleSupabase = createServiceRoleClient();
+  } catch (error) {
+    return jsonResponse(
+      {
+        ok: false,
+        connected: false,
+        authenticated: true,
+        message: isSupabaseServiceRoleConfigError(error)
+          ? getSupabaseServiceRoleConfigMessage(error)
+          : "Could not prepare secure Strava disconnect access.",
+      },
+      isSupabaseServiceRoleConfigError(error) ? 503 : 500,
+    );
+  }
+
+  try {
+    await deleteStravaConnectionForUser(serviceRoleSupabase, user.id);
 
     return jsonResponse(
       {

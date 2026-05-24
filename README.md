@@ -36,6 +36,9 @@ npm run lint
 npm test
 ```
 
+For production deployment setup, use
+[`docs/PRODUCTION_DEPLOYMENT.md`](docs/PRODUCTION_DEPLOYMENT.md).
+
 ## Current status
 
 - Next.js App Router, TypeScript, and Tailwind CSS are configured.
@@ -98,6 +101,8 @@ Before using a fresh Supabase project:
 ```
 
 4. Sign in from `/login` with your email and the code from the email.
+5. For production, create the app owner user manually in Supabase first. The
+   login form does not create new users automatically.
 
 If app data looks missing after enabling RLS, check `docs/AUTH_RLS.md`.
 
@@ -124,6 +129,10 @@ GARMIN_BRIDGE_URL=http://127.0.0.1:8765
 ```
 
 Keep `GARMIN_BRIDGE_API_KEY` server-only. Do not prefix it with `NEXT_PUBLIC_`. The browser must never receive the bridge key.
+
+Do not configure `GARMIN_BRIDGE_URL` or `GARMIN_BRIDGE_API_KEY` in Vercel.
+Direct Garmin is local-only and should show as unavailable in hosted
+production.
 
 The bridge has its own local-only environment variable with the same key value:
 

@@ -273,6 +273,7 @@ describe("Garmin bridge client", () => {
     assert.equal(result.enabled, false);
     assert.equal(result.status, "DISABLED");
     assert.match(result.message, /GARMIN_BRIDGE_URL/);
+    assert.match(result.message, /Vercel\/production/);
   });
 
   it("returns config error when GARMIN_BRIDGE_API_KEY is missing", async () => {
@@ -285,6 +286,7 @@ describe("Garmin bridge client", () => {
     assert.equal(result.enabled, true);
     assert.equal(result.status, "CONFIG_ERROR");
     assert.match(result.message, /GARMIN_BRIDGE_API_KEY/);
+    assert.match(result.message, /local-only/);
   });
 
   it("returns a clear error when the bridge is not running", async () => {

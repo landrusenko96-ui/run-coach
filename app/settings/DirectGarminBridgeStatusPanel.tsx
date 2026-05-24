@@ -153,7 +153,7 @@ function getSuggestedFixes(status: GarminBridgeStatusResult | null): string[] {
 
   if (status.status === "DISABLED" || status.status === "CONFIG_ERROR") {
     return [
-      "Set GARMIN_BRIDGE_URL and GARMIN_BRIDGE_API_KEY in .env.local.",
+      "On Vercel, leave Direct Garmin bridge variables unset and use Intervals.icu export. For local testing only, set GARMIN_BRIDGE_URL and GARMIN_BRIDGE_API_KEY in .env.local.",
     ];
   }
 
@@ -278,7 +278,8 @@ export function DirectGarminBridgeStatusPanel() {
           </h2>
           <p className="mt-2 text-sm leading-6 text-slate-600">
             Local-only experimental Garmin export status. This panel checks the
-            Next.js server route, not the bridge directly from your browser.
+            Next.js server route, not the bridge directly from your browser. In
+            hosted production, Direct Garmin is expected to be unavailable.
           </p>
         </div>
 

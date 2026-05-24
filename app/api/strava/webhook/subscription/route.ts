@@ -5,6 +5,10 @@ import {
   getStravaWebhookSubscription,
   type StravaWebhookSubscriptionResult,
 } from "@/lib/strava/webhookSubscriptions";
+import {
+  isStravaWebhookConfigError,
+  STRAVA_WEBHOOK_NOT_CONFIGURED_MESSAGE,
+} from "@/lib/integrationConfig";
 import { readDeleteStravaWebhookSubscriptionRequest } from "@/lib/strava/webhookSubscriptionRoute";
 import { requireServerUser } from "@/lib/supabase/auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -27,6 +31,17 @@ function buildUnauthenticatedResponse(): StravaWebhookSubscriptionResponse {
     subscriptionId: null,
     callbackUrl: null,
     message: "Sign in required to manage Strava webhook subscriptions.",
+  };
+}
+
+function buildConfiguredErrorResponse(): StravaWebhookSubscriptionResponse {
+  return {
+    ok: false,
+    authenticated: true,
+    exists: false,
+    subscriptionId: null,
+    callbackUrl: null,
+    message: STRAVA_WEBHOOK_NOT_CONFIGURED_MESSAGE,
   };
 }
 
@@ -63,7 +78,11 @@ export async function GET() {
     const result = await getStravaWebhookSubscription();
 
     return jsonResponse(buildResponse(result), getResultStatus(result));
-  } catch {
+  } catch (error) {
+    if (isStravaWebhookConfigError(error)) {
+      return jsonResponse(buildConfiguredErrorResponse(), 503);
+    }
+
     return jsonResponse(
       {
         ok: false,
@@ -87,7 +106,11 @@ export async function POST() {
     const result = await createStravaWebhookSubscription();
 
     return jsonResponse(buildResponse(result), getResultStatus(result));
-  } catch {
+  } catch (error) {
+    if (isStravaWebhookConfigError(error)) {
+      return jsonResponse(buildConfiguredErrorResponse(), 503);
+    }
+
     return jsonResponse(
       {
         ok: false,
@@ -134,7 +157,11 @@ export async function DELETE(request: Request) {
     );
 
     return jsonResponse(buildResponse(result), getResultStatus(result));
-  } catch {
+  } catch (error) {
+    if (isStravaWebhookConfigError(error)) {
+      return jsonResponse(buildConfiguredErrorResponse(), 503);
+    }
+
     return jsonResponse(
       {
         ok: false,

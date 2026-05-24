@@ -321,7 +321,8 @@ function getBridgeConfig(
     return {
       ok: false,
       status: "DISABLED",
-      message: "Direct Garmin export is disabled because GARMIN_BRIDGE_URL is not configured.",
+      message:
+        "Direct Garmin export is local-only and is unavailable here because GARMIN_BRIDGE_URL is not configured. This is expected on Vercel/production; use Intervals.icu as the primary export path.",
     };
   }
 
@@ -334,7 +335,8 @@ function getBridgeConfig(
     return {
       ok: false,
       status: "CONFIG_ERROR",
-      message: "GARMIN_BRIDGE_API_KEY is missing. Add it to the server environment before using the local Garmin bridge.",
+      message:
+        "Direct Garmin export is local-only, but GARMIN_BRIDGE_API_KEY is missing. Add it only to local server environments that run the local bridge.",
     };
   }
 

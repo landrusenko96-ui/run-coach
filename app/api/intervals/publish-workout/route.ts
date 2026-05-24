@@ -4,7 +4,9 @@ import {
   saveIntervalsWorkoutSync,
 } from "@/lib/db/intervalsWorkoutSyncs";
 import { fetchPlannedWorkoutById } from "@/lib/db/workouts";
+import { getIntervalsConfigProblem } from "@/lib/integrationConfig";
 import { bulkUpsertCalendarEvents } from "@/lib/intervals/client";
+import { getIntervalsServerConfigStatus } from "@/lib/intervals/config";
 import { buildIntervalsCalendarEventPayload } from "@/lib/intervals/workoutDocuments";
 import { AuthRequiredError, requireServerUser } from "@/lib/supabase/auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -177,6 +179,21 @@ export async function POST(request: Request) {
         sync: null,
       },
       400,
+    );
+  }
+
+  const intervalsConfigProblem = getIntervalsConfigProblem(
+    getIntervalsServerConfigStatus(),
+  );
+
+  if (intervalsConfigProblem) {
+    return jsonResponse(
+      {
+        ok: false,
+        message: intervalsConfigProblem,
+        sync: null,
+      },
+      503,
     );
   }
 
