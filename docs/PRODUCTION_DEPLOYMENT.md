@@ -153,10 +153,10 @@ first. Add Preview variables only when you are ready to test preview deploys.
 Before first production use:
 
 1. Confirm migrations through Milestone 9.5 have already been applied.
-2. Create the app owner user manually in Supabase Auth.
-3. Keep production signup closed to unapproved users. The app calls
-   `signInWithOtp` with `shouldCreateUser: false`, so unknown emails cannot
-   create accounts through the login form.
+2. Keep the Email provider enabled.
+3. Keep email signups enabled if you want trusted first-time users to create
+   their own account through the OTP login form. The app calls `signInWithOtp`
+   with `shouldCreateUser: true`.
 4. Go to Authentication -> URL Configuration.
 5. Set Site URL to:
 
@@ -253,9 +253,9 @@ npm run dev
 
 Run these after a Vercel production deploy:
 
-1. Sign in with the manually-created owner email.
-2. Confirm an unknown/unapproved email cannot create a new app account from the
-   login form.
+1. Sign in with the email you want to use in production.
+2. If this is the first time that email is used, confirm the OTP login creates
+   the account and opens the app.
 3. Open Dashboard, Profile, Goal, Plan, Workouts, and Settings.
 4. Confirm Dashboard and Plan show the active plan.
 5. Log one manual workout.

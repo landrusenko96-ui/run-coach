@@ -101,8 +101,8 @@ Before using a fresh Supabase project:
 ```
 
 4. Sign in from `/login` with your email and the code from the email.
-5. For production, create the app owner user manually in Supabase first. The
-   login form does not create new users automatically.
+5. For production, keep Supabase email signups enabled if you want trusted
+   first-time users to create their account through the OTP login form.
 
 If app data looks missing after enabling RLS, check `docs/AUTH_RLS.md`.
 
