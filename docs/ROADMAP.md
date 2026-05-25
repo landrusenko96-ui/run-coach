@@ -22,7 +22,7 @@ The correct strategy is not to build the full Run.B*tch.app vision immediately. 
 9. Intervals.icu planned-workout publishing;
 10. Strava import.
 
-The app should prove the core loop before adding social features, avatars, routes, Spotify, global marathon databases, or public direct Garmin API integration. The MVP should publish planned workouts through Intervals.icu so they can sync onward to Garmin Connect and the Garmin Forerunner 265. A local-only direct Garmin bridge can be tested as an experimental secondary export path if Intervals.icu does not preserve workout targets well enough.
+The app should prove the core loop before adding social features, avatars, routes, Spotify, global marathon databases, or public direct Garmin API integration. The MVP should publish planned workouts through Intervals.icu so they can sync onward to Garmin Connect and the Garmin Forerunner 265. A private direct Garmin bridge can be tested as an experimental secondary export path if Intervals.icu does not preserve workout targets well enough.
 
 **Core product loop:**
 
@@ -31,6 +31,33 @@ User profile -> Race goal -> Plan generation -> Intervals.icu workout publishing
 ```
 
 Everything else is secondary until this loop works reliably.
+
+### Current implementation snapshot - May 2026
+
+The private MVP core loop is now working locally and has been prepared for
+Vercel/Supabase production deployment.
+
+Currently built:
+
+- Supabase email OTP auth with user-owned RLS policies from Milestone 9.5.
+- Trusted first-time users can create accounts through OTP login.
+- Profile, race goal, plan generation, manual workout logging, workout scoring,
+  adaptive plan adjustment, dashboard readiness/status, and plan deletion.
+- Intervals.icu planned-workout export as the primary supported export path.
+- Direct Garmin bridge as an experimental private secondary path.
+- Manual Strava import as a fallback.
+- Strava webhook intake, storage, automatic inline processing, and manual
+  pending-event processing fallback.
+- Production deployment documentation and smoke-test checklists for Vercel,
+  Supabase, Strava, Intervals.icu, and private Garmin.
+
+Current non-goals:
+
+- Do not deploy the Garmin bridge to Vercel or as a public unauthenticated service.
+- Do not add official/public Garmin API integration until explicitly decided.
+- Do not add gear tracking, nutrition, race directory, payments, admin
+  dashboard, background workers, or AI coach chat in the production-readiness
+  milestone.
 
 ---
 
@@ -725,6 +752,10 @@ Do not import cycling, swimming, strength, walking, or other activities.
 
 Only add after manual refresh works.
 
+Current app status: Strava webhook intake, event storage, inline processing,
+and manual pending-event processing fallback are built. Manual Strava import
+remains available as the fallback.
+
 **Codex prompt:**
 
 ```text
@@ -777,7 +808,7 @@ Experimental secondary export path. Intervals.icu remains the primary supported 
 
 Manual validation on 2026-05-13 confirmed one simple pace-targeted running workout uploaded through the bridge appeared on the Forerunner with pace targets visible on the watch.
 
-The app now has a local Direct Garmin workflow for personal use:
+The app now has a private Direct Garmin workflow for personal use:
 
 - Settings page troubleshooting status for the local bridge.
 - Single-workout preview and publish UI.
@@ -785,13 +816,16 @@ The app now has a local Direct Garmin workflow for personal use:
 - Bulk maintenance for stale-update and selected delete workflows.
 - Plan deletion choices for app-only deletion or explicit future Garmin cleanup.
 - Server-side bridge client that keeps `GARMIN_BRIDGE_API_KEY` out of the browser.
+- Optional hosted private bridge calls through Cloudflare Access Service Auth.
 - Export history in `workout_exports`.
 - Duplicate, stale, partial, update, and local deleted-status guardrails.
 
 **Architecture:**
 
 ```text
-Next.js app → local Python FastAPI bridge → Garmin Connect internal API via python-garminconnect → Garmin watch
+Local: Next.js app → local Python FastAPI bridge bound to 127.0.0.1 → Garmin Connect internal API via python-garminconnect → Garmin watch
+
+Hosted private: Vercel Next.js server route → Cloudflare Access HTTPS hostname → Cloudflare Tunnel → Python FastAPI bridge bound to 127.0.0.1 on VPS → Garmin Connect internal API via python-garminconnect → Garmin watch
 ```
 
 **Success criteria:**
@@ -807,9 +841,9 @@ Next.js app → local Python FastAPI bridge → Garmin Connect internal API via 
 
 **Current supported workflow:**
 
-- Start the local bridge on `127.0.0.1`.
+- Start the local bridge on `127.0.0.1`, or configure the private hosted bridge behind Cloudflare Tunnel and Cloudflare Access.
 - Authenticate Garmin once through the bridge terminal.
-- Configure the Next.js app with `GARMIN_BRIDGE_URL` and `GARMIN_BRIDGE_API_KEY`.
+- Configure the Next.js app with server-only `GARMIN_BRIDGE_URL` and `GARMIN_BRIDGE_API_KEY`. Hosted production also needs server-only Cloudflare Access service-token env vars.
 - Use Settings to check bridge configuration, reachability, auth status, client version, and safe errors.
 - Preview a planned run before publishing to confirm step count and pace target count.
 - Publish a single planned workout directly to Garmin.
@@ -838,12 +872,12 @@ Unsupported cases fail before Garmin is called when possible.
 
 **Constraints:**
 
-- Local-only.
 - Personal use only.
 - Unofficial Garmin API; can break without notice.
+- The bridge must stay private: local development binds to `127.0.0.1`; hosted production uses a VPS bridge bound to `127.0.0.1` behind Cloudflare Tunnel and Cloudflare Access.
+- Do not deploy the Python bridge to Vercel or expose a public unauthenticated bridge.
 - Do not store Garmin password in Supabase or Next.js.
-- Do not store Garmin tokens, cookies, session files, request headers, or full Garmin responses in Supabase or Next.js.
-- Do not expose the local bridge publicly.
+- Do not store Garmin tokens, cookies, session files, request headers, response headers, Cloudflare Access credentials, or full Garmin responses in Supabase or Next.js.
 - Keep Intervals.icu fallback.
 - Manual Garmin deletion and stale-export update are available.
 - Known limitation: automatic Garmin deletion/update is not built. Garmin cleanup happens only after a direct user action or an explicit plan-deletion cleanup choice.
@@ -1265,6 +1299,37 @@ Plan changes make sense
 You trust the output enough to follow it
 ```
 
+### Milestone 9.5 - Auth + RLS hardening
+
+```text
+Supabase email OTP login protects app pages
+User-owned tables use user_id ownership
+RLS policies protect private rows
+Server-only service-role access is limited to documented trusted routes
+Browser clients never receive service-role keys or provider tokens
+```
+
+### Milestone 10 - Production deployment readiness
+
+```text
+Vercel/Supabase production env vars are documented
+Missing optional integration env vars return clear safe messages
+Direct Garmin stays unavailable in hosted production unless the private hosted bridge is configured
+Strava OAuth callback and webhook setup are documented for production
+Intervals.icu export keeps server-only credentials
+Local and production smoke-test checklists exist
+No database migrations are required for this milestone
+```
+
+### Milestone 10.1 - New users auth OTP
+
+```text
+Trusted first-time users can create accounts through Supabase OTP login
+RLS still protects user-owned rows
+Signup policy remains a Supabase dashboard/usage-context decision
+No database migration is required
+```
+
 ---
 
 ## 12. Recommended v1 App Structure
@@ -1436,7 +1501,7 @@ Create a new Next.js TypeScript app called run-coach with App Router, Tailwind, 
 
 ## 16. Final Recommendation
 
-The first target should be:
+The original staged recommendation was:
 
 ```text
 A private web app that generates a marathon plan, lets the user log workouts manually, scores them, adjusts the next 1-2 weeks, and shows projected marathon finish-time range.
@@ -1451,7 +1516,7 @@ Intervals.icu planned-workout publishing to Garmin Connect and Forerunner 265.
 Then add:
 
 ```text
-Strava import.
+Strava import and webhooks.
 ```
 
 Then add:
@@ -1466,4 +1531,8 @@ Then add:
 AI-generated feedback.
 ```
 
-Everything else should wait until the adaptive training loop works.
+The app has now reached the core loop plus Intervals.icu, private Direct
+Garmin, manual Strava import, Strava webhooks, Auth/RLS, production readiness,
+and private hosted Garmin bridge support. The next safe step is to use the app
+in real local and production training flows, fix reliability issues, and only
+then consider gear tracking or AI feedback.

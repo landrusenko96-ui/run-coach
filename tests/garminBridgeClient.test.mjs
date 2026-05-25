@@ -10,6 +10,7 @@ import {
   publishGarminWorkout,
   updateGarminWorkout,
 } from "../lib/garminBridge/client.ts";
+import { assertSafeWorkoutExportInput } from "../lib/db/workoutExportShapes.ts";
 
 const bridgeUrl = "http://127.0.0.1:8765";
 const bridgeApiKey = "super-secret-bridge-key";
@@ -273,7 +274,7 @@ describe("Garmin bridge client", () => {
     assert.equal(result.enabled, false);
     assert.equal(result.status, "DISABLED");
     assert.match(result.message, /GARMIN_BRIDGE_URL/);
-    assert.match(result.message, /Vercel\/production/);
+    assert.match(result.message, /Intervals\.icu/);
   });
 
   it("returns config error when GARMIN_BRIDGE_API_KEY is missing", async () => {
@@ -286,7 +287,22 @@ describe("Garmin bridge client", () => {
     assert.equal(result.enabled, true);
     assert.equal(result.status, "CONFIG_ERROR");
     assert.match(result.message, /GARMIN_BRIDGE_API_KEY/);
-    assert.match(result.message, /local-only/);
+    assert.match(result.message, /server environments/);
+  });
+
+  it("returns a config error when Cloudflare Access service auth is partially configured", async () => {
+    const result = await getGarminBridgeStatus({
+      bridgeUrl,
+      apiKey: bridgeApiKey,
+      accessClientId: "cloudflare-access-client-id",
+      accessClientSecret: null,
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.enabled, true);
+    assert.equal(result.status, "CONFIG_ERROR");
+    assert.match(result.message, /partially configured/);
+    assert.doesNotMatch(JSON.stringify(result), /cloudflare-access-client-id/);
   });
 
   it("returns a clear error when the bridge is not running", async () => {
@@ -300,7 +316,21 @@ describe("Garmin bridge client", () => {
 
     assert.equal(result.ok, false);
     assert.equal(result.status, "BRIDGE_UNAVAILABLE");
-    assert.equal(result.message, "Local Garmin bridge is not running.");
+    assert.equal(result.message, "Garmin bridge is not reachable.");
+  });
+
+  it("returns a safe unavailable status when the bridge request times out", async () => {
+    const result = await getGarminBridgeStatus({
+      bridgeUrl,
+      apiKey: bridgeApiKey,
+      requestTimeoutMs: 5,
+      fetchImpl: async () => new Promise(() => {}),
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.status, "BRIDGE_UNAVAILABLE");
+    assert.equal(result.message, "Garmin bridge request timed out.");
+    assert.doesNotMatch(JSON.stringify(result), /super-secret-bridge-key/);
   });
 
   it("sends the bridge key as a private server header for status checks", async () => {
@@ -320,8 +350,61 @@ describe("Garmin bridge client", () => {
       mockFetch.calls[0].init.headers["X-Garmin-Bridge-Key"],
       bridgeApiKey,
     );
+    assert.equal(
+      mockFetch.calls[0].init.headers["CF-Access-Client-Id"],
+      undefined,
+    );
+    assert.equal(
+      mockFetch.calls[0].init.headers["CF-Access-Client-Secret"],
+      undefined,
+    );
     assert.equal(mockFetch.calls[0].init.body, undefined);
     assert.doesNotMatch(mockFetch.calls[0].url, /super-secret-bridge-key/);
+  });
+
+  it("sends Cloudflare Access service-token headers when both values are configured", async () => {
+    const mockFetch = createMockFetch(jsonResponse(statusResponse()));
+
+    const result = await getGarminBridgeStatus({
+      bridgeUrl: "https://garmin-bridge.example.com",
+      apiKey: bridgeApiKey,
+      accessClientId: "cf-access-client-id",
+      accessClientSecret: "cf-access-client-secret",
+      fetchImpl: mockFetch.fetchImpl,
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(mockFetch.calls.length, 1);
+    assert.equal(
+      mockFetch.calls[0].init.headers["X-Garmin-Bridge-Key"],
+      bridgeApiKey,
+    );
+    assert.equal(
+      mockFetch.calls[0].init.headers["CF-Access-Client-Id"],
+      "cf-access-client-id",
+    );
+    assert.equal(
+      mockFetch.calls[0].init.headers["CF-Access-Client-Secret"],
+      "cf-access-client-secret",
+    );
+    assert.doesNotMatch(JSON.stringify(result), /cf-access-client-secret/);
+    assert.doesNotMatch(mockFetch.calls[0].url, /cf-access-client-secret/);
+  });
+
+  it("sanitizes status responses before returning them to app callers", async () => {
+    const mockFetch = createMockFetch(jsonResponse(statusResponse()));
+
+    const result = await getGarminBridgeStatus({
+      bridgeUrl,
+      apiKey: bridgeApiKey,
+      fetchImpl: mockFetch.fetchImpl,
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.bridgeStatus.token_file_exists, true);
+    assert.equal("token_file_path" in result.bridgeStatus, false);
+    assert.doesNotMatch(JSON.stringify(result), /\/local\/path/);
+    assert.doesNotMatch(JSON.stringify(result), /garmin_tokens\.json/);
   });
 
   it("maps preview requests to the flat bridge workout contract", async () => {
@@ -750,7 +833,7 @@ describe("Garmin bridge client", () => {
 
     assert.equal(result.ok, false);
     assert.equal(result.status, "BRIDGE_UNAVAILABLE");
-    assert.equal(result.message, "Local Garmin bridge is not running.");
+    assert.equal(result.message, "Garmin bridge is not reachable.");
     assert.equal(exportUpdater.updatedExports.length, 0);
     assert.doesNotMatch(JSON.stringify(result), /super-secret-bridge-key/);
   });
@@ -1239,12 +1322,12 @@ describe("Garmin bridge client", () => {
 
     assert.equal(result.ok, false);
     assert.equal(result.status, "BRIDGE_UNAVAILABLE");
-    assert.equal(result.message, "Local Garmin bridge is not running.");
+    assert.equal(result.message, "Garmin bridge is not reachable.");
     assert.equal(exportSaver.savedExports.length, 1);
     assert.equal(exportSaver.savedExports[0].sync_status, "failed");
     assert.equal(
       exportSaver.savedExports[0].last_error,
-      "Local Garmin bridge is not running.",
+      "Garmin bridge is not reachable.",
     );
   });
 
@@ -1589,5 +1672,35 @@ describe("Garmin bridge client", () => {
     assert.doesNotMatch(serializedExport, /password/i);
     assert.doesNotMatch(serializedExport, /access_token/i);
     assert.doesNotMatch(serializedExport, /refresh_token/i);
+    assert.doesNotMatch(serializedExport, /python-garminconnect/i);
+    assert.doesNotMatch(serializedExport, /garminconnect/i);
+  });
+
+  it("rejects Cloudflare Access and bridge secret terms in workout export records", () => {
+    const unsafeExport = {
+      planned_workout_id: "workout-1",
+      training_plan_id: "plan-1",
+      profile_id: "profile-1",
+      export_provider: "garmin_direct",
+      export_mode: "single_publish",
+      provider_workout_id: null,
+      provider_schedule_id: null,
+      sync_status: "failed",
+      scheduled_date: "2026-05-20",
+      last_synced_at: null,
+      last_verified_at: null,
+      last_error: "CF-Access-Client-Secret must not be stored.",
+      warnings: [],
+      payload_snapshot: {
+        request_headers: {
+          "X-Garmin-Bridge-Key": "secret",
+        },
+      },
+    };
+
+    assert.throws(
+      () => assertSafeWorkoutExportInput(unsafeExport),
+      /must not contain secrets/,
+    );
   });
 });

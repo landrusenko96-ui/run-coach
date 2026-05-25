@@ -28,7 +28,6 @@ class GarminStatusResponse(BaseModel):
     client_library: Literal["python-garminconnect"]
     client_version: Optional[str] = None
     token_file_exists: bool
-    token_file_path: str
     last_auth_check_at: str
     message: str
 

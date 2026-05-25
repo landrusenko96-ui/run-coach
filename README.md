@@ -6,7 +6,7 @@ Run.B*tch.app is a private web app for adaptive marathon preparation. The long-t
 
 Runner profile -> Race goal -> Training plan -> Workout logging -> Workout evaluation -> Plan adjustment -> Updated plan
 
-The most important feature is the adaptive training plan. This repository now contains the early private MVP flow for profile setup, race goals, rule-based plan generation, manual workout logging, workout scoring, plan adjustment, dashboard status, Intervals.icu planned-workout publishing, an experimental local-only direct Garmin export bridge, and manual Strava run import.
+The most important feature is the adaptive training plan. This repository now contains the early private MVP flow for profile setup, race goals, rule-based plan generation, manual workout logging, workout scoring, plan adjustment, dashboard status, Intervals.icu planned-workout publishing, an experimental private direct Garmin export bridge, manual Strava run import, Strava webhook intake/processing, and production deployment readiness docs.
 
 ## How to run locally
 
@@ -28,15 +28,19 @@ Open the app:
 http://localhost:3000
 ```
 
+For the full beginner-readable local setup checklist, use
+[`docs/LOCAL_DEVELOPMENT.md`](docs/LOCAL_DEVELOPMENT.md).
+
 Useful checks after dependencies are installed:
 
 ```bash
 npm run typecheck
 npm run lint
 npm test
+npm run build
 ```
 
-For production deployment setup, use
+For production deployment setup and production smoke tests, use
 [`docs/PRODUCTION_DEPLOYMENT.md`](docs/PRODUCTION_DEPLOYMENT.md).
 
 ## Current status
@@ -44,6 +48,7 @@ For production deployment setup, use
 - Next.js App Router, TypeScript, and Tailwind CSS are configured.
 - Basic navigation exists for Dashboard, Profile, Goal, Plan, Workouts, and Settings.
 - Email one-time-code login uses Supabase Auth. App pages require a signed-in non-anonymous user.
+- A header sign-out button signs out the current browser session and returns to `/login`.
 - User-owned Supabase tables are protected with `user_id` ownership and RLS policies from Milestone 9.5.
 - Profile and race goal forms save to Supabase.
 - Rule-based plan generation creates planned workouts and structured workout documents.
@@ -52,8 +57,9 @@ For production deployment setup, use
 - Plan adjustment logic can update future planned workouts with an audit record.
 - Dashboard acts as a weekly command center with today's workout, the next workout, this-week status, export health, attention items, recent logs, recent scores, and plan-change summaries.
 - Intervals.icu publishing exists for planned run workouts using server-only environment variables. It remains the primary export path.
-- Direct Garmin publishing exists as an experimental local-only bridge in `local-garmin-bridge/`.
-- The Direct Garmin bridge uses `python-garminconnect==0.3.3`, a locally saved Garmin session, and a FastAPI service bound to `127.0.0.1`.
+- Direct Garmin publishing exists as an experimental private bridge in `local-garmin-bridge/`.
+- The Direct Garmin bridge uses `python-garminconnect==0.3.3`, a saved Garmin session, and a FastAPI service that must bind to `127.0.0.1`.
+- Hosted Direct Garmin uses a private VPS bridge behind Cloudflare Tunnel and Cloudflare Access Service Auth. The browser never calls the bridge directly.
 - Direct Garmin publishing has been manually verified to create Garmin workouts with pace targets visible on a Forerunner watch.
 - The app can preview, single-publish, and bulk-publish upcoming eligible workouts to the local Garmin bridge through server routes.
 - Garmin direct export attempts are tracked in `workout_exports`, including success, failure, partial, stale, and locally deleted states.
@@ -63,11 +69,20 @@ For production deployment setup, use
 - Settings includes a Direct Garmin Bridge troubleshooting panel.
 - Strava OAuth connection and manual run import are available from Settings and Workouts.
 - Strava import skips duplicate activities, non-runs, invalid runs, pre-plan runs, and active-plan days already covered by logged workouts.
+- Strava webhooks can store new activity events, process them server-side, and fall back to manual pending-event processing.
+- Production deployment readiness has been documented for Vercel, Supabase, Strava, Intervals.icu, and the private Garmin bridge.
 - Gear tracking and AI feedback are not built yet.
 
 ## Environment variables
 
 Copy `.env.example` to `.env.local` and fill in your own values.
+
+This README is the short reference. For environment variables split by local
+development, production Vercel, browser-safe values, server-only secrets, and
+private Garmin bridge variables, use:
+
+- [`docs/LOCAL_DEVELOPMENT.md`](docs/LOCAL_DEVELOPMENT.md)
+- [`docs/PRODUCTION_DEPLOYMENT.md`](docs/PRODUCTION_DEPLOYMENT.md)
 
 Supabase:
 
@@ -115,11 +130,14 @@ INTERVALS_API_KEY
 
 Keep `INTERVALS_API_KEY` server-only. Do not prefix it with `NEXT_PUBLIC_`.
 
-Direct Garmin local bridge:
+Direct Garmin bridge:
 
 ```text
 GARMIN_BRIDGE_URL
 GARMIN_BRIDGE_API_KEY
+GARMIN_BRIDGE_ACCESS_CLIENT_ID
+GARMIN_BRIDGE_ACCESS_CLIENT_SECRET
+GARMIN_BRIDGE_REQUEST_TIMEOUT_MS
 ```
 
 For local development, the usual bridge URL is:
@@ -128,22 +146,44 @@ For local development, the usual bridge URL is:
 GARMIN_BRIDGE_URL=http://127.0.0.1:8765
 ```
 
-Keep `GARMIN_BRIDGE_API_KEY` server-only. Do not prefix it with `NEXT_PUBLIC_`. The browser must never receive the bridge key.
+Keep all Garmin bridge variables server-only. Do not prefix them with
+`NEXT_PUBLIC_`. The browser must never receive the bridge key or Cloudflare
+Access service-token values.
 
-Do not configure `GARMIN_BRIDGE_URL` or `GARMIN_BRIDGE_API_KEY` in Vercel.
-Direct Garmin is local-only and should show as unavailable in hosted
-production.
+For hosted production, Vercel may store only the server-side bridge variables
+above. The bridge itself runs on a private VPS bound to `127.0.0.1:8765`; a
+Cloudflare Tunnel exposes an HTTPS hostname protected by Cloudflare Access
+Service Auth, and the bridge still requires `X-Garmin-Bridge-Key`.
 
-The bridge has its own local-only environment variable with the same key value:
+The bridge host has its own environment variables:
 
 ```bash
 cd local-garmin-bridge
 source .venv/bin/activate
 export GARMIN_BRIDGE_API_KEY="replace-with-a-long-random-local-key"
+export GARMIN_TOKEN_DIR="/var/lib/run-coach-garmin/.garminconnect"
+export GARMIN_BRIDGE_ENV="production"
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8765
 ```
 
-Garmin login happens only in the local bridge terminal. Do not store Garmin usernames, passwords, tokens, cookies, or session files in Supabase, Next.js, `.env.local`, screenshots, docs, or commits.
+For local development, `GARMIN_TOKEN_DIR` and Cloudflare Access variables are
+not required. Garmin login happens only in the bridge terminal or SSH session.
+Do not store Garmin usernames, passwords, tokens, cookies, session files,
+request headers, response headers, or Cloudflare Access credentials in
+Supabase, browser responses, Vercel logs, GitHub, screenshots, docs, or commits.
+
+Never create these variables:
+
+```text
+NEXT_PUBLIC_GARMIN_BRIDGE_API_KEY
+NEXT_PUBLIC_GARMIN_BRIDGE_ACCESS_CLIENT_SECRET
+NEXT_PUBLIC_GARMIN_*
+GARMIN_USERNAME
+GARMIN_PASSWORD
+GARMIN_COOKIES
+GARMIN_TOKENS
+NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY
+```
 
 Strava import:
 
@@ -183,9 +223,11 @@ To set it up locally:
 STRAVA_CLIENT_ID=your-strava-client-id
 STRAVA_CLIENT_SECRET=your-strava-client-secret
 NEXT_PUBLIC_APP_URL=http://localhost:3000
+SUPABASE_SERVICE_ROLE_KEY=your-server-only-supabase-service-role-or-secret-key
+
+# Only needed when testing/managing Strava webhooks:
 STRAVA_WEBHOOK_VERIFY_TOKEN=replace-with-a-long-random-token
 STRAVA_WEBHOOK_CALLBACK_URL=https://your-public-app-url.example.com/api/strava/webhook
-SUPABASE_SERVICE_ROLE_KEY=your-server-only-supabase-service-role-or-secret-key
 ```
 
 4. Make sure the Supabase migrations for Milestone 7 and Milestone 9.5 have
@@ -204,9 +246,33 @@ Manual test expectations:
 - Already imported Strava activities are skipped as duplicates.
 - The import summary lists each pulled Strava activity with name, date, distance, average pace, and status.
 
+## Strava Webhook Notes
+
+Strava webhooks are configured separately from manual import. They are useful
+after deployment because Strava needs a public callback URL.
+
+Production callback URL:
+
+```text
+https://your-production-domain.example/api/strava/webhook
+```
+
+For this app:
+
+- `activity/create` webhook events are stored and processed/imported when possible.
+- `activity/update` and `activity/delete` webhook events are stored as ignored events.
+- Manual Strava import remains the fallback if webhook delivery is delayed or unclear.
+- Webhook ownership is derived from the saved Strava connection's athlete id,
+  not from any incoming `user_id`.
+- The webhook route uses the server-only Supabase service-role key because
+  Strava does not send the app's Supabase session cookie.
+
+For production setup and smoke tests, use
+[`docs/PRODUCTION_DEPLOYMENT.md`](docs/PRODUCTION_DEPLOYMENT.md).
+
 ## Direct Garmin Bridge Notes
 
-Intervals.icu remains the primary supported export path. The Direct Garmin bridge is experimental, local-only, and personal-use only.
+Intervals.icu remains the primary supported export path. The Direct Garmin bridge is experimental, private, and personal-use only.
 
 Use it when you specifically need Garmin pace targets that Intervals.icu does not preserve reliably. The Direct Garmin path has been manually verified to publish pace targets to a Forerunner watch, but it uses unofficial Garmin Connect internals through `python-garminconnect==0.3.3`, so it can break without notice.
 
@@ -222,6 +288,7 @@ Common fixes:
 
 - Bridge not configured: set `GARMIN_BRIDGE_URL` and `GARMIN_BRIDGE_API_KEY` in `.env.local`.
 - Bridge not running: run `cd local-garmin-bridge && source .venv/bin/activate && python -m uvicorn app.main:app --host 127.0.0.1 --port 8765`.
+- Hosted bridge unavailable: check the VPS systemd service, Cloudflare Tunnel, Cloudflare Access Service Auth values in Vercel, and the bridge API key.
 - Auth missing or token invalid: run the Garmin auth helper and complete login/MFA in the bridge terminal.
 - Already exported workout: use Update Garmin Export for stale workouts or Delete from Garmin before publishing again. The app intentionally does not offer duplicate-creating republish.
 

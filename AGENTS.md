@@ -46,8 +46,10 @@ Current build priority:
 9. Intervals.icu planned-workout publishing
 10. Direct Garmin local bridge lifecycle safety
 11. Strava import
-12. Gear tracking
-13. AI-generated feedback
+12. Strava webhooks
+13. Production deployment readiness
+14. Gear tracking
+15. AI-generated feedback
 
 Do not build these until explicitly requested:
 - Official/public Direct Garmin API integration
@@ -79,15 +81,18 @@ Intervals.icu planned-workout publishing logic should live in:
 
 - `/lib/intervals`
 
-The experimental local Direct Garmin bridge is already part of Milestone 6C.
+The experimental Direct Garmin bridge started as local-only in Milestone 6C and now supports a private hosted bridge architecture in Milestone 11B.
 
 Direct Garmin rules:
 
 - Keep Intervals.icu as the primary supported export path.
-- Keep the Garmin bridge local-only and experimental.
+- Keep the Garmin bridge experimental and private.
+- Do not deploy the Garmin bridge to Vercel or any fully public unauthenticated server.
+- Hosted Direct Garmin may use a private VPS bridge bound to `127.0.0.1`, exposed only through Cloudflare Tunnel + Cloudflare Access Service Auth, with the bridge API key still required.
+- In Vercel, Garmin bridge variables must be server-only: `GARMIN_BRIDGE_URL`, `GARMIN_BRIDGE_API_KEY`, optional `GARMIN_BRIDGE_ACCESS_CLIENT_ID`, optional `GARMIN_BRIDGE_ACCESS_CLIENT_SECRET`, and optional `GARMIN_BRIDGE_REQUEST_TIMEOUT_MS`.
 - Bridge code lives in `/local-garmin-bridge`.
 - Next.js server-only bridge helpers live in `/lib/garminBridge`.
-- Do not expose `GARMIN_BRIDGE_API_KEY`, Garmin tokens, cookies, passwords, or full Garmin responses to the browser or database.
+- Do not expose `GARMIN_BRIDGE_API_KEY`, Cloudflare Access credentials, Garmin tokens, cookies, passwords, request headers, response headers, or full Garmin responses to the browser or database.
 - Do not add official/public Garmin API integration unless explicitly requested later.
 - Do not silently delete or update Garmin workouts; Garmin cleanup must remain explicit and user-confirmed.
 
@@ -98,6 +103,36 @@ Strava logic should live in:
 Shared types should live in:
 
 - `/types`
+
+## Environment and deployment rules
+
+Local development:
+
+- Use `.env.local` and `docs/LOCAL_DEVELOPMENT.md`.
+- Local app URL is usually `http://localhost:3000`.
+- Optional integrations should fail with clear "not configured" messages when
+  their env vars are missing.
+- Direct Garmin may be used only through the local Python bridge bound to
+  `127.0.0.1` in local development.
+
+Production:
+
+- Use Vercel for hosting and Supabase for database/auth.
+- Use `docs/PRODUCTION_DEPLOYMENT.md` for Vercel, Supabase, Strava, Intervals,
+  and production smoke-test setup.
+- Direct Garmin may be available in hosted production only through the private
+  hosted bridge architecture documented in `docs/PRODUCTION_DEPLOYMENT.md`.
+- Intervals.icu remains the primary supported planned-workout export path.
+- Strava webhooks are public inbound routes, but webhook ownership must be
+  derived from saved Strava connection data, not from any incoming `user_id`.
+- Supabase OTP login currently allows trusted first-time users to create
+  accounts through the login form. Do not weaken RLS.
+
+Documentation:
+
+- When changing env vars, auth behavior, integration setup, deployment behavior,
+  or Garmin/Strava/Intervals assumptions, update the relevant docs in the same
+  task.
 
 ## Training logic rules
 

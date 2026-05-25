@@ -1,15 +1,25 @@
-# Local Garmin Bridge
+# Garmin Bridge
 
-This is a local-only experimental bridge for Direct Garmin Local Bridge export.
+This is an experimental private bridge for Direct Garmin export.
 
-It is separate from the Next.js app. It is not deployed, not public, and not a supported production integration.
+It is separate from the Next.js app. It must stay private and is not a public
+Garmin integration.
+
+Local development runs it on `127.0.0.1:8765`. Hosted production may run it on
+a private VPS bound to `127.0.0.1:8765`, exposed only through Cloudflare Tunnel
+and Cloudflare Access Service Auth. The bridge still requires
+`X-Garmin-Bridge-Key`.
 
 ## Current Status
 
 This checkpoint uses `python-garminconnect==0.3.3` for Garmin authentication, workout upload, and calendar scheduling.
 
-- Garmin authentication happens locally from the bridge terminal.
-- Garmin session tokens are saved only in `local-garmin-bridge/.garminconnect/garmin_tokens.json`.
+- Garmin authentication happens from the bridge terminal or an SSH session on
+  the bridge host.
+- Local Garmin session tokens are saved only in
+  `local-garmin-bridge/.garminconnect/garmin_tokens.json`.
+- Hosted Garmin session tokens are saved only in `GARMIN_TOKEN_DIR`, usually
+  `/var/lib/run-coach-garmin/.garminconnect`.
 - The previous Garth new-login path is retired for this bridge because new login failed.
 - The bridge can preview and publish one running workout per request.
 - The bridge supports pace targets in `sec_per_km`, including simple runs and one-level interval repeats.
@@ -34,16 +44,17 @@ This validates the first narrow pace-target export path. The bridge remains expe
 
 ## Important Constraints
 
-- Local-only.
+- Private only.
 - Personal use only.
 - Uses unofficial Garmin Connect APIs.
 - Unofficial Garmin APIs can break without notice.
 - Do not store Garmin usernames, passwords, tokens, or session data in Supabase or the Next.js app.
-- Do not log secrets, tokens, passwords, or full Garmin responses.
+- Do not log secrets, tokens, passwords, request headers, response headers, Cloudflare Access values, or full Garmin responses.
 - Do not commit `local-garmin-bridge/.garminconnect/`; it contains private local Garmin session tokens after login.
 - Do not commit `local-garmin-bridge/.garminconnect-spike/` or `local-garmin-bridge/.garth/` if they exist from earlier experiments.
 - Do not put Garmin credentials in `.env.example`, screenshots, issue comments, or docs.
-- Do not expose this bridge publicly.
+- Do not expose this bridge publicly or run it as a public unauthenticated service.
+- Do not deploy this Python bridge to Vercel.
 - Keep Intervals.icu as the fallback export path.
 - Treat Garmin API success as incomplete until Garmin Connect and the watch are manually checked.
 - Do not expect the app to silently delete or update existing Garmin workouts. Manual update, manual delete, bulk maintenance, and plan-deletion cleanup choices require user action.
@@ -68,6 +79,18 @@ export GARMIN_BRIDGE_API_KEY="replace-with-a-long-random-local-key"
 ```
 
 The `.env.example` file shows the required variable name only. It must not contain Garmin credentials.
+
+Optional hosted-only variables:
+
+```text
+GARMIN_TOKEN_DIR=/var/lib/run-coach-garmin/.garminconnect
+GARMIN_BRIDGE_ENV=production
+```
+
+When `GARMIN_BRIDGE_ENV=production`, `/docs` and `/openapi.json` return 404,
+and `/garmin/auth/start` is disabled. Do the initial Garmin login through a
+temporary interactive local-mode bridge process over SSH, then restart the
+systemd service in production mode.
 
 ## Run
 
@@ -426,7 +449,7 @@ Never treat a delete response as final until Garmin Connect and the watch have b
 
 ## API Docs
 
-The docs routes are protected:
+In local development, the docs routes are protected by the bridge key:
 
 ```text
 http://127.0.0.1:8765/docs
@@ -435,11 +458,14 @@ http://127.0.0.1:8765/openapi.json
 
 A normal browser tab cannot attach `X-Garmin-Bridge-Key` to the `/openapi.json` request that the docs page makes. For protected docs, use a header-aware client such as curl, Postman, or an API client extension.
 
+In `GARMIN_BRIDGE_ENV=production`, `/docs`, `/redoc`, and `/openapi.json`
+return 404.
+
 ## Endpoints
 
 - `GET /health` - public
 - `GET /garmin/status` - requires `X-Garmin-Bridge-Key`
-- `POST /garmin/auth/start` - requires `X-Garmin-Bridge-Key` and prompts in the bridge terminal
+- `POST /garmin/auth/start` - requires `X-Garmin-Bridge-Key` and prompts in the bridge terminal in local mode; disabled in hosted production mode
 - `POST /garmin/workouts/preview` - requires `X-Garmin-Bridge-Key`
 - `POST /garmin/workouts/publish` - requires `X-Garmin-Bridge-Key`
 - `POST /garmin/workouts/delete` - requires `X-Garmin-Bridge-Key`
@@ -465,6 +491,19 @@ Local app environment:
 GARMIN_BRIDGE_URL=http://127.0.0.1:8765
 GARMIN_BRIDGE_API_KEY=replace-with-the-same-local-key-used-to-start-the-bridge
 ```
+
+Hosted Vercel server-only environment:
+
+```text
+GARMIN_BRIDGE_URL=https://garmin-bridge.your-private-hostname.example
+GARMIN_BRIDGE_API_KEY=replace-with-the-same-key-used-on-the-bridge-host
+GARMIN_BRIDGE_ACCESS_CLIENT_ID=from-cloudflare-access-service-auth
+GARMIN_BRIDGE_ACCESS_CLIENT_SECRET=from-cloudflare-access-service-auth
+GARMIN_BRIDGE_REQUEST_TIMEOUT_MS=15000
+```
+
+The browser must never receive those values. Do not create any
+`NEXT_PUBLIC_GARMIN_*` variables.
 
 Built app behavior:
 
@@ -494,6 +533,8 @@ Common fixes:
 
 - Bridge not configured: set `GARMIN_BRIDGE_URL` and `GARMIN_BRIDGE_API_KEY` in the Next.js `.env.local`.
 - Bridge not running: start it with `cd local-garmin-bridge && source .venv/bin/activate && python -m uvicorn app.main:app --host 127.0.0.1 --port 8765`.
+- Hosted bridge not reachable: check the VPS systemd service, Cloudflare Tunnel,
+  Cloudflare Access Service Auth values, and bridge API key.
 - Auth missing: run `POST /garmin/auth/start` and complete Garmin login in the bridge terminal.
 - Token invalid: re-authenticate with Garmin.
 - API key rejected: make sure the key exported in the bridge terminal matches `GARMIN_BRIDGE_API_KEY` in the Next.js `.env.local`.

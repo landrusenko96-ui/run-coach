@@ -25,11 +25,25 @@ export type UpdateWorkoutExportAfterGarminDeleteInput = {
 function assertSafeSerializedWorkoutExport(workoutExport: unknown) {
   const serializedExport = JSON.stringify(workoutExport).toLowerCase();
   const blockedSecretTerms = [
+    "cf-access-client-id",
+    "cf-access-client-secret",
+    "garmin_bridge_access_client_id",
+    "garmin_bridge_access_client_secret",
     "garmin_bridge_api_key",
     "x-garmin-bridge-key",
+    "client_secret",
+    "access_client_secret",
     "authorization",
+    "bearer",
     "cookie",
+    "garmin_tokens",
+    "garminconnect",
     "password",
+    "request headers",
+    "request_headers",
+    "response headers",
+    "response_headers",
+    "token",
     "access_token",
     "refresh_token",
     "id_token",
@@ -39,7 +53,7 @@ function assertSafeSerializedWorkoutExport(workoutExport: unknown) {
   for (const blockedTerm of blockedSecretTerms) {
     if (serializedExport.includes(blockedTerm)) {
       throw new Error(
-        "Workout export records must not contain secrets, tokens, cookies, passwords, API keys, or request headers.",
+        "Workout export records must not contain secrets, tokens, cookies, passwords, API keys, service-token values, or request/response headers.",
       );
     }
   }

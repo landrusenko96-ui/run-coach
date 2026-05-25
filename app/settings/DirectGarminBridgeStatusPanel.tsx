@@ -25,7 +25,6 @@ type GarminBridgeServerStatus = {
   client_library: "python-garminconnect";
   client_version: string | null;
   token_file_exists: boolean;
-  token_file_path: string;
   last_auth_check_at: string;
   message: string;
 };
@@ -153,12 +152,15 @@ function getSuggestedFixes(status: GarminBridgeStatusResult | null): string[] {
 
   if (status.status === "DISABLED" || status.status === "CONFIG_ERROR") {
     return [
-      "On Vercel, leave Direct Garmin bridge variables unset and use Intervals.icu export. For local testing only, set GARMIN_BRIDGE_URL and GARMIN_BRIDGE_API_KEY in .env.local.",
+      "Use Intervals.icu as the fallback export path. For local testing, set GARMIN_BRIDGE_URL and GARMIN_BRIDGE_API_KEY in .env.local. For hosted private bridge use, set the server-only Vercel bridge variables.",
     ];
   }
 
   if (status.status === "BRIDGE_UNAVAILABLE") {
-    return [`Start local bridge: ${bridgeStartCommand}`];
+    return [
+      `Start local bridge: ${bridgeStartCommand}`,
+      "For hosted private bridge use, check the VPS service, Cloudflare Tunnel, and Cloudflare Access service token configuration.",
+    ];
   }
 
   if (
@@ -174,7 +176,7 @@ function getSuggestedFixes(status: GarminBridgeStatusResult | null): string[] {
 
   if (status.status === "BRIDGE_UNAUTHORIZED") {
     return [
-      "Check that GARMIN_BRIDGE_API_KEY in .env.local matches the key used to start the bridge.",
+      "Check that the server-only bridge key and Cloudflare Access service token configuration match the bridge host.",
     ];
   }
 
@@ -223,7 +225,7 @@ async function requestGarminBridgeStatus(): Promise<{
         ok: false,
         enabled: true,
         status: "BRIDGE_UNAVAILABLE",
-        message: "Local Garmin bridge is not running.",
+        message: "Garmin bridge is not reachable.",
         bridgeStatus: null,
       },
     };
@@ -277,9 +279,9 @@ export function DirectGarminBridgeStatusPanel() {
             Direct Garmin Bridge
           </h2>
           <p className="mt-2 text-sm leading-6 text-slate-600">
-            Local-only experimental Garmin export status. This panel checks the
-            Next.js server route, not the bridge directly from your browser. In
-            hosted production, Direct Garmin is expected to be unavailable.
+            Private Garmin export status. This panel checks the Next.js server
+            route, not the bridge directly from your browser. Intervals.icu
+            remains available as the fallback export path.
           </p>
         </div>
 

@@ -10,7 +10,11 @@ import type {
 } from "../../types/training.ts";
 
 const GARMIN_BRIDGE_HEADER = "X-Garmin-Bridge-Key";
-const BRIDGE_NOT_RUNNING_MESSAGE = "Local Garmin bridge is not running.";
+const GARMIN_BRIDGE_ACCESS_CLIENT_ID_HEADER = "CF-Access-Client-Id";
+const GARMIN_BRIDGE_ACCESS_CLIENT_SECRET_HEADER = "CF-Access-Client-Secret";
+const DEFAULT_BRIDGE_REQUEST_TIMEOUT_MS = 15000;
+const BRIDGE_NOT_RUNNING_MESSAGE = "Garmin bridge is not reachable.";
+const BRIDGE_TIMEOUT_MESSAGE = "Garmin bridge request timed out.";
 const DEFAULT_BULK_PUBLISH_DELAY_MS = 1500;
 
 export type GarminBridgeStatusCategory =
@@ -28,9 +32,18 @@ export type GarminBridgeStatusResponse = {
   client_library: "python-garminconnect";
   client_version: string | null;
   token_file_exists: boolean;
-  token_file_path: string;
   last_auth_check_at: string;
   message: string;
+};
+
+type RawGarminBridgeStatusResponse = GarminBridgeStatusResponse & {
+  token_file_path?: unknown;
+  token_directory?: unknown;
+  token_dir?: unknown;
+  session_file_path?: unknown;
+  config?: unknown;
+  request_headers?: unknown;
+  response_headers?: unknown;
 };
 
 export type GarminBridgeTargetSummary = {
@@ -236,6 +249,9 @@ export type GarminBridgeBulkDeleteResult = {
 type GarminBridgeConfig = {
   url: string;
   apiKey: string;
+  accessClientId: string | null;
+  accessClientSecret: string | null;
+  requestTimeoutMs: number;
 };
 
 type GarminBridgeConfigProblem = {
@@ -247,6 +263,9 @@ type GarminBridgeConfigProblem = {
 export type GarminBridgeClientOptions = {
   bridgeUrl?: string | null;
   apiKey?: string | null;
+  accessClientId?: string | null;
+  accessClientSecret?: string | null;
+  requestTimeoutMs?: number | string | null;
   fetchImpl?: typeof fetch;
   fetchPlannedWorkoutById?: (
     plannedWorkoutId: string,
@@ -295,6 +314,13 @@ type GarminBridgeRequestResult<T> =
       message: string;
     };
 
+class GarminBridgeTimeoutError extends Error {
+  constructor() {
+    super(BRIDGE_TIMEOUT_MESSAGE);
+    this.name = "GarminBridgeTimeoutError";
+  }
+}
+
 function assertServerOnly() {
   if (typeof window !== "undefined") {
     throw new Error("Garmin bridge client can only run on the server.");
@@ -305,6 +331,22 @@ function getOptionalValue(value: string | null | undefined): string | null {
   const trimmedValue = value?.trim();
 
   return trimmedValue ? trimmedValue : null;
+}
+
+function getOptionalTimeoutValue(
+  value: number | string | null | undefined,
+): number {
+  if (value === null || value === undefined || value === "") {
+    return DEFAULT_BRIDGE_REQUEST_TIMEOUT_MS;
+  }
+
+  const timeoutMs = typeof value === "number" ? value : Number(value);
+
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return DEFAULT_BRIDGE_REQUEST_TIMEOUT_MS;
+  }
+
+  return Math.floor(timeoutMs);
 }
 
 function getBridgeConfig(
@@ -322,7 +364,7 @@ function getBridgeConfig(
       ok: false,
       status: "DISABLED",
       message:
-        "Direct Garmin export is local-only and is unavailable here because GARMIN_BRIDGE_URL is not configured. This is expected on Vercel/production; use Intervals.icu as the primary export path.",
+        "Direct Garmin export is unavailable because GARMIN_BRIDGE_URL is not configured. Use Intervals.icu as the fallback export path.",
     };
   }
 
@@ -336,13 +378,42 @@ function getBridgeConfig(
       ok: false,
       status: "CONFIG_ERROR",
       message:
-        "Direct Garmin export is local-only, but GARMIN_BRIDGE_API_KEY is missing. Add it only to local server environments that run the local bridge.",
+        "Direct Garmin export is configured with a bridge URL, but GARMIN_BRIDGE_API_KEY is missing. Add it only to server environments that are allowed to call the bridge.",
     };
   }
+
+  const accessClientId =
+    "accessClientId" in options
+      ? getOptionalValue(options.accessClientId)
+      : getOptionalValue(process.env.GARMIN_BRIDGE_ACCESS_CLIENT_ID);
+  const accessClientSecret =
+    "accessClientSecret" in options
+      ? getOptionalValue(options.accessClientSecret)
+      : getOptionalValue(process.env.GARMIN_BRIDGE_ACCESS_CLIENT_SECRET);
+
+  if (
+    (accessClientId && !accessClientSecret) ||
+    (!accessClientId && accessClientSecret)
+  ) {
+    return {
+      ok: false,
+      status: "CONFIG_ERROR",
+      message:
+        "Cloudflare Access service authentication is partially configured. Add both service-token values for hosted bridge use, or remove both for local bridge use.",
+    };
+  }
+
+  const requestTimeoutMs =
+    "requestTimeoutMs" in options
+      ? getOptionalTimeoutValue(options.requestTimeoutMs)
+      : getOptionalTimeoutValue(process.env.GARMIN_BRIDGE_REQUEST_TIMEOUT_MS);
 
   return {
     url,
     apiKey,
+    accessClientId,
+    accessClientSecret,
+    requestTimeoutMs,
   };
 }
 
@@ -381,6 +452,7 @@ async function callGarminBridge<T>(
     Accept: "application/json",
     [GARMIN_BRIDGE_HEADER]: input.config.apiKey,
   };
+  const controller = new AbortController();
   let body: string | undefined;
 
   if (input.body !== undefined) {
@@ -388,27 +460,56 @@ async function callGarminBridge<T>(
     body = JSON.stringify(input.body);
   }
 
+  if (input.config.accessClientId && input.config.accessClientSecret) {
+    headers[GARMIN_BRIDGE_ACCESS_CLIENT_ID_HEADER] = input.config.accessClientId;
+    headers[GARMIN_BRIDGE_ACCESS_CLIENT_SECRET_HEADER] =
+      input.config.accessClientSecret;
+  }
+
   let response: Response;
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
   try {
-    response = await fetchImpl(buildBridgeUrl(input.config.url, path), {
-      method,
-      headers,
-      body,
-    });
-  } catch {
+    response = await Promise.race([
+      fetchImpl(buildBridgeUrl(input.config.url, path), {
+        method,
+        headers,
+        body,
+        signal: controller.signal,
+      }),
+      new Promise<Response>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          controller.abort();
+          reject(new GarminBridgeTimeoutError());
+        }, input.config.requestTimeoutMs);
+      }),
+    ]);
+  } catch (error) {
+    if (error instanceof GarminBridgeTimeoutError) {
+      return {
+        ok: false,
+        status: "BRIDGE_UNAVAILABLE",
+        message: BRIDGE_TIMEOUT_MESSAGE,
+      };
+    }
+
     return {
       ok: false,
       status: "BRIDGE_UNAVAILABLE",
       message: BRIDGE_NOT_RUNNING_MESSAGE,
     };
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
   }
 
-  if (response.status === 401) {
+  if (response.status === 401 || response.status === 403) {
     return {
       ok: false,
       status: "BRIDGE_UNAUTHORIZED",
-      message: "Local Garmin bridge rejected the request. Check GARMIN_BRIDGE_API_KEY.",
+      message:
+        "Garmin bridge rejected the request. Check the server-only bridge key and Cloudflare Access service token configuration.",
     };
   }
 
@@ -416,7 +517,7 @@ async function callGarminBridge<T>(
     return {
       ok: false,
       status: "BRIDGE_ERROR",
-      message: `Local Garmin bridge returned HTTP ${response.status}.`,
+      message: `Garmin bridge returned HTTP ${response.status}.`,
     };
   }
 
@@ -427,7 +528,7 @@ async function callGarminBridge<T>(
       return {
         ok: false,
         status: "BRIDGE_ERROR",
-        message: "Local Garmin bridge returned an empty response.",
+        message: "Garmin bridge returned an empty response.",
       };
     }
 
@@ -439,9 +540,24 @@ async function callGarminBridge<T>(
     return {
       ok: false,
       status: "BRIDGE_ERROR",
-      message: "Local Garmin bridge returned an unreadable response.",
+      message: "Garmin bridge returned an unreadable response.",
     };
   }
+}
+
+function sanitizeGarminBridgeStatusResponse(
+  response: RawGarminBridgeStatusResponse,
+): GarminBridgeStatusResponse {
+  return {
+    ok: response.ok,
+    authenticated: response.authenticated,
+    category: response.category,
+    client_library: response.client_library,
+    client_version: response.client_version,
+    token_file_exists: response.token_file_exists,
+    last_auth_check_at: response.last_auth_check_at,
+    message: response.message,
+  };
 }
 
 async function loadPlannedWorkout(
@@ -749,7 +865,30 @@ function sanitizeExportErrorMessage(message: string | null): string | null {
     return "Garmin bridge API key is missing or invalid.";
   }
 
+  if (
+    message.includes("GARMIN_BRIDGE_ACCESS_CLIENT_ID") ||
+    message.includes("GARMIN_BRIDGE_ACCESS_CLIENT_SECRET") ||
+    message.includes("CF-Access-Client-Id") ||
+    message.includes("CF-Access-Client-Secret")
+  ) {
+    return "Garmin bridge Cloudflare Access service authentication is missing or invalid.";
+  }
+
   return message;
+}
+
+function sanitizeGarminDebugSummary(
+  debugSummary: GarminBridgeDebugSummary | null | undefined,
+): Omit<GarminBridgeDebugSummary, "client_library"> | null {
+  if (!debugSummary) {
+    return null;
+  }
+
+  return {
+    dry_run: debugSummary.dry_run,
+    client_version: debugSummary.client_version,
+    generated_step_count: debugSummary.generated_step_count,
+  };
 }
 
 function buildWorkoutExportInput(input: {
@@ -799,7 +938,7 @@ function buildWorkoutExportInput(input: {
         scheduled_date: publish?.scheduled_date ?? null,
         schedule_summary: publish?.schedule_summary ?? null,
         target_summary: publish?.target_summary ?? null,
-        debug_summary: publish?.debug_summary ?? null,
+        debug_summary: sanitizeGarminDebugSummary(publish?.debug_summary),
         error: sanitizeExportErrorMessage(publish?.error ?? input.result.message),
         warnings,
       },
@@ -963,7 +1102,7 @@ function buildManualUpdateExportInput(input: {
             scheduled_date: input.publish.scheduled_date,
             schedule_summary: input.publish.schedule_summary,
             target_summary: input.publish.target_summary,
-            debug_summary: input.publish.debug_summary,
+            debug_summary: sanitizeGarminDebugSummary(input.publish.debug_summary),
             error: sanitizeExportErrorMessage(input.publish.error),
             warnings: input.publish.warnings,
           }
@@ -1154,7 +1293,7 @@ export async function getGarminBridgeStatus(
     };
   }
 
-  const result = await callGarminBridge<GarminBridgeStatusResponse>(
+  const result = await callGarminBridge<RawGarminBridgeStatusResponse>(
     "/garmin/status",
     {
       config,
@@ -1172,12 +1311,14 @@ export async function getGarminBridgeStatus(
     };
   }
 
+  const bridgeStatus = sanitizeGarminBridgeStatusResponse(result.data);
+
   return {
-    ok: result.data.ok,
+    ok: bridgeStatus.ok,
     enabled: true,
-    status: result.data.category,
-    message: result.data.message,
-    bridgeStatus: result.data,
+    status: bridgeStatus.category,
+    message: bridgeStatus.message,
+    bridgeStatus,
   };
 }
 

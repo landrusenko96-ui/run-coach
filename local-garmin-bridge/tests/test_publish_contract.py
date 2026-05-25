@@ -1,19 +1,24 @@
 import json
 import os
+import tempfile
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 os.environ.setdefault("GARMIN_BRIDGE_API_KEY", "test-local-key")
 
 from pydantic import ValidationError
 
+from app.garmin_auth import GarminAuthService
 from app.garmin_client import GarminClient
-from app.main import delete_workout, preview_workout, publish_workout
+from app.main import delete_workout, garmin_auth_start, preview_workout, publish_workout
 from app.models import (
     DebugSummary,
     GarminWorkoutDeleteRequest,
     GarminWorkoutPublishRequest,
 )
+from app.security import is_disabled_hosted_route
 from app.workout_mapper import build_garmin_preview
 
 
@@ -60,6 +65,10 @@ def sample_delete_payload():
 def preview_data(payload):
     request = GarminWorkoutPublishRequest.model_validate(payload)
     return preview_workout(request).model_dump(mode="json")
+
+
+def fake_request(method, path):
+    return SimpleNamespace(method=method, url=SimpleNamespace(path=path))
 
 
 class FakeAuthService:
@@ -409,6 +418,42 @@ class GarminPublishContractTest(unittest.TestCase):
             "refresh_token",
         ]:
             self.assertNotIn(forbidden, raw_response)
+
+    def test_status_response_does_not_expose_token_file_path(self):
+        with tempfile.TemporaryDirectory() as token_dir:
+            service = GarminAuthService(
+                token_file=Path(token_dir) / "garmin_tokens.json"
+            )
+            data = service.get_status().model_dump(mode="json")
+
+        raw_response = json.dumps(data).lower()
+
+        self.assertIn("token_file_exists", data)
+        self.assertNotIn("token_file_path", data)
+        self.assertNotIn("garmin_tokens.json", raw_response)
+        self.assertNotIn(str(Path(token_dir)).lower(), raw_response)
+
+    def test_garmin_token_dir_env_overrides_local_default(self):
+        with tempfile.TemporaryDirectory() as token_dir:
+            with patch.dict(os.environ, {"GARMIN_TOKEN_DIR": token_dir}):
+                service = GarminAuthService()
+
+        self.assertEqual(
+            service.token_file,
+            Path(token_dir) / "garmin_tokens.json",
+        )
+
+    def test_hosted_production_blocks_public_docs_openapi_and_auth_start(self):
+        with patch.dict(os.environ, {"GARMIN_BRIDGE_ENV": "production"}):
+            self.assertTrue(is_disabled_hosted_route(fake_request("GET", "/docs")))
+            self.assertTrue(
+                is_disabled_hosted_route(fake_request("GET", "/openapi.json"))
+            )
+            self.assertTrue(is_disabled_hosted_route(fake_request("GET", "/redoc")))
+            auth_response = garmin_auth_start().model_dump(mode="json")
+
+        self.assertFalse(auth_response["ok"])
+        self.assertIn("disabled", auth_response["message"])
 
     def test_dry_run_publish_maps_without_garmin_call(self):
         request = GarminWorkoutPublishRequest.model_validate(sample_payload())

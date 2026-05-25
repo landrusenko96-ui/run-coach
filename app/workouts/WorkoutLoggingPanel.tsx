@@ -1186,7 +1186,7 @@ export function WorkoutLoggingPanel() {
         ok: false,
         enabled: true,
         status: "BRIDGE_UNAVAILABLE",
-        message: "Local Garmin bridge is not running.",
+        message: "Garmin bridge is not reachable.",
       });
     }
   }, []);

@@ -15,7 +15,7 @@ Tradeoff: The app must generate structured workout documents that are compatible
 ## Decision — Add Direct Garmin Local Bridge as Experimental Export Path
 
 Decision:
-Add a secondary local-only Garmin export path using a Python bridge and community Garmin Connect tooling.
+Add a secondary private Garmin export path using a Python bridge and community Garmin Connect tooling. The first implementation is local-only; later hosted use must stay private.
 
 Reason:
 Intervals.icu syncs workouts to Garmin but does not reliably transfer pace targets. Direct Garmin workout creation may preserve pace targets because Garmin Connect itself supports pace targets in structured workouts.
@@ -52,10 +52,10 @@ Reason:
 Intervals.icu is a public supported integration path and remains safer for normal export behavior. The direct Garmin bridge uses unofficial Garmin Connect internals through `python-garminconnect`, so it can break without notice.
 
 Status:
-Direct Garmin is useful for personal local testing and pace-target preservation. It is not a public production integration.
+Direct Garmin is useful for personal testing and pace-target preservation. It is not a public production integration.
 
 Implementation rule:
-The app should present Direct Garmin as experimental, local-only, and secondary. Do not remove or weaken the Intervals.icu export path.
+The app should present Direct Garmin as experimental, private, and secondary. Do not remove or weaken the Intervals.icu export path.
 
 ## Decision — Track Direct Garmin Exports In workout_exports
 
@@ -112,3 +112,77 @@ Settings shows whether the bridge is configured, reachable, authenticated, the `
 
 Implementation rule:
 The browser must call only the Next.js status route. It must never call the Python bridge directly and must never receive `GARMIN_BRIDGE_API_KEY`, Garmin tokens, cookies, passwords, or full Garmin responses.
+
+## 2026-05-25 — Milestone 11B Private Hosted Garmin Bridge MVP
+
+Decision:
+Support Direct Garmin from production only through a private hosted bridge:
+Python FastAPI bridge on a VPS bound to `127.0.0.1:8765`, Cloudflare Tunnel
+HTTPS hostname, Cloudflare Access Service Auth, and the existing
+`X-Garmin-Bridge-Key`.
+
+Reason:
+Intervals.icu remains the safer supported export path, but it does not reliably
+deliver pace targets to Garmin. The private hosted bridge keeps Garmin pace
+target export available without exposing Garmin credentials, bridge keys, or
+session files to the browser, Supabase, Vercel logs, or a public unauthenticated
+endpoint.
+
+Status:
+MVP architecture support is implemented in code and docs. Deployment remains a
+manual user action.
+
+Implementation rule:
+The browser must call only Next.js server routes. Vercel may store server-only
+`GARMIN_BRIDGE_URL`, `GARMIN_BRIDGE_API_KEY`,
+`GARMIN_BRIDGE_ACCESS_CLIENT_ID`, `GARMIN_BRIDGE_ACCESS_CLIENT_SECRET`, and
+optional `GARMIN_BRIDGE_REQUEST_TIMEOUT_MS`. The VPS stores only
+`GARMIN_BRIDGE_API_KEY`, `GARMIN_TOKEN_DIR`, and
+`GARMIN_BRIDGE_ENV=production`. Garmin passwords, cookies, tokens, request
+headers, response headers, Cloudflare Access values, and full Garmin responses
+must not be stored in Supabase or returned to the browser. No Supabase migration
+is required.
+
+## 2026-05-25 — Milestone 10 Production Deployment Readiness
+
+Decision:
+Prepare the app for Vercel/Supabase production deployment without changing the
+core product flow.
+
+Reason:
+The MVP core loop works locally, so the next risk is unsafe or unclear
+production configuration: missing env vars, browser-exposed secrets, Strava
+callback mismatch, Supabase Auth redirect mismatch, and Direct Garmin failing
+unclearly on hosted Vercel.
+
+Status:
+Production env vars, local env vars, Strava webhook setup, Supabase Auth setup,
+and smoke tests are documented. Optional integrations should show clear
+configuration messages when not set up. The app has a header sign-out button.
+
+Implementation rule:
+Keep secrets server-only. Do not log API keys, service-role keys, Strava tokens,
+Intervals API keys, Garmin credentials, request headers, or full provider
+responses. Keep Direct Garmin unavailable in hosted production unless the
+private hosted bridge architecture is intentionally configured.
+
+## 2026-05-25 — Trusted New Users Can Use OTP Signup
+
+Decision:
+Allow trusted first-time users to create accounts through Supabase email OTP
+login.
+
+Reason:
+The current usage context assumes only verified/trusted users will use the app.
+Making every user manually pre-created in Supabase is unnecessary friction for
+that context.
+
+Tradeoff:
+Anyone who can access the app URL and receive an OTP for their email may create
+an account while Supabase email signups are enabled. RLS still protects each
+user's rows, but this is not a public launch posture.
+
+Implementation rule:
+Keep RLS enabled and keep service-role operations limited to documented
+server-only routes. If the app becomes public, revisit signup restrictions
+before inviting untrusted users.

@@ -1,4 +1,5 @@
 import importlib
+import os
 from datetime import datetime, timezone
 from getpass import getpass
 from importlib import metadata
@@ -9,15 +10,31 @@ from typing import Optional
 from app.models import GarminAuthStartResponse, GarminStatusResponse
 
 BRIDGE_ROOT = Path(__file__).resolve().parents[1]
-GARMINCONNECT_TOKEN_DIRECTORY = BRIDGE_ROOT / ".garminconnect"
-GARMINCONNECT_TOKEN_FILE = GARMINCONNECT_TOKEN_DIRECTORY / "garmin_tokens.json"
+GARMIN_TOKEN_DIR_ENV = "GARMIN_TOKEN_DIR"
+GARMINCONNECT_TOKEN_FILENAME = "garmin_tokens.json"
+
+
+def get_garminconnect_token_directory() -> Path:
+    token_dir = os.getenv(GARMIN_TOKEN_DIR_ENV, "").strip()
+    if token_dir:
+        return Path(token_dir).expanduser()
+
+    return BRIDGE_ROOT / ".garminconnect"
+
+
+def get_garminconnect_token_file() -> Path:
+    return get_garminconnect_token_directory() / GARMINCONNECT_TOKEN_FILENAME
+
+
+GARMINCONNECT_TOKEN_DIRECTORY = get_garminconnect_token_directory()
+GARMINCONNECT_TOKEN_FILE = get_garminconnect_token_file()
 
 
 class GarminAuthService:
-    """Local-only Garmin auth service for the experimental bridge."""
+    """Garmin auth service for the private bridge."""
 
-    def __init__(self, token_file: Path = GARMINCONNECT_TOKEN_FILE) -> None:
-        self.token_file = token_file
+    def __init__(self, token_file: Path | None = None) -> None:
+        self.token_file = token_file or get_garminconnect_token_file()
 
     def get_status(self) -> GarminStatusResponse:
         if not self.token_file.exists():
@@ -178,7 +195,6 @@ class GarminAuthService:
             client_library="python-garminconnect",
             client_version=self._client_version(),
             token_file_exists=self.token_file.exists(),
-            token_file_path=str(self.token_file.resolve()),
             last_auth_check_at=self._status_check_timestamp(),
             message=message,
         )

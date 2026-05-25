@@ -21,6 +21,9 @@ from app.models import (
 from app.security import (
     ALLOWED_CORS_ORIGINS,
     GARMIN_BRIDGE_HEADER,
+    disabled_hosted_route_response,
+    is_disabled_hosted_route,
+    is_production_environment,
     is_public_request,
     load_bridge_security_config,
     unauthorized_bridge_response,
@@ -41,15 +44,18 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Run Coach Local Garmin Bridge",
+    title="Run Coach Garmin Bridge",
     version=APP_VERSION,
-    description="Local-only experimental bridge for Garmin workout export.",
+    description="Private bridge for Garmin workout export.",
     lifespan=lifespan,
 )
 
 
 @app.middleware("http")
 async def require_bridge_api_key(request: Request, call_next):
+    if is_disabled_hosted_route(request):
+        return disabled_hosted_route_response()
+
     if is_public_request(request) or validate_bridge_key(request):
         return await call_next(request)
 
@@ -70,7 +76,7 @@ def health() -> HealthResponse:
         status="ok",
         service="local-garmin-bridge",
         version=APP_VERSION,
-        local_only=True,
+        local_only=not is_production_environment(),
     )
 
 
@@ -81,6 +87,17 @@ def garmin_status() -> GarminStatusResponse:
 
 @app.post("/garmin/auth/start", response_model=GarminAuthStartResponse)
 def garmin_auth_start() -> GarminAuthStartResponse:
+    if is_production_environment():
+        return GarminAuthStartResponse(
+            ok=False,
+            auth_state="not_authenticated",
+            message="Garmin auth start is disabled in hosted production.",
+            next_step=(
+                "Authenticate only from an SSH session on the bridge host, "
+                "or temporarily run a local bridge for authentication."
+            ),
+        )
+
     return GarminAuthService().start_auth()
 
 
