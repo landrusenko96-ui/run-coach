@@ -5,9 +5,10 @@ This is an experimental private bridge for Direct Garmin export.
 It is separate from the Next.js app. It must stay private and is not a public
 Garmin integration.
 
-Local development runs it on `127.0.0.1:8765`. Hosted production may run it on
-a private VPS bound to `127.0.0.1:8765`, exposed only through Cloudflare Tunnel
-and Cloudflare Access Service Auth. The bridge still requires
+Local development runs it on `127.0.0.1:8765`. Hosted production runs on an
+Oracle Cloud Ubuntu VPS bound to `127.0.0.1:8765`, exposed only through
+Cloudflare Tunnel and Cloudflare Access Service Auth at
+`https://garmin-bridge.runbitchapp.com`. The bridge still requires
 `X-Garmin-Bridge-Key`.
 
 ## Current Status
@@ -20,6 +21,11 @@ This checkpoint uses `python-garminconnect==0.3.3` for Garmin authentication, wo
   `local-garmin-bridge/.garminconnect/garmin_tokens.json`.
 - Hosted Garmin session tokens are saved only in `GARMIN_TOKEN_DIR`, usually
   `/var/lib/run-coach-garmin/.garminconnect`.
+- Production currently runs as the `runcoach-garmin-bridge` systemd service
+  under the `garmin-bridge` service user. Cloudflare Tunnel runs as the
+  `cloudflared` systemd service. SSH/admin access uses the `ubuntu` user.
+- Production re-authentication must be done over SSH only. Do not use public
+  browser routes for Garmin login.
 - The previous Garth new-login path is retired for this bridge because new login failed.
 - The bridge can preview and publish one running workout per request.
 - The bridge supports pace targets in `sec_per_km`, including simple runs and one-level interval repeats.
@@ -80,17 +86,21 @@ export GARMIN_BRIDGE_API_KEY="replace-with-a-long-random-local-key"
 
 The `.env.example` file shows the required variable name only. It must not contain Garmin credentials.
 
-Optional hosted-only variables:
+Hosted production variables on the bridge server:
 
 ```text
+GARMIN_BRIDGE_API_KEY=replace-with-the-vps-bridge-key
 GARMIN_TOKEN_DIR=/var/lib/run-coach-garmin/.garminconnect
 GARMIN_BRIDGE_ENV=production
 ```
 
 When `GARMIN_BRIDGE_ENV=production`, `/docs` and `/openapi.json` return 404,
-and `/garmin/auth/start` is disabled. Do the initial Garmin login through a
-temporary interactive local-mode bridge process over SSH, then restart the
-systemd service in production mode.
+`/redoc` returns 404, and `/garmin/auth/start` is disabled. Do the initial
+Garmin login or any future re-auth through a temporary interactive local-mode
+bridge process over SSH, then restart the systemd service in production mode.
+
+The production VPS should keep UFW active with only OpenSSH allowed inbound.
+Port `8765` must not be publicly open.
 
 ## Run
 
@@ -495,7 +505,7 @@ GARMIN_BRIDGE_API_KEY=replace-with-the-same-local-key-used-to-start-the-bridge
 Hosted Vercel server-only environment:
 
 ```text
-GARMIN_BRIDGE_URL=https://garmin-bridge.your-private-hostname.example
+GARMIN_BRIDGE_URL=https://garmin-bridge.runbitchapp.com
 GARMIN_BRIDGE_API_KEY=replace-with-the-same-key-used-on-the-bridge-host
 GARMIN_BRIDGE_ACCESS_CLIENT_ID=from-cloudflare-access-service-auth
 GARMIN_BRIDGE_ACCESS_CLIENT_SECRET=from-cloudflare-access-service-auth
@@ -519,6 +529,40 @@ Built app behavior:
 - If a local active plan is deleted, the user can choose app-only deletion or best-effort future Garmin cleanup first.
 - Manual app-driven Garmin delete/update is built; automatic silent Garmin cleanup is still avoided.
 
+## Hosted Production Operations
+
+Production status checks over SSH:
+
+```bash
+sudo systemctl status runcoach-garmin-bridge
+sudo systemctl status cloudflared
+```
+
+Restart the bridge after a safe bridge-side configuration change:
+
+```bash
+sudo systemctl restart runcoach-garmin-bridge
+```
+
+Expected external behavior:
+
+- without Cloudflare Access service-token headers, Cloudflare returns
+  `403 Forbidden`;
+- with Cloudflare Access but without `X-Garmin-Bridge-Key`, the bridge returns
+  unauthorized;
+- with both Cloudflare Access and the bridge key, `/garmin/status` returns the
+  authenticated bridge status.
+
+Sensitive production values include the bridge API key, Cloudflare Access
+service-token values, the Cloudflare tunnel token, Garmin session files, Garmin
+cookies/tokens/passwords, and full Garmin responses. Do not paste these into
+docs, GitHub, screenshots, terminal transcripts, Supabase, Vercel logs, or app
+responses.
+
+This production bridge uses one Garmin session on the VPS. It is suitable for a
+private personal or friends-and-family MVP, not for true multi-user Garmin OAuth
+or multiple separate Garmin accounts.
+
 ## Troubleshooting
 
 Check the Settings page first. It shows:
@@ -533,9 +577,14 @@ Common fixes:
 
 - Bridge not configured: set `GARMIN_BRIDGE_URL` and `GARMIN_BRIDGE_API_KEY` in the Next.js `.env.local`.
 - Bridge not running: start it with `cd local-garmin-bridge && source .venv/bin/activate && python -m uvicorn app.main:app --host 127.0.0.1 --port 8765`.
-- Hosted bridge not reachable: check the VPS systemd service, Cloudflare Tunnel,
-  Cloudflare Access Service Auth values, and bridge API key.
+- Hosted bridge not reachable: check `sudo systemctl status
+  runcoach-garmin-bridge`, `sudo systemctl status cloudflared`, Cloudflare
+  Access Service Auth values, and the bridge API key.
 - Auth missing: run `POST /garmin/auth/start` and complete Garmin login in the bridge terminal.
+- Hosted auth missing: SSH to the VPS, temporarily run an interactive local-mode
+  bridge process for re-auth, then return the systemd service to
+  `GARMIN_BRIDGE_ENV=production`. Do not expose auth endpoints through the
+  public hostname.
 - Token invalid: re-authenticate with Garmin.
 - API key rejected: make sure the key exported in the bridge terminal matches `GARMIN_BRIDGE_API_KEY` in the Next.js `.env.local`.
 - Publish returns `UPLOADED_NOT_SCHEDULED`: the workout may exist in Garmin but may not be scheduled; manual cleanup in Garmin Connect may be needed.

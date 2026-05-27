@@ -22,7 +22,12 @@ The correct strategy is not to build the full Run.B*tch.app vision immediately. 
 9. Intervals.icu planned-workout publishing;
 10. Strava import.
 
-The app should prove the core loop before adding social features, avatars, routes, Spotify, global marathon databases, or public direct Garmin API integration. The MVP should publish planned workouts through Intervals.icu so they can sync onward to Garmin Connect and the Garmin Forerunner 265. A private direct Garmin bridge can be tested as an experimental secondary export path if Intervals.icu does not preserve workout targets well enough.
+The app should prove the core loop before adding social features, avatars,
+routes, Spotify, global marathon databases, or public direct Garmin API
+integration. The MVP should publish planned workouts through Intervals.icu so
+they can sync onward to Garmin Connect and the Garmin Forerunner 265. The
+private Direct Garmin bridge is now available as a secondary export path when
+Intervals.icu does not preserve workout targets well enough.
 
 **Core product loop:**
 
@@ -34,8 +39,9 @@ Everything else is secondary until this loop works reliably.
 
 ### Current implementation snapshot - May 2026
 
-The private MVP core loop is now working locally and has been prepared for
-Vercel/Supabase production deployment.
+The private MVP core loop is now working in production. The hosted Direct
+Garmin bridge deployment is complete as infrastructure-only work; no app UI,
+plan generation, or core product functionality changed for that deployment.
 
 Currently built:
 
@@ -43,18 +49,25 @@ Currently built:
 - Trusted first-time users can create accounts through OTP login.
 - Profile, race goal, plan generation, manual workout logging, workout scoring,
   adaptive plan adjustment, dashboard readiness/status, and plan deletion.
-- Intervals.icu planned-workout export as the primary supported export path.
-- Direct Garmin bridge as an experimental private secondary path.
+- Intervals.icu planned-workout export as the primary supported public-style
+  export path and fallback.
+- Private hosted Direct Garmin bridge as a secondary path for workouts that
+  need reliable Garmin pace targets.
 - Manual Strava import as a fallback.
 - Strava webhook intake, storage, automatic inline processing, and manual
   pending-event processing fallback.
 - Production deployment documentation and smoke-test checklists for Vercel,
   Supabase, Strava, Intervals.icu, and private Garmin.
+- Hosted Direct Garmin production infrastructure on an Oracle Cloud Ubuntu VPS
+  behind Cloudflare Tunnel and Cloudflare Access at
+  `https://garmin-bridge.runbitchapp.com`.
 
 Current non-goals:
 
 - Do not deploy the Garmin bridge to Vercel or as a public unauthenticated service.
 - Do not add official/public Garmin API integration until explicitly decided.
+- Do not turn the private single-session Garmin bridge into multi-user Garmin
+  account support until per-user session isolation is designed.
 - Do not add gear tracking, nutrition, race directory, payments, admin
   dashboard, background workers, or AI coach chat in the production-readiness
   milestone.
@@ -86,7 +99,7 @@ Current non-goals:
 
 | Feature | Feasible? | Why postpone |
 |---|---:|---|
-| Official/public Direct Garmin workout push | Maybe, but hard | Garmin Training API access may require developer program approval. Use Intervals.icu first. The local bridge remains personal and experimental. |
+| Official/public Direct Garmin workout push | Maybe, but hard | Garmin Training API access may require developer program approval. Use Intervals.icu first. The private bridge remains personal, single-session, and unofficial. |
 | Garmin direct activity import | Maybe, but hard | Strava is the simpler bridge from Garmin Connect. |
 | Global marathon database with prices | Partly | Dates are findable; prices, participants, and course metadata are inconsistent. |
 | Route generation | Hard | Requires maps, routing, and elevation data. Usually API-dependent. |
@@ -775,7 +788,12 @@ Keep the manual refresh button as a fallback.
 
 ### Phase 14 - Garmin workout export helper
 
-Keep this as a fallback if Intervals.icu to Garmin sync is unavailable or a workout type does not transfer correctly. Official direct Garmin workout publishing may still be difficult because Garmin Training API access may require developer approval. The separate local Garmin bridge in Milestone 6C is an experimental personal-use workaround, not an official public Garmin integration.
+Keep this as a fallback if Intervals.icu to Garmin sync is unavailable or a
+workout type does not transfer correctly. Official direct Garmin workout
+publishing may still be difficult because Garmin Training API access may require
+developer approval. The separate private Garmin bridge in Milestone 6C and
+Milestone 11B is a personal-use workaround, not an official public Garmin
+integration.
 
 **Practical workaround:**
 
@@ -796,27 +814,36 @@ Do not attempt official direct Garmin API integration yet.
 
 ---
 
-### Milestone 6C — Direct Garmin Local Bridge, Experimental
+### Milestone 6C — Direct Garmin Bridge, Private Secondary Path
 
 **Purpose:**
 
-Test whether the app can publish structured workouts directly to Garmin Connect using a local Python bridge and unofficial Garmin Connect APIs, with pace targets preserved on Garmin watch.
+Test whether the app can publish structured workouts directly to Garmin Connect using a private Python bridge and unofficial Garmin Connect APIs, with pace targets preserved on Garmin watch.
 
 **Status:**
 
-Experimental secondary export path. Intervals.icu remains the primary supported export path. New-login authentication moved forward with `python-garminconnect==0.3.3` after the Garth path failed for new login.
+Private secondary export path. Intervals.icu remains the primary supported
+public-style export path and fallback. New-login authentication moved forward
+with `python-garminconnect==0.3.3` after the Garth path failed for new login.
 
-Manual validation on 2026-05-13 confirmed one simple pace-targeted running workout uploaded through the bridge appeared on the Forerunner with pace targets visible on the watch.
+Manual validation on 2026-05-13 confirmed one simple pace-targeted running workout uploaded through the local bridge appeared on the Forerunner with pace targets visible on the watch.
+
+Hosted production deployment is complete as of 2026-05-26. The production
+bridge runs on an Oracle Cloud Ubuntu VPS, binds only to `127.0.0.1:8765`, is
+exposed through Cloudflare Tunnel at `https://garmin-bridge.runbitchapp.com`,
+is protected by Cloudflare Access Service Auth, and still requires
+`X-Garmin-Bridge-Key`. This was infrastructure-only work; the app code path,
+UI, plan generation, and product behavior did not change.
 
 The app now has a private Direct Garmin workflow for personal use:
 
-- Settings page troubleshooting status for the local bridge.
+- Settings page troubleshooting status for the bridge.
 - Single-workout preview and publish UI.
 - Plan-page bulk preview and sequential publish for the next 7 or 14 days.
 - Bulk maintenance for stale-update and selected delete workflows.
 - Plan deletion choices for app-only deletion or explicit future Garmin cleanup.
 - Server-side bridge client that keeps `GARMIN_BRIDGE_API_KEY` out of the browser.
-- Optional hosted private bridge calls through Cloudflare Access Service Auth.
+- Hosted private bridge calls through Cloudflare Access Service Auth.
 - Export history in `workout_exports`.
 - Duplicate, stale, partial, update, and local deleted-status guardrails.
 
@@ -825,7 +852,7 @@ The app now has a private Direct Garmin workflow for personal use:
 ```text
 Local: Next.js app → local Python FastAPI bridge bound to 127.0.0.1 → Garmin Connect internal API via python-garminconnect → Garmin watch
 
-Hosted private: Vercel Next.js server route → Cloudflare Access HTTPS hostname → Cloudflare Tunnel → Python FastAPI bridge bound to 127.0.0.1 on VPS → Garmin Connect internal API via python-garminconnect → Garmin watch
+Hosted private: Vercel Next.js server route → Cloudflare Access HTTPS hostname at https://garmin-bridge.runbitchapp.com → Cloudflare Tunnel → Python FastAPI bridge bound to 127.0.0.1 on Oracle Cloud VPS → Garmin Connect internal API via python-garminconnect → Garmin watch
 ```
 
 **Success criteria:**
@@ -841,7 +868,7 @@ Hosted private: Vercel Next.js server route → Cloudflare Access HTTPS hostname
 
 **Current supported workflow:**
 
-- Start the local bridge on `127.0.0.1`, or configure the private hosted bridge behind Cloudflare Tunnel and Cloudflare Access.
+- Start the local bridge on `127.0.0.1`, or use the private hosted bridge behind Cloudflare Tunnel and Cloudflare Access.
 - Authenticate Garmin once through the bridge terminal.
 - Configure the Next.js app with server-only `GARMIN_BRIDGE_URL` and `GARMIN_BRIDGE_API_KEY`. Hosted production also needs server-only Cloudflare Access service-token env vars.
 - Use Settings to check bridge configuration, reachability, auth status, client version, and safe errors.
@@ -870,6 +897,15 @@ Unsupported cases fail before Garmin is called when possible.
 - Garmin schedule ID: 1648396171.
 - Watch verification: pace target appeared on Forerunner; it was not shown as `No Target`.
 
+Hosted production validation also passed after deployment:
+
+- production Garmin status and publish work from the Vercel app;
+- Garmin pace targets appear correctly;
+- Intervals.icu export remains available as fallback;
+- manual logging, workout scoring, adaptive adjustment, dashboard/readiness,
+  workout deletion, Strava manual import, Strava webhooks, and manual webhook
+  fallback smoke tests passed.
+
 **Constraints:**
 
 - Personal use only.
@@ -885,6 +921,40 @@ Unsupported cases fail before Garmin is called when possible.
 - Failed Direct Garmin exports can be retried only when no Garmin workout ID was created.
 - Stale and partial Direct Garmin exports are not republished into duplicate Garmin workouts; use update or delete maintenance instead.
 - If the app changes a future planned workout after Direct Garmin export, the export should be marked stale: `Changed after Garmin export — update if needed`.
+
+### Milestone 11B — Hosted Private Garmin Bridge Production Deployment
+
+**Status:** Complete.
+
+Milestone 11B moved the already-built Direct Garmin server path from local-only
+testing to private hosted infrastructure:
+
+- Oracle Cloud Ubuntu VPS runs the bridge as `runcoach-garmin-bridge`.
+- The service user is `garmin-bridge`; SSH/admin user is `ubuntu`.
+- The bridge binds only to `127.0.0.1:8765`.
+- UFW is active with only OpenSSH allowed inbound; port `8765` is not publicly
+  open.
+- Cloudflare Tunnel runs as `cloudflared` and exposes
+  `https://garmin-bridge.runbitchapp.com`.
+- Cloudflare Access Service Auth protects the hostname.
+- The bridge still requires `X-Garmin-Bridge-Key`.
+- Vercel stores the bridge URL, bridge key, Cloudflare Access client ID, and
+  Cloudflare Access client secret as server-only environment variables.
+- Browser code never calls the bridge directly.
+- Garmin session files live only on the VPS at
+  `/var/lib/run-coach-garmin/.garminconnect`.
+
+This milestone did not change app UI, plan generation, database schema, or
+GitHub-hosted app functionality. It was production infrastructure deployment
+and documentation work.
+
+**Next Garmin-related work:**
+
+- operational hardening, monitoring, and key/token rotation practice;
+- future per-user Garmin session isolation if the app moves beyond private use.
+
+The next Garmin step is not plan generation work and is not public Garmin OAuth
+until a separate architecture is explicitly designed.
 
 ---
 

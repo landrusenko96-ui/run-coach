@@ -15,6 +15,10 @@ Direct Garmin remains experimental and private. In local development it works
 only through the local Python bridge. Intervals.icu remains the primary
 supported planned-workout export path.
 
+The hosted production bridge now exists separately at
+`https://garmin-bridge.runbitchapp.com`, but local development should still use
+`http://127.0.0.1:8765` and does not require Cloudflare Access variables.
+
 ## 1. Install And Run
 
 Install dependencies:

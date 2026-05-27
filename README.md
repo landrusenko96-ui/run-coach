@@ -59,9 +59,9 @@ For production deployment setup and production smoke tests, use
 - Intervals.icu publishing exists for planned run workouts using server-only environment variables. It remains the primary export path.
 - Direct Garmin publishing exists as an experimental private bridge in `local-garmin-bridge/`.
 - The Direct Garmin bridge uses `python-garminconnect==0.3.3`, a saved Garmin session, and a FastAPI service that must bind to `127.0.0.1`.
-- Hosted Direct Garmin uses a private VPS bridge behind Cloudflare Tunnel and Cloudflare Access Service Auth. The browser never calls the bridge directly.
-- Direct Garmin publishing has been manually verified to create Garmin workouts with pace targets visible on a Forerunner watch.
-- The app can preview, single-publish, and bulk-publish upcoming eligible workouts to the local Garmin bridge through server routes.
+- Hosted Direct Garmin now runs on an Oracle Cloud Ubuntu VPS behind Cloudflare Tunnel and Cloudflare Access Service Auth at `https://garmin-bridge.runbitchapp.com`. The browser never calls the bridge directly.
+- Direct Garmin publishing has been manually verified from production to create Garmin workouts with pace targets visible on a Forerunner watch.
+- The app can preview, single-publish, and bulk-publish upcoming eligible workouts to the Garmin bridge through server routes.
 - Garmin direct export attempts are tracked in `workout_exports`, including success, failure, partial, stale, and locally deleted states.
 - Direct Garmin duplicate guardrails are built: already-exported workouts are not republished into Garmin; stale workouts use the manual update flow instead.
 - Direct Garmin manual delete, manual stale-update, bulk publish, bulk maintenance, and explicit plan-deletion cleanup choices are available.
@@ -71,6 +71,7 @@ For production deployment setup and production smoke tests, use
 - Strava import skips duplicate activities, non-runs, invalid runs, pre-plan runs, and active-plan days already covered by logged workouts.
 - Strava webhooks can store new activity events, process them server-side, and fall back to manual pending-event processing.
 - Production deployment readiness has been documented for Vercel, Supabase, Strava, Intervals.icu, and the private Garmin bridge.
+- The hosted Garmin deployment was infrastructure-only. No app UI, plan generation, or product functionality changed for that deployment.
 - Gear tracking and AI feedback are not built yet.
 
 ## Environment variables
@@ -151,9 +152,16 @@ Keep all Garmin bridge variables server-only. Do not prefix them with
 Access service-token values.
 
 For hosted production, Vercel may store only the server-side bridge variables
-above. The bridge itself runs on a private VPS bound to `127.0.0.1:8765`; a
-Cloudflare Tunnel exposes an HTTPS hostname protected by Cloudflare Access
-Service Auth, and the bridge still requires `X-Garmin-Bridge-Key`.
+above. The production bridge URL is:
+
+```text
+GARMIN_BRIDGE_URL=https://garmin-bridge.runbitchapp.com
+```
+
+The bridge itself runs on an Oracle Cloud Ubuntu VPS bound to
+`127.0.0.1:8765`; a Cloudflare Tunnel exposes the HTTPS hostname protected by
+Cloudflare Access Service Auth, and the bridge still requires
+`X-Garmin-Bridge-Key`.
 
 The bridge host has its own environment variables:
 
@@ -169,8 +177,9 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8765
 For local development, `GARMIN_TOKEN_DIR` and Cloudflare Access variables are
 not required. Garmin login happens only in the bridge terminal or SSH session.
 Do not store Garmin usernames, passwords, tokens, cookies, session files,
-request headers, response headers, or Cloudflare Access credentials in
-Supabase, browser responses, Vercel logs, GitHub, screenshots, docs, or commits.
+request headers, response headers, Cloudflare Access credentials, Cloudflare
+tunnel tokens, or full Garmin responses in Supabase, browser responses, Vercel
+logs, GitHub, screenshots, docs, or commits.
 
 Never create these variables:
 
@@ -272,9 +281,19 @@ For production setup and smoke tests, use
 
 ## Direct Garmin Bridge Notes
 
-Intervals.icu remains the primary supported export path. The Direct Garmin bridge is experimental, private, and personal-use only.
+Intervals.icu remains the primary supported fallback export path. The Direct Garmin bridge is experimental, private, and personal-use only.
 
 Use it when you specifically need Garmin pace targets that Intervals.icu does not preserve reliably. The Direct Garmin path has been manually verified to publish pace targets to a Forerunner watch, but it uses unofficial Garmin Connect internals through `python-garminconnect==0.3.3`, so it can break without notice.
+
+Production status:
+
+- Production bridge hostname: `https://garmin-bridge.runbitchapp.com`.
+- The normal app production domain is separate from the bridge domain. The `runbitchapp.com` bridge hostname is infrastructure for the bridge and does not by itself mean the main app uses that domain.
+- Vercel calls the bridge from server routes only.
+- A normal browser/user cannot use the bridge hostname directly: without Cloudflare Access service auth, Cloudflare returns `403 Forbidden`; with Access but without `X-Garmin-Bridge-Key`, the bridge returns unauthorized.
+- Secrets were rotated after setup. Documentation must not preserve old or current bridge keys, Cloudflare service-token values, Cloudflare tunnel tokens, Garmin account details, or sensitive terminal output.
+- This bridge uses one Garmin session on the VPS. It is suitable for private/personal/friends-and-family MVP use, not a true per-user Garmin OAuth integration. Do not let multiple users connect separate Garmin accounts through this bridge until per-user session isolation is designed.
+- Post-deployment validation passed for Garmin status, Garmin publish, Garmin pace targets, Intervals.icu fallback, manual logging, workout scoring, adaptive adjustment, dashboard/readiness, workout deletion, Strava manual import, and Strava webhook/fallback processing.
 
 To use Direct Garmin locally:
 
@@ -288,7 +307,7 @@ Common fixes:
 
 - Bridge not configured: set `GARMIN_BRIDGE_URL` and `GARMIN_BRIDGE_API_KEY` in `.env.local`.
 - Bridge not running: run `cd local-garmin-bridge && source .venv/bin/activate && python -m uvicorn app.main:app --host 127.0.0.1 --port 8765`.
-- Hosted bridge unavailable: check the VPS systemd service, Cloudflare Tunnel, Cloudflare Access Service Auth values in Vercel, and the bridge API key.
+- Hosted bridge unavailable: check the VPS `runcoach-garmin-bridge` service, the `cloudflared` service, Cloudflare Access Service Auth values in Vercel, and the bridge API key.
 - Auth missing or token invalid: run the Garmin auth helper and complete login/MFA in the bridge terminal.
 - Already exported workout: use Update Garmin Export for stale workouts or Delete from Garmin before publishing again. The app intentionally does not offer duplicate-creating republish.
 
@@ -301,9 +320,9 @@ Common fixes:
 /lib/training      Rule-based plan, scoring, adjustment, and dashboard logic
 /lib/db            Supabase database utilities
 /lib/intervals     Intervals.icu publishing utilities
-/lib/garminBridge  Server-only Next.js client for the local Garmin bridge
+/lib/garminBridge  Server-only Next.js client for the private Garmin bridge
 /lib/strava        Server-only Strava OAuth and manual import utilities
-/local-garmin-bridge  Separate local Python FastAPI Garmin bridge
+/local-garmin-bridge  Separate Python FastAPI Garmin bridge
 /supabase          Database migrations
 /tests             Node test suite for training and integration helpers
 /types             Shared TypeScript types

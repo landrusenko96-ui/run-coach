@@ -143,6 +143,40 @@ headers, response headers, Cloudflare Access values, and full Garmin responses
 must not be stored in Supabase or returned to the browser. No Supabase migration
 is required.
 
+## 2026-05-26 — Hosted Direct Garmin Bridge Production Deployment Complete
+
+Decision:
+Keep the deployed Direct Garmin production bridge as a private infrastructure
+service: Oracle Cloud Ubuntu VPS, `runcoach-garmin-bridge` systemd service,
+`cloudflared` tunnel, Cloudflare Access Service Auth, and
+`X-Garmin-Bridge-Key`.
+
+Reason:
+Production smoke testing confirmed the hosted bridge can publish Garmin
+workouts with pace targets while Vercel still mediates browser actions through
+server routes. Intervals.icu remains the fallback export path.
+
+Status:
+Deployment is complete at `https://garmin-bridge.runbitchapp.com`. The bridge
+binds only to `127.0.0.1:8765`; UFW allows only OpenSSH inbound; Garmin session
+files live only in `/var/lib/run-coach-garmin/.garminconnect`. This was an
+infrastructure-only deployment. No app UI, plan generation, or application
+behavior changed as part of the deployment.
+
+Security note:
+`GARMIN_BRIDGE_API_KEY`, Cloudflare Access service-token values, and the
+Cloudflare tunnel token were rotated after setup. Documentation must never
+preserve old or current secret values, Garmin account email, terminal output
+that includes secrets, Garmin cookies/tokens, request/response headers, or full
+Garmin responses.
+
+Limitation:
+This bridge uses one Garmin session on the VPS. It is appropriate for
+private/personal/friends-and-family MVP use, but it is not a true per-user
+Garmin OAuth integration. Do not allow multiple users to connect separate
+Garmin accounts through this bridge until per-user session isolation is
+designed.
+
 ## 2026-05-25 — Milestone 10 Production Deployment Readiness
 
 Decision:

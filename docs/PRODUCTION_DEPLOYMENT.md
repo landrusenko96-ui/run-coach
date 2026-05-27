@@ -97,28 +97,20 @@ GARMIN_BRIDGE_URL=http://127.0.0.1:8765
 GARMIN_BRIDGE_API_KEY=replace-with-a-long-random-local-key
 ```
 
-Also export the same bridge key in the local bridge terminal:
+No Cloudflare Access values are required for local development.
 
-```bash
-cd local-garmin-bridge
-source .venv/bin/activate
-export GARMIN_BRIDGE_API_KEY="replace-with-a-long-random-local-key"
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8765
-```
-
-Hosted production uses a private VPS bridge behind Cloudflare Tunnel and
-Cloudflare Access Service Auth. In Vercel Production, set these only if the
-hosted bridge is ready:
+Hosted production now uses a private Oracle Cloud Ubuntu VPS bridge behind
+Cloudflare Tunnel and Cloudflare Access Service Auth:
 
 ```text
-GARMIN_BRIDGE_URL=https://garmin-bridge.your-private-hostname.example
+GARMIN_BRIDGE_URL=https://garmin-bridge.runbitchapp.com
 GARMIN_BRIDGE_API_KEY=replace-with-a-long-random-bridge-key
 GARMIN_BRIDGE_ACCESS_CLIENT_ID=from-cloudflare-access-service-auth
 GARMIN_BRIDGE_ACCESS_CLIENT_SECRET=from-cloudflare-access-service-auth
 GARMIN_BRIDGE_REQUEST_TIMEOUT_MS=15000
 ```
 
-On the VPS bridge server, store only:
+The production bridge server stores only:
 
 ```text
 GARMIN_BRIDGE_API_KEY=replace-with-the-same-long-random-bridge-key
@@ -126,9 +118,14 @@ GARMIN_TOKEN_DIR=/var/lib/run-coach-garmin/.garminconnect
 GARMIN_BRIDGE_ENV=production
 ```
 
-Do not set Garmin usernames, passwords, cookies, or tokens in environment
-variables. Garmin session files live only in `GARMIN_TOKEN_DIR` on the VPS.
-Browser/client code must never call the bridge directly.
+Sensitive values include the bridge API key, Cloudflare Access service-token
+client id/secret, Cloudflare tunnel token, Garmin session files/tokens/cookies,
+Garmin passwords, and full Garmin responses. Do not commit them, paste them
+into docs/issues/screenshots, log them, or store them in Supabase.
+
+The normal production app domain is separate from the bridge domain.
+`runbitchapp.com` is currently used for bridge infrastructure and does not by
+itself mean the main app uses that domain.
 
 ### Production Vercel Variables
 
@@ -189,163 +186,94 @@ first. Add Preview variables only when you are ready to test preview deploys.
 6. After deploy, open the production domain and run the production smoke tests
    below.
 
-### Private Hosted Garmin Bridge
+### Production Hosted Garmin Bridge
 
-Do this only after the normal Vercel production app and Intervals.icu export
-are working.
+The hosted Garmin bridge production deployment is complete. This was an
+infrastructure-only change: no app UI, app behavior, plan generation, or GitHub
+application code changed during the deployment.
 
-1. Create a non-root user and private directories on the VPS:
-
-```bash
-sudo adduser --system --group --home /opt/run-coach-garmin run-coach-garmin
-sudo mkdir -p /opt/run-coach-garmin /var/lib/run-coach-garmin/.garminconnect /etc/run-coach-garmin
-sudo chown -R run-coach-garmin:run-coach-garmin /opt/run-coach-garmin /var/lib/run-coach-garmin
-sudo chmod 700 /var/lib/run-coach-garmin/.garminconnect
-```
-
-2. Put the repository on the VPS and install bridge dependencies:
-
-```bash
-sudo -iu run-coach-garmin
-cd /opt/run-coach-garmin
-git clone <your-private-repo-url> run-coach
-cd run-coach/local-garmin-bridge
-python3.12 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-3. Create `/etc/run-coach-garmin/bridge.env` with root-only permissions:
-
-```bash
-sudo install -m 600 -o root -g root /dev/null /etc/run-coach-garmin/bridge.env
-sudoedit /etc/run-coach-garmin/bridge.env
-```
-
-The file should contain only:
+Current production architecture:
 
 ```text
-GARMIN_BRIDGE_API_KEY=replace-with-a-long-random-bridge-key
-GARMIN_TOKEN_DIR=/var/lib/run-coach-garmin/.garminconnect
-GARMIN_BRIDGE_ENV=production
+Vercel Next.js server route
+  -> Cloudflare Access protected hostname
+  -> Cloudflare Tunnel
+  -> Python FastAPI bridge on Oracle Cloud Ubuntu VPS
+  -> Garmin Connect through python-garminconnect
 ```
 
-4. Create `/etc/systemd/system/run-coach-garmin-bridge.service`:
+Current production facts:
 
-```ini
-[Unit]
-Description=Run Coach private Garmin bridge
-After=network-online.target
-Wants=network-online.target
+- Bridge hostname: `https://garmin-bridge.runbitchapp.com`
+- VPS provider/OS: Oracle Cloud Ubuntu
+- SSH/admin user: `ubuntu`
+- Dedicated bridge service user: `garmin-bridge`
+- Bridge systemd service: `runcoach-garmin-bridge`
+- Tunnel systemd service: `cloudflared`
+- Bridge bind address: `127.0.0.1:8765`
+- Firewall: UFW active, only OpenSSH allowed inbound
+- Port `8765`: not publicly open
+- Garmin token/session directory:
+  `/var/lib/run-coach-garmin/.garminconnect`
 
-[Service]
-Type=simple
-User=run-coach-garmin
-Group=run-coach-garmin
-WorkingDirectory=/opt/run-coach-garmin/run-coach/local-garmin-bridge
-EnvironmentFile=/etc/run-coach-garmin/bridge.env
-ExecStart=/opt/run-coach-garmin/run-coach/local-garmin-bridge/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8765
-Restart=on-failure
-RestartSec=10
+Expected external access behavior:
 
-[Install]
-WantedBy=multi-user.target
-```
+- Without Cloudflare Access service-token headers, Cloudflare returns
+  `403 Forbidden`.
+- With Cloudflare Access but without `X-Garmin-Bridge-Key`, the bridge returns
+  unauthorized.
+- With both Cloudflare Access service-token headers and `X-Garmin-Bridge-Key`,
+  `/garmin/status` returns authenticated when the saved Garmin session is valid.
 
-5. Enable and check the service:
+Production operations:
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now run-coach-garmin-bridge
-sudo systemctl status run-coach-garmin-bridge
-curl http://127.0.0.1:8765/health
+sudo systemctl status runcoach-garmin-bridge
+sudo systemctl status cloudflared
+sudo systemctl restart runcoach-garmin-bridge
 ```
 
-6. Authenticate Garmin from an SSH session only. In `GARMIN_BRIDGE_ENV=production`,
-   `/garmin/auth/start` is disabled, so do the first login with a temporary
-   interactive bridge process bound to `127.0.0.1`:
+Use `journalctl` only for high-level troubleshooting. Do not paste logs into
+issues or docs if they include request headers, tokens, session paths, Garmin
+account details, cookies, or provider response bodies.
 
-```bash
-sudo systemctl stop run-coach-garmin-bridge
-sudo -iu run-coach-garmin
-cd /opt/run-coach-garmin/run-coach/local-garmin-bridge
-source .venv/bin/activate
-export GARMIN_BRIDGE_API_KEY="replace-with-the-bridge-key"
-export GARMIN_TOKEN_DIR="/var/lib/run-coach-garmin/.garminconnect"
-unset GARMIN_BRIDGE_ENV
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8765
-```
+Garmin authentication was completed manually over SSH. In production mode,
+`/docs`, `/redoc`, `/openapi.json`, and `/garmin/auth/start` are restricted or
+hidden. Future Garmin re-authentication should be done over SSH only with a
+temporary local-mode bridge process bound to `127.0.0.1`, never through a
+public browser route.
 
-In a second SSH terminal, trigger auth:
+Rotate the bridge API key:
 
-```bash
-curl -X POST http://127.0.0.1:8765/garmin/auth/start \
-  -H "X-Garmin-Bridge-Key: replace-with-the-bridge-key"
-```
+1. Generate a new long random bridge key locally.
+2. Update the VPS bridge env file with the new `GARMIN_BRIDGE_API_KEY`.
+3. Update Vercel Production `GARMIN_BRIDGE_API_KEY` with the same new value.
+4. Restart `runcoach-garmin-bridge`.
+5. Redeploy Vercel so the server routes use the new value.
+6. Verify Settings -> Direct Garmin Bridge status from the production app.
 
-Enter Garmin credentials only in the SSH terminal prompt. Session files should
-land in `/var/lib/run-coach-garmin/.garminconnect` with directory mode `700`
-and token file mode `600`. Then stop the temporary process and restart the
-production service:
+Rotate the Cloudflare Access service token:
 
-```bash
-sudo systemctl start run-coach-garmin-bridge
-```
+1. Create a new Cloudflare Access service token for the bridge application.
+2. Update Vercel Production `GARMIN_BRIDGE_ACCESS_CLIENT_ID` and
+   `GARMIN_BRIDGE_ACCESS_CLIENT_SECRET`.
+3. Redeploy Vercel.
+4. Verify production Garmin status from the app.
+5. Revoke the old Cloudflare Access service token after the new one works.
 
-7. Create a Cloudflare Tunnel that maps an HTTPS hostname to
-   `http://127.0.0.1:8765`. Example shape:
+Rotate the Cloudflare tunnel token:
 
-```bash
-cloudflared tunnel login
-cloudflared tunnel create run-coach-garmin
-cloudflared tunnel route dns run-coach-garmin garmin-bridge.example.com
-```
+1. Rotate or recreate the tunnel token in Cloudflare.
+2. Update the `cloudflared` service configuration on the VPS without writing
+   the token into this repo or docs.
+3. Restart `cloudflared`.
+4. Confirm the bridge hostname still reaches the local bridge through
+   Cloudflare Access.
+5. Revoke the old tunnel token after the new tunnel is healthy.
 
-The tunnel config should route only the bridge hostname to the local service:
+Rollback:
 
-```yaml
-ingress:
-  - hostname: garmin-bridge.example.com
-    service: http://127.0.0.1:8765
-  - service: http_status:404
-```
-
-8. In Cloudflare Access, create a self-hosted application for the bridge
-   hostname. Add a Service Auth policy and create one service token. Store the
-   client id and client secret only in Vercel server env vars.
-
-9. Add Vercel Production env vars:
-
-```bash
-vercel env add GARMIN_BRIDGE_URL production
-vercel env add GARMIN_BRIDGE_API_KEY production
-vercel env add GARMIN_BRIDGE_ACCESS_CLIENT_ID production
-vercel env add GARMIN_BRIDGE_ACCESS_CLIENT_SECRET production
-vercel env add GARMIN_BRIDGE_REQUEST_TIMEOUT_MS production
-```
-
-Using the Vercel dashboard is also fine. Do not add `NEXT_PUBLIC_` Garmin
-variables.
-
-10. Hosted health check from your local machine:
-
-```bash
-curl https://garmin-bridge.example.com/health \
-  -H "CF-Access-Client-Id: replace-with-client-id" \
-  -H "CF-Access-Client-Secret: replace-with-client-secret"
-curl https://garmin-bridge.example.com/garmin/status \
-  -H "CF-Access-Client-Id: replace-with-client-id" \
-  -H "CF-Access-Client-Secret: replace-with-client-secret" \
-  -H "X-Garmin-Bridge-Key: replace-with-bridge-key"
-```
-
-11. Smoke test in the production app: open Settings and confirm the Direct
-    Garmin Bridge panel is reachable and authenticated, then preview one future
-    run. Publish only a disposable future workout that you are comfortable
-    deleting manually if Garmin rejects deletion.
-
-Rollback is to remove the Vercel Garmin bridge env vars and redeploy. Leave
-Intervals.icu configured so planned-workout export still works:
+1. Remove the Vercel Garmin bridge env vars:
 
 ```bash
 vercel env rm GARMIN_BRIDGE_URL production
@@ -354,6 +282,34 @@ vercel env rm GARMIN_BRIDGE_ACCESS_CLIENT_ID production
 vercel env rm GARMIN_BRIDGE_ACCESS_CLIENT_SECRET production
 vercel env rm GARMIN_BRIDGE_REQUEST_TIMEOUT_MS production
 ```
+
+2. Redeploy Vercel.
+3. Confirm Direct Garmin shows unavailable in the app.
+4. Continue using Intervals.icu as the fallback export path.
+5. Optionally stop bridge infrastructure if you want it offline:
+
+```bash
+sudo systemctl stop cloudflared
+sudo systemctl stop runcoach-garmin-bridge
+```
+
+Architecture limitation:
+
+This setup uses one Garmin session on the VPS. It is suitable for
+private/personal/friends-and-family MVP use, but it is not a true per-user
+Garmin OAuth integration. Do not let multiple users connect separate Garmin
+accounts through this bridge until per-user Garmin session isolation is
+designed.
+
+Post-deployment validation passed:
+
+- Production Garmin status works from the app.
+- Production Garmin publish works from the app.
+- Garmin pace targets appear correctly.
+- Intervals.icu fallback still works.
+- Manual logging, workout scoring, adaptive adjustment, dashboard/readiness,
+  workout deletion, Strava manual import, and Strava webhook/fallback
+  processing still work.
 
 ### Supabase
 
