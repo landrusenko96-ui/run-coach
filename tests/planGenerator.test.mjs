@@ -177,6 +177,28 @@ function isHardWorkout(workout) {
   );
 }
 
+function hasNestedRepeats(steps) {
+  return steps.some((step) => {
+    if (!step.repeat) {
+      return false;
+    }
+
+    return step.repeat.steps.some(
+      (repeatStep) => Boolean(repeatStep.repeat) || hasNestedRepeats([repeatStep]),
+    );
+  });
+}
+
+function hasOpenLeafDuration(steps) {
+  return steps.some((step) => {
+    if (step.repeat) {
+      return hasOpenLeafDuration(step.repeat.steps);
+    }
+
+    return step.durationType === "open";
+  });
+}
+
 describe("generateTrainingPlan", () => {
   it("starts by default on today's local date", () => {
     const todayDateText = getLocalDateText();
@@ -200,7 +222,8 @@ describe("generateTrainingPlan", () => {
     );
 
     assert.equal(firstRun?.workout_date, "2030-05-08");
-    assert.equal(firstRun?.workout_type, "calibration");
+    assert.equal(firstRun?.workout_type, "easy");
+    assert.notEqual(firstRun?.title, "Calibration run");
   });
 
   it("adds structured workouts to generated run workouts only", () => {
@@ -223,6 +246,10 @@ describe("generateTrainingPlan", () => {
       (workout) => !runWorkoutTypes.includes(workout.workout_type),
     );
 
+    assert.equal(
+      generatedPlan.plannedWorkouts.some((workout) => workout.workout_type === "calibration"),
+      false,
+    );
     assert.ok(runWorkouts.length > 0);
     assert.ok(nonRunWorkouts.length > 0);
 
@@ -422,7 +449,7 @@ describe("generateTrainingPlan", () => {
         ),
       );
       assert.equal(
-        week2Runs.some((workout) => workout.title === "Medium-long run"),
+        week2Runs.some((workout) => workout.title.startsWith("Medium-long")),
         layout.expectsMediumLong,
       );
     }
@@ -806,5 +833,171 @@ describe("generateTrainingPlan", () => {
         assumption.includes("low confidence"),
       ),
     );
+  });
+
+  it("selects spec-style workout subtypes for supported marathon layouts", () => {
+    const generatedPlan = generateTrainingPlan(
+      makeProfile({
+        current_weekly_mileage_km: 55,
+        longest_recent_run_km: 22,
+        available_training_days: [
+          "monday",
+          "tuesday",
+          "wednesday",
+          "thursday",
+          "friday",
+          "saturday",
+        ],
+        running_days_per_week: 6,
+        training_aggressiveness: "aggressive",
+        running_experience_level: "advanced",
+      }),
+      baseRaceGoal,
+      { startDate: "2030-05-06" },
+    );
+    const titles = generatedPlan.plannedWorkouts.map((workout) => workout.title);
+
+    assert.ok(titles.some((title) => title.startsWith("Cruise interval") || title.includes("tempo")));
+    assert.ok(titles.some((title) => title.startsWith("Medium-long")));
+    assert.ok(titles.some((title) => title.includes("race-pace blocks")));
+    assert.ok(titles.some((title) => title.includes("strides")));
+  });
+
+  it("prioritizes half-marathon pace work more than marathon plans", () => {
+    const sharedProfile = makeProfile({
+      current_weekly_mileage_km: 42,
+      longest_recent_run_km: 16,
+      available_training_days: [
+        "monday",
+        "tuesday",
+        "wednesday",
+        "friday",
+        "saturday",
+      ],
+      running_days_per_week: 5,
+      training_aggressiveness: "aggressive",
+      running_experience_level: "intermediate",
+    });
+    const halfPlan = generateTrainingPlan(
+      sharedProfile,
+      makeRaceGoal({
+        race_name: "Spring Half",
+        race_date: "2030-09-15",
+        distance: "half_marathon",
+        target_finish_time_sec: 5400,
+        target_priority: "personal_best",
+        race_priority: "B",
+        goal_flexibility: "flexible",
+      }),
+      { startDate: "2030-05-06" },
+    );
+    const marathonPlan = generateTrainingPlan(sharedProfile, baseRaceGoal, {
+      startDate: "2030-05-06",
+    });
+
+    assert.ok(
+      halfPlan.plannedWorkouts.some((workout) =>
+        workout.title.includes("Half-marathon pace"),
+      ),
+    );
+    assert.equal(
+      marathonPlan.plannedWorkouts.some((workout) =>
+        workout.title.includes("Half-marathon pace"),
+      ),
+      false,
+    );
+  });
+
+  it("adds hill-supported work only when terrain and elevation evidence support it", () => {
+    const supportedHillPlan = generateTrainingPlan(
+      makeProfile({
+        terrain_available: ["flat", "hills"],
+        current_weekly_mileage_km: 42,
+        longest_recent_run_km: 18,
+        available_training_days: [
+          "monday",
+          "tuesday",
+          "wednesday",
+          "friday",
+          "saturday",
+        ],
+        running_days_per_week: 5,
+        training_aggressiveness: "aggressive",
+      }),
+      makeRaceGoal({
+        race_course_profile: "hilly",
+        course_elevation_notes: "Rolling hills throughout.",
+      }),
+      {
+        startDate: "2030-05-06",
+        recentHistory: makeRecentHistory([38, 39, 41, 42, 43, 44], "mixed"),
+        recentHistoryWorkouts: [
+          makeLoggedWorkout({ id: "hill-1", elevation_gain_m: 300 }),
+          makeLoggedWorkout({ id: "hill-2", elevation_gain_m: 300 }),
+          makeLoggedWorkout({ id: "hill-3", elevation_gain_m: 300 }),
+        ],
+      },
+    );
+    const unsupportedHillPlan = generateTrainingPlan(
+      makeProfile({
+        terrain_available: ["flat"],
+      }),
+      makeRaceGoal({
+        race_course_profile: "hilly",
+        course_elevation_notes: "Rolling hills throughout.",
+      }),
+      {
+        startDate: "2030-05-06",
+        recentHistory: makeRecentHistory([35, 36, 37, 38, 39, 40], "mixed"),
+        recentHistoryWorkouts: [
+          makeLoggedWorkout({ id: "flat-1", elevation_gain_m: 10 }),
+          makeLoggedWorkout({ id: "flat-2", elevation_gain_m: 12 }),
+        ],
+      },
+    );
+
+    assert.ok(
+      supportedHillPlan.plannedWorkouts.some((workout) =>
+        workout.title.includes("Hill"),
+      ),
+    );
+    assert.equal(
+      unsupportedHillPlan.plannedWorkouts.some((workout) =>
+        workout.title.includes("Hill"),
+      ),
+      false,
+    );
+  });
+
+  it("keeps generated structured workouts export-safe with complete leaf steps", () => {
+    const generatedPlan = generateTrainingPlan(
+      makeProfile({
+        current_weekly_mileage_km: 50,
+        longest_recent_run_km: 22,
+        available_training_days: [
+          "monday",
+          "tuesday",
+          "wednesday",
+          "thursday",
+          "friday",
+          "saturday",
+        ],
+        running_days_per_week: 6,
+        training_aggressiveness: "aggressive",
+        running_experience_level: "advanced",
+      }),
+      baseRaceGoal,
+      { startDate: "2030-05-06" },
+    );
+    const runWorkouts = generatedPlan.plannedWorkouts.filter(
+      (workout) => workout.structured_workout !== null,
+    );
+
+    for (const workout of runWorkouts) {
+      assert.equal(workout.structured_workout.exportSafe, true);
+      assert.deepEqual(workout.structured_workout.exportWarnings, []);
+      assert.equal(hasNestedRepeats(workout.structured_workout.steps), false);
+      assert.equal(hasOpenLeafDuration(workout.structured_workout.steps), false);
+    }
   });
 });

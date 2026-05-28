@@ -1,5 +1,33 @@
 # Decisions
 
+## 2026-05-28 — Add Spec Workout Library Behind Existing Plan Contracts
+
+Decision:
+Use an internal workout subtype library for initial plan generation while
+continuing to persist only existing DB-safe workout types and structured
+workout version 1.
+
+Reason:
+The external plan-generation spec requires workouts to be selected and resolved
+from variables such as weekly volume, run frequency, phase, long-run target,
+fitness confidence, terrain, feasibility, and max session duration. Persisting
+new workout enum values would add schema/export risk, so subtype meaning is
+encoded through generated titles, descriptions, purposes, instructions, pace
+targets, terrain, and structured workout steps.
+
+Status:
+Initial plan generation now resolves subtypes such as cruise intervals,
+fartlek, hill strides/repeats, medium-long variants, race-pace steady work,
+half-marathon pace blocks, and long runs with steady or race-pace blocks. No
+Supabase migration, UI redesign, export rewrite, scoring change, adjustment
+rewrite, auth/RLS change, or Strava webhook change is part of this milestone.
+
+Implementation rule:
+Initial-plan workouts should be variable-driven. Warmups, cooldowns, repeats,
+recoveries, work duration, distance, pace targets, and duration caps should be
+derived from the generated week and athlete evidence rather than fixed
+template constants whenever the workout type expects a variable prescription.
+
 ## 2026-05-28 — Add Six-Week Evidence Layer Without Changing Plan Storage
 
 Decision:

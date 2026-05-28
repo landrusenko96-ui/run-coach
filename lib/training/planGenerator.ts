@@ -6,6 +6,16 @@ import {
   type TrainingEvidence,
   type TrainingEvidenceConfidence,
 } from "./trainingEvidence.ts";
+import {
+  getRoleForSubtype,
+  getStressForSubtype,
+  getTitleForSubtype,
+  getWorkoutTypeForSubtype,
+  resolveWorkoutPrescription,
+  type PlanWorkoutSubtype,
+  type WorkoutLibraryRole,
+  type WorkoutLibraryStress,
+} from "./workoutLibrary.ts";
 import type {
   GeneratedPlannedWorkout,
   GeneratedTrainingPlan,
@@ -15,6 +25,7 @@ import type {
   RecentTrainingWeekInput,
   RunnerProfile,
   RunningDaysPerWeek,
+  StructuredWorkout,
   TerrainAvailable,
   TrainingAggressiveness,
   TrainingDay,
@@ -162,32 +173,15 @@ type WorkoutPrescription = PlannedDay & {
   terrain: TerrainAvailable | null;
   purpose: string;
   instructions: string;
-};
-
-type PaceRange = {
-  minSecPerKm: number;
-  maxSecPerKm: number;
+  structuredWorkout: StructuredWorkout | null;
 };
 
 type WeekWorkoutDraft = {
   day: PlannedDay;
   workoutType: WorkoutType;
-  role:
-    | "calibration"
-    | "easy"
-    | "recovery"
-    | "medium_long"
-    | "steady"
-    | "threshold"
-    | "interval"
-    | "race_pace"
-    | "long_easy"
-    | "long_steady"
-    | "long_race_specific"
-    | "race_day"
-    | "rest"
-    | "strength";
-  stress: "none" | "easy" | "moderate" | "hard";
+  subtype: PlanWorkoutSubtype;
+  role: WorkoutLibraryRole;
+  stress: WorkoutLibraryStress;
   title: string;
 };
 
@@ -1519,7 +1513,6 @@ function buildWorkoutPrescriptions(input: {
   plannedDays: PlannedDay[];
 }): WorkoutPrescription[] {
   const drafts: WeekWorkoutDraft[] = [];
-  let firstTrainingRunAssigned = false;
 
   for (const weekPlan of input.weekPlans) {
     const weekDays = input.plannedDays.filter(
@@ -1532,25 +1525,7 @@ function buildWorkoutPrescriptions(input: {
       weekDays,
     });
 
-    for (const draft of weekDrafts) {
-      if (
-        !firstTrainingRunAssigned &&
-        draft.role !== "race_day" &&
-        runWorkoutTypes.has(draft.workoutType)
-      ) {
-        drafts.push({
-          ...draft,
-          workoutType: "calibration",
-          role: "calibration",
-          stress: "moderate",
-          title: "Calibration run",
-        });
-        firstTrainingRunAssigned = true;
-        continue;
-      }
-
-      drafts.push(draft);
-    }
+    drafts.push(...weekDrafts);
   }
 
   softenUnsafeHardWorkoutSpacing(drafts);
@@ -1575,6 +1550,7 @@ function buildWeekDrafts(input: {
   const drafts = input.weekDays.map((day): WeekWorkoutDraft => ({
     day,
     workoutType: "rest",
+    subtype: "rest",
     role: "rest",
     stress: "none",
     title: "Rest day",
@@ -1605,32 +1581,24 @@ function buildWeekDrafts(input: {
     const draft = getDraftForDay(drafts, runDay);
 
     if (raceDay && runDay.dateText === raceDay.dateText) {
-      Object.assign(draft, {
-        workoutType: input.input.goal.raceType === "marathon" ? "long_run" : "marathon_pace",
-        role: "race_day",
-        stress: "hard",
-        title: `${formatRaceDistance(input.input.goal.raceType)} race day`,
-      } satisfies Partial<WeekWorkoutDraft>);
+      applyWorkoutSubtype(draft, "race_day");
       continue;
     }
 
     if (runDay.dateText === longRunDay.dateText) {
-      const longRunRole = getLongRunRole(input.weekPlan, input.metrics, effectiveRunDays.length);
-      Object.assign(draft, {
-        workoutType: "long_run",
-        role: longRunRole,
-        stress: longRunRole === "long_race_specific" ? "hard" : "moderate",
-        title: getLongRunTitle(longRunRole),
-      } satisfies Partial<WeekWorkoutDraft>);
+      applyWorkoutSubtype(
+        draft,
+        getLongRunSubtype({
+          input: input.input,
+          metrics: input.metrics,
+          weekPlan: input.weekPlan,
+          runDaysPerWeek: effectiveRunDays.length,
+        }),
+      );
       continue;
     }
 
-    Object.assign(draft, {
-      workoutType: "easy",
-      role: "easy",
-      stress: "easy",
-      title: "Easy run",
-    } satisfies Partial<WeekWorkoutDraft>);
+    applyWorkoutSubtype(draft, "easy_base");
   }
 
   assignQualityDrafts({
@@ -1643,6 +1611,8 @@ function buildWeekDrafts(input: {
   });
   assignMediumLongDraft({
     drafts,
+    input: input.input,
+    metrics: input.metrics,
     weekPlan: input.weekPlan,
     runDays: effectiveRunDays,
     longRunDay,
@@ -1651,6 +1621,14 @@ function buildWeekDrafts(input: {
     drafts,
     weekPlan: input.weekPlan,
     runDays: effectiveRunDays,
+  });
+  assignStrideDraft({
+    drafts,
+    input: input.input,
+    metrics: input.metrics,
+    weekPlan: input.weekPlan,
+    runDays: effectiveRunDays,
+    longRunDay,
   });
   assignOptionalStrengthDraft(drafts, input.weekPlan);
 
@@ -1672,47 +1650,46 @@ function getLongRunDraftDay(input: {
   );
 }
 
-function getLongRunRole(
-  weekPlan: WeekPlan,
-  metrics: DerivedMetrics,
-  runDaysPerWeek: number,
-): WeekWorkoutDraft["role"] {
-  if (weekPlan.isCutback || weekPlan.isTaper || weekPlan.phase === "race_prep") {
+function getLongRunSubtype(input: {
+  input: NormalizedPlanInput;
+  metrics: DerivedMetrics;
+  weekPlan: WeekPlan;
+  runDaysPerWeek: number;
+}): PlanWorkoutSubtype {
+  if (
+    input.weekPlan.isCutback ||
+    input.weekPlan.isTaper ||
+    input.weekPlan.phase === "race_prep" ||
+    input.input.athlete.injurySignal === "current_or_serious" ||
+    input.input.history.recentRamp > 1.35
+  ) {
     return "long_easy";
   }
 
   if (
-    runDaysPerWeek >= 4 &&
-    (weekPlan.phase === "specific" || weekPlan.phase === "peak") &&
-    weekPlan.longRunKm >= metrics.peakLongRunKm * 0.62 &&
-    metrics.feasibilityRating !== "not_credible" &&
-    metrics.fitnessConfidence !== "low" &&
-    weekPlan.weekNumber % 3 === 0
+    input.runDaysPerWeek >= 4 &&
+    (input.weekPlan.phase === "specific" || input.weekPlan.phase === "peak") &&
+    input.weekPlan.longRunKm >= input.metrics.peakLongRunKm * 0.62 &&
+    input.metrics.feasibilityRating !== "not_credible" &&
+    input.metrics.feasibilityRating !== "low_confidence" &&
+    input.metrics.fitnessConfidence !== "low" &&
+    input.metrics.volumeCategory !== "low_base" &&
+    input.input.athlete.runningExperienceLevel !== "beginner" &&
+    input.weekPlan.weekNumber % 3 === 0
   ) {
-    return "long_race_specific";
+    return "long_mp_blocks";
   }
 
   if (
-    runDaysPerWeek >= 3 &&
-    (weekPlan.phase === "build" || weekPlan.phase === "specific") &&
-    weekPlan.weekNumber % 4 === 2
+    input.runDaysPerWeek >= 3 &&
+    (input.weekPlan.phase === "build" || input.weekPlan.phase === "specific") &&
+    input.metrics.fitnessConfidence !== "low" &&
+    input.weekPlan.weekNumber % 4 === 2
   ) {
-    return "long_steady";
+    return "long_steady_finish";
   }
 
   return "long_easy";
-}
-
-function getLongRunTitle(role: WeekWorkoutDraft["role"]): string {
-  if (role === "long_race_specific") {
-    return "Long run with race-pace blocks";
-  }
-
-  if (role === "long_steady") {
-    return "Long run with steady finish";
-  }
-
-  return "Easy long run";
 }
 
 function assignQualityDrafts(input: {
@@ -1729,7 +1706,10 @@ function assignQualityDrafts(input: {
     return;
   }
 
-  const primaryQualityRole = getPrimaryQualityRole({
+  const primaryQualitySubtype = getPrimaryQualitySubtype({
+    input: input.input,
+    metrics: input.metrics,
+    weekPlan: input.weekPlan,
     raceDistance: input.input.goal.raceType,
     phase: input.weekPlan.phase,
     weekNumber: input.weekPlan.weekNumber,
@@ -1743,23 +1723,18 @@ function assignQualityDrafts(input: {
       (runDay) => runDay.dateText !== input.longRunDay.dateText,
     ),
     longRunDay: input.longRunDay,
-    role: primaryQualityRole,
+    role: getRoleForSubtype(primaryQualitySubtype),
   });
 
   if (qualityDay) {
-    applyQualityRole(getDraftForDay(input.drafts, qualityDay), primaryQualityRole);
+    applyWorkoutSubtype(getDraftForDay(input.drafts, qualityDay), primaryQualitySubtype);
   } else {
     const steadyDay = input.runDays.find(
       (runDay) => runDay.dateText !== input.longRunDay.dateText,
     );
 
     if (steadyDay) {
-      Object.assign(getDraftForDay(input.drafts, steadyDay), {
-        workoutType: "easy",
-        role: "steady",
-        stress: "moderate",
-        title: "Steady aerobic run",
-      } satisfies Partial<WeekWorkoutDraft>);
+      applyWorkoutSubtype(getDraftForDay(input.drafts, steadyDay), "steady_aerobic");
     }
   }
 
@@ -1788,11 +1763,14 @@ function assignQualityDrafts(input: {
   });
 
   if (secondQualityDay) {
-    applyQualityRole(getDraftForDay(input.drafts, secondQualityDay), "race_pace");
+    applyWorkoutSubtype(getDraftForDay(input.drafts, secondQualityDay), "mp_steady");
   }
 }
 
-function getPrimaryQualityRole(input: {
+function getPrimaryQualitySubtype(input: {
+  input: NormalizedPlanInput;
+  metrics: DerivedMetrics;
+  weekPlan: WeekPlan;
   raceDistance: RaceDistance;
   phase: PhaseLabel;
   weekNumber: number;
@@ -1800,47 +1778,71 @@ function getPrimaryQualityRole(input: {
   volumeCategory: VolumeCategory;
   runningExperienceLevel: AthleteProfile["runningExperienceLevel"];
   fitnessConfidence: FitnessConfidence;
-}): WeekWorkoutDraft["role"] {
+}): PlanWorkoutSubtype {
+  if (
+    input.input.environment.raceCourseLooksHilly &&
+    input.input.environment.hillsAvailable &&
+    (input.input.history.elevationTolerance === "moderate" ||
+      input.input.history.elevationTolerance === "high") &&
+    (input.phase === "base" || input.phase === "build") &&
+    input.weekNumber % 4 === 0 &&
+    input.input.athlete.injurySignal !== "current_or_serious"
+  ) {
+    return "hill_repeats";
+  }
+
   if (
     input.runningExperienceLevel === "beginner" ||
     input.volumeCategory === "low_base" ||
-    input.fitnessConfidence === "low"
+    input.fitnessConfidence === "low" ||
+    input.input.athlete.injurySignal === "current_or_serious" ||
+    input.input.history.recentRamp > 1.35
   ) {
     if (input.phase === "race_prep") {
-      return "race_pace";
+      return input.raceDistance === "half_marathon" ? "hm_pace_blocks" : "mp_steady";
     }
 
-    return "steady";
+    if (
+      !input.input.environment.flatRoutesAvailable ||
+      input.input.environment.trailAccess ||
+      input.fitnessConfidence === "low"
+    ) {
+      return "fartlek";
+    }
+
+    return "steady_aerobic";
   }
 
   if (input.phase === "race_prep") {
-    return "race_pace";
+    return input.raceDistance === "half_marathon" ? "hm_pace_blocks" : "mp_steady";
   }
 
   if (input.runCount === 3) {
-    return input.phase === "base" ? "steady" : "threshold";
+    return input.phase === "base" ? "steady_aerobic" : "cruise_intervals";
   }
 
   if (input.raceDistance === "half_marathon") {
     if (input.phase === "specific" && input.weekNumber % 2 === 0) {
-      return "race_pace";
+      return "hm_pace_blocks";
     }
 
-    return input.weekNumber % 3 === 0 ? "interval" : "threshold";
+    return input.weekNumber % 3 === 0 ? "vo2_intervals" : "cruise_intervals";
   }
 
   if (input.phase === "specific" || input.phase === "peak") {
-    return input.weekNumber % 3 === 0 ? "race_pace" : "threshold";
+    return input.weekNumber % 3 === 0 ? "mp_steady" : "broken_tempo";
   }
 
   if (
     input.phase === "build" &&
     input.weekNumber % 4 === 0
   ) {
-    return "interval";
+    return input.metrics.volumeCategory === "advanced_hobby"
+      ? "vo2_intervals"
+      : "fartlek";
   }
 
-  return input.phase === "base" ? "steady" : "threshold";
+  return input.phase === "base" ? "steady_aerobic" : "cruise_intervals";
 }
 
 function pickQualityDay(input: {
@@ -1873,50 +1875,23 @@ function pickSecondQualityDay(input: {
   return input.candidates[input.candidates.length - 1];
 }
 
-function applyQualityRole(
+function applyWorkoutSubtype(
   draft: WeekWorkoutDraft,
-  role: WeekWorkoutDraft["role"],
+  subtype: PlanWorkoutSubtype,
 ): void {
-  if (role === "interval") {
-    Object.assign(draft, {
-      workoutType: "interval",
-      role: "interval",
-      stress: "hard",
-      title: "VO2max interval session",
-    } satisfies Partial<WeekWorkoutDraft>);
-    return;
-  }
-
-  if (role === "race_pace") {
-    Object.assign(draft, {
-      workoutType: "marathon_pace",
-      role: "race_pace",
-      stress: "hard",
-      title: "Race-pace workout",
-    } satisfies Partial<WeekWorkoutDraft>);
-    return;
-  }
-
-  if (role === "threshold") {
-    Object.assign(draft, {
-      workoutType: "tempo",
-      role: "threshold",
-      stress: "hard",
-      title: "Cruise interval tempo",
-    } satisfies Partial<WeekWorkoutDraft>);
-    return;
-  }
-
   Object.assign(draft, {
-    workoutType: "easy",
-    role: "steady",
-    stress: "moderate",
-    title: "Steady aerobic run",
+    workoutType: getWorkoutTypeForSubtype(subtype),
+    subtype,
+    role: getRoleForSubtype(subtype),
+    stress: getStressForSubtype(subtype),
+    title: getTitleForSubtype(subtype),
   } satisfies Partial<WeekWorkoutDraft>);
 }
 
 function assignMediumLongDraft(input: {
   drafts: WeekWorkoutDraft[];
+  input: NormalizedPlanInput;
+  metrics: DerivedMetrics;
   weekPlan: WeekPlan;
   runDays: PlannedDay[];
   longRunDay: PlannedDay;
@@ -1943,12 +1918,14 @@ function assignMediumLongDraft(input: {
     return;
   }
 
-  Object.assign(getDraftForDay(input.drafts, mediumLongDay), {
-    workoutType: "easy",
-    role: "medium_long",
-    stress: "moderate",
-    title: "Medium-long run",
-  } satisfies Partial<WeekWorkoutDraft>);
+  const mediumLongSubtype =
+    input.metrics.fitnessConfidence !== "low" &&
+    input.input.athlete.runningExperienceLevel !== "beginner" &&
+    (input.weekPlan.phase === "build" || input.weekPlan.phase === "specific")
+      ? "medium_long_steady"
+      : "medium_long_easy";
+
+  applyWorkoutSubtype(getDraftForDay(input.drafts, mediumLongDay), mediumLongSubtype);
 }
 
 function assignRecoveryDrafts(input: {
@@ -1972,13 +1949,49 @@ function assignRecoveryDrafts(input: {
   const draft = getDraftForDay(input.drafts, firstRunDay);
 
   if (draft.stress === "easy") {
-    Object.assign(draft, {
-      workoutType: "recovery",
-      role: "recovery",
-      stress: "easy",
-      title: "Recovery run",
-    } satisfies Partial<WeekWorkoutDraft>);
+    applyWorkoutSubtype(draft, "recovery");
   }
+}
+
+function assignStrideDraft(input: {
+  drafts: WeekWorkoutDraft[];
+  input: NormalizedPlanInput;
+  metrics: DerivedMetrics;
+  weekPlan: WeekPlan;
+  runDays: PlannedDay[];
+  longRunDay: PlannedDay;
+}): void {
+  if (
+    input.runDays.length < 4 ||
+    input.weekPlan.isTaper ||
+    input.weekPlan.phase === "race_prep"
+  ) {
+    return;
+  }
+
+  const strideCandidate = input.runDays.find((runDay) => {
+    const draft = getDraftForDay(input.drafts, runDay);
+
+    return (
+      draft.subtype === "easy_base" &&
+      runDay.dateText !== input.longRunDay.dateText &&
+      daysBetween(runDay.date, input.longRunDay.date) >= 2
+    );
+  });
+
+  if (!strideCandidate) {
+    return;
+  }
+
+  const strideSubtype =
+    input.input.environment.hillsAvailable &&
+    input.input.history.elevationTolerance !== "low" &&
+    input.input.history.elevationTolerance !== "unknown" &&
+    input.weekPlan.weekNumber % 3 === 0
+      ? "hill_strides"
+      : "easy_strides";
+
+  applyWorkoutSubtype(getDraftForDay(input.drafts, strideCandidate), strideSubtype);
 }
 
 function assignOptionalStrengthDraft(
@@ -1995,12 +2008,7 @@ function assignOptionalStrengthDraft(
     return;
   }
 
-  Object.assign(restDrafts[Math.floor(restDrafts.length / 2)], {
-    workoutType: "strength_optional",
-    role: "strength",
-    stress: "none",
-    title: "Optional strength",
-  } satisfies Partial<WeekWorkoutDraft>);
+  applyWorkoutSubtype(restDrafts[Math.floor(restDrafts.length / 2)], "strength_optional");
 }
 
 function softenUnsafeHardWorkoutSpacing(drafts: WeekWorkoutDraft[]): void {
@@ -2047,21 +2055,11 @@ function softenUnsafeHardWorkoutSpacing(drafts: WeekWorkoutDraft[]): void {
 }
 
 function softenDraftToEasy(draft: WeekWorkoutDraft): void {
-  Object.assign(draft, {
-    workoutType: "easy",
-    role: "easy",
-    stress: "easy",
-    title: "Easy run",
-  } satisfies Partial<WeekWorkoutDraft>);
+  applyWorkoutSubtype(draft, "easy_base");
 }
 
 function softenDraftToSteady(draft: WeekWorkoutDraft): void {
-  Object.assign(draft, {
-    workoutType: "easy",
-    role: "steady",
-    stress: "moderate",
-    title: "Steady aerobic run",
-  } satisfies Partial<WeekWorkoutDraft>);
+  applyWorkoutSubtype(draft, "steady_aerobic");
 }
 
 function buildPrescriptionFromDraft(input: {
@@ -2072,58 +2070,62 @@ function buildPrescriptionFromDraft(input: {
   metrics: DerivedMetrics;
 }): WorkoutPrescription {
   const rawDistanceKm = getDraftDistanceKm(input);
-  const paceRange = getDraftPaceRange({
-    draft: input.draft,
-    phase: input.weekPlan.phase,
-    metrics: input.metrics,
-    raceDistance: input.input.goal.raceType,
-  });
-  const rawDurationMin = getWorkoutDurationMin(
-    input.draft.workoutType,
-    rawDistanceKm,
-    paceRange?.maxSecPerKm ?? null,
-  );
-  const cappedDistanceAndDuration = capPrescriptionForSessionDuration({
-    draft: input.draft,
-    distanceKm: rawDistanceKm,
-    durationMin: rawDurationMin,
-    paceSecPerKm: paceRange?.maxSecPerKm ?? null,
-    input: input.input,
-  });
   const terrain = getWorkoutTerrain({
     draft: input.draft,
     weekNumber: input.weekPlan.weekNumber,
     environment: input.input.environment,
   });
-  const description = getWorkoutDescription({
-    draft: input.draft,
+  const resolvedPrescription = resolveWorkoutPrescription({
+    subtype: input.draft.subtype,
     phase: input.weekPlan.phase,
     raceDistance: input.input.goal.raceType,
-  });
-  const purpose = getWorkoutPurpose({
-    draft: input.draft,
-    phase: input.weekPlan.phase,
-  });
-  const instructions = getWorkoutInstructions({
-    draft: input.draft,
+    weekNumber: input.weekPlan.weekNumber,
+    weeklyVolumeKm: input.weekPlan.volumeKm,
+    runDaysPerWeek: input.input.availability.selectedRunningDays.length,
+    longRunKm: input.weekPlan.longRunKm,
+    peakLongRunKm: input.metrics.peakLongRunKm,
+    targetDistanceKm: rawDistanceKm,
+    maxSessionDurationMin: getSessionDurationCapMin(
+      input.draft.day.dayLabel,
+      input.input.availability,
+    ),
+    dayLabel: input.draft.day.dayLabel,
     terrain,
-    environment: input.input.environment,
-    metrics: input.metrics,
+    flatRoutesAvailable: input.input.environment.flatRoutesAvailable,
+    trailAccess: input.input.environment.trailAccess,
+    raceCourseLooksHilly: input.input.environment.raceCourseLooksHilly,
+    fitnessConfidence: input.metrics.fitnessConfidence,
+    feasibilityRating: input.metrics.feasibilityRating,
+    paces: {
+      easySecPerKm: input.metrics.easySecPerKm,
+      thresholdSecPerKm: input.metrics.thresholdSecPerKm,
+      currentRacePaceSecPerKm: input.metrics.currentRacePaceSecPerKm,
+      bridgeRacePaceSecPerKm: input.metrics.bridgeRacePaceSecPerKm,
+      goalRacePaceSecPerKm: input.metrics.goalRacePaceSecPerKm,
+    },
   });
+
+  if (resolvedPrescription.durationWasCapped) {
+    addUniqueWarning(
+      input.input.warnings,
+      "Some generated workouts were shortened to respect saved maximum weekday or weekend session duration.",
+    );
+  }
 
   return {
     ...input.draft.day,
-    workoutType: input.draft.workoutType,
-    title: input.draft.title,
-    description,
-    distanceKm: cappedDistanceAndDuration.distanceKm,
-    durationMin: cappedDistanceAndDuration.durationMin,
-    targetPaceMinSecPerKm: paceRange?.minSecPerKm ?? null,
-    targetPaceMaxSecPerKm: paceRange?.maxSecPerKm ?? null,
-    targetHrZone: getTargetHeartRateZone(input.draft),
+    workoutType: resolvedPrescription.workoutType,
+    title: resolvedPrescription.title,
+    description: resolvedPrescription.description,
+    distanceKm: resolvedPrescription.distanceKm,
+    durationMin: resolvedPrescription.durationMin,
+    targetPaceMinSecPerKm: resolvedPrescription.targetPaceMinSecPerKm,
+    targetPaceMaxSecPerKm: resolvedPrescription.targetPaceMaxSecPerKm,
+    targetHrZone: resolvedPrescription.targetHrZone,
     terrain,
-    purpose,
-    instructions,
+    purpose: resolvedPrescription.purpose,
+    instructions: resolvedPrescription.instructions,
+    structuredWorkout: resolvedPrescription.structuredWorkout,
   };
 }
 
@@ -2278,170 +2280,6 @@ function getMaximumDistanceKm(
   return 11;
 }
 
-function getDraftPaceRange(input: {
-  draft: WeekWorkoutDraft;
-  phase: PhaseLabel;
-  metrics: DerivedMetrics;
-  raceDistance: RaceDistance;
-}): PaceRange | null {
-  if (input.draft.workoutType === "rest" || input.draft.workoutType === "strength_optional") {
-    return null;
-  }
-
-  if (input.draft.role === "race_day") {
-    const racePace =
-      input.metrics.goalRacePaceSecPerKm ??
-      input.metrics.bridgeRacePaceSecPerKm ??
-      input.metrics.currentRacePaceSecPerKm;
-
-    return {
-      minSecPerKm: Math.max(180, racePace - 8),
-      maxSecPerKm: racePace + 12,
-    };
-  }
-
-  if (input.draft.role === "recovery") {
-    return {
-      minSecPerKm: input.metrics.easySecPerKm + 40,
-      maxSecPerKm: input.metrics.easySecPerKm + 90,
-    };
-  }
-
-  if (
-    input.draft.role === "long_easy" ||
-    input.draft.role === "long_steady" ||
-    input.draft.role === "long_race_specific"
-  ) {
-    return {
-      minSecPerKm: input.metrics.easySecPerKm + 15,
-      maxSecPerKm: input.metrics.easySecPerKm + 65,
-    };
-  }
-
-  if (input.draft.role === "steady" || input.draft.role === "medium_long") {
-    return {
-      minSecPerKm: input.metrics.easySecPerKm + 5,
-      maxSecPerKm: input.metrics.easySecPerKm + 35,
-    };
-  }
-
-  if (input.draft.role === "threshold") {
-    return {
-      minSecPerKm: input.metrics.thresholdSecPerKm,
-      maxSecPerKm: input.metrics.thresholdSecPerKm + 20,
-    };
-  }
-
-  if (input.draft.role === "interval") {
-    return {
-      minSecPerKm: Math.max(180, input.metrics.thresholdSecPerKm - 25),
-      maxSecPerKm: Math.max(180, input.metrics.thresholdSecPerKm - 5),
-    };
-  }
-
-  if (input.draft.role === "race_pace") {
-    const raceSpecificPace = getRaceSpecificPace(input);
-
-    return {
-      minSecPerKm: Math.max(180, raceSpecificPace - 10),
-      maxSecPerKm: raceSpecificPace + 12,
-    };
-  }
-
-  return {
-    minSecPerKm: input.metrics.easySecPerKm,
-    maxSecPerKm: input.metrics.easySecPerKm + 45,
-  };
-}
-
-function getRaceSpecificPace(input: {
-  phase: PhaseLabel;
-  metrics: DerivedMetrics;
-}): number {
-  if (input.metrics.goalRacePaceSecPerKm === null) {
-    return input.metrics.currentRacePaceSecPerKm;
-  }
-
-  if (
-    input.metrics.feasibilityRating === "not_credible" ||
-    input.metrics.feasibilityRating === "low_confidence"
-  ) {
-    return input.metrics.bridgeRacePaceSecPerKm;
-  }
-
-  if (input.phase === "specific" || input.phase === "peak" || input.phase === "taper") {
-    return input.metrics.goalRacePaceSecPerKm;
-  }
-
-  return input.metrics.bridgeRacePaceSecPerKm;
-}
-
-function getWorkoutDurationMin(
-  workoutType: WorkoutType,
-  distanceKm: number | null,
-  paceSecPerKm: number | null,
-): number | null {
-  if (workoutType === "rest") {
-    return null;
-  }
-
-  if (workoutType === "strength_optional") {
-    return 25;
-  }
-
-  if (distanceKm === null || paceSecPerKm === null) {
-    return null;
-  }
-
-  return Math.max(10, Math.round((distanceKm * paceSecPerKm) / 60));
-}
-
-function capPrescriptionForSessionDuration(input: {
-  draft: WeekWorkoutDraft;
-  distanceKm: number | null;
-  durationMin: number | null;
-  paceSecPerKm: number | null;
-  input: NormalizedPlanInput;
-}): { distanceKm: number | null; durationMin: number | null } {
-  if (
-    input.distanceKm === null ||
-    input.durationMin === null ||
-    input.paceSecPerKm === null ||
-    input.draft.role === "race_day"
-  ) {
-    return {
-      distanceKm: input.distanceKm,
-      durationMin: input.durationMin,
-    };
-  }
-
-  const durationCapMin = getSessionDurationCapMin(
-    input.draft.day.dayLabel,
-    input.input.availability,
-  );
-
-  if (durationCapMin === null || input.durationMin <= durationCapMin) {
-    return {
-      distanceKm: input.distanceKm,
-      durationMin: input.durationMin,
-    };
-  }
-
-  const cappedDistanceKm = roundDistance(
-    Math.max(1.5, (durationCapMin * 60) / input.paceSecPerKm),
-  );
-
-  addUniqueWarning(
-    input.input.warnings,
-    "Some generated workouts were shortened to respect saved maximum weekday or weekend session duration.",
-  );
-
-  return {
-    distanceKm: Math.min(input.distanceKm, cappedDistanceKm),
-    durationMin: durationCapMin,
-  };
-}
-
 function getWorkoutTerrain(input: {
   draft: WeekWorkoutDraft;
   weekNumber: number;
@@ -2449,6 +2287,16 @@ function getWorkoutTerrain(input: {
 }): TerrainAvailable | null {
   if (input.draft.workoutType === "rest" || input.draft.workoutType === "strength_optional") {
     return null;
+  }
+
+  if (input.draft.subtype === "hill_repeats" || input.draft.subtype === "hill_strides") {
+    return input.environment.hillsAvailable
+      ? "hills"
+      : pickFirstAvailable(input.environment.terrainAvailable, [
+          "flat",
+          "treadmill",
+          "track",
+        ]);
   }
 
   if (input.draft.role === "interval") {
@@ -2461,6 +2309,16 @@ function getWorkoutTerrain(input: {
       "treadmill",
       "flat",
       "hills",
+    ]);
+  }
+
+  if (input.draft.subtype === "fartlek") {
+    return pickFirstAvailable(input.environment.terrainAvailable, [
+      "trails",
+      "hills",
+      "flat",
+      "treadmill",
+      "track",
     ]);
   }
 
@@ -2510,129 +2368,6 @@ function getWorkoutTerrain(input: {
   ]);
 }
 
-function getWorkoutDescription(input: {
-  draft: WeekWorkoutDraft;
-  phase: PhaseLabel;
-  raceDistance: RaceDistance;
-}): string {
-  if (input.draft.role === "race_day") {
-    return `Race day for the ${formatRaceDistance(input.raceDistance)} goal.`;
-  }
-
-  const phaseLabel = formatPhaseLabel(input.phase);
-  const descriptions: Record<WeekWorkoutDraft["role"], string> = {
-    calibration: "A controlled first run used to verify that early targets feel realistic.",
-    easy: `Comfortable aerobic running for the ${phaseLabel} phase.`,
-    recovery: "A short, very easy run to absorb nearby training stress.",
-    medium_long: "A longer aerobic support run that builds weekly durability without becoming the key long run.",
-    steady: "A controlled upper-aerobic run below threshold effort.",
-    threshold: "A cruise-interval or tempo-style workout focused on sustainable hard running.",
-    interval: "A controlled VO2max or economy interval session with conservative total fast volume.",
-    race_pace: `Race-specific rhythm work for the ${phaseLabel} phase.`,
-    long_easy: "The key endurance run of the week, kept mostly easy.",
-    long_steady: "The key endurance run of the week with a controlled steady finish if feeling good.",
-    long_race_specific: "A specific-phase long run that introduces controlled race-pace blocks.",
-    race_day: `Race day for the ${formatRaceDistance(input.raceDistance)} goal.`,
-    rest: "No running planned so the body can absorb training.",
-    strength: "Optional light strength work that should not affect the next run.",
-  };
-
-  return descriptions[input.draft.role];
-}
-
-function getWorkoutPurpose(input: {
-  draft: WeekWorkoutDraft;
-  phase: PhaseLabel;
-}): string {
-  const purposes: Record<WeekWorkoutDraft["role"], string> = {
-    calibration: "Check current fitness and calibrate early plan feel.",
-    easy: "Build aerobic volume while preserving recovery.",
-    recovery: "Reduce fatigue and keep the running habit light.",
-    medium_long: "Support marathon or half-marathon durability with more aerobic volume.",
-    steady: "Build aerobic strength without turning the week into a hard block.",
-    threshold: "Improve sustainable hard effort while respecting threshold volume caps.",
-    interval: "Maintain speed and economy without letting VO2max dominate the plan.",
-    race_pace: "Introduce goal or bridge race pace only when the phase and feasibility support it.",
-    long_easy: "Develop endurance and durability.",
-    long_steady: "Develop durability and late-run control.",
-    long_race_specific: "Practice race-specific rhythm after base durability has been established.",
-    race_day: "Execute the goal race.",
-    rest: "Protect recovery and lower injury risk.",
-    strength: "Support basic running durability.",
-  };
-
-  return `${purposes[input.draft.role]} Phase: ${formatPhaseLabel(input.phase)}.`;
-}
-
-function getWorkoutInstructions(input: {
-  draft: WeekWorkoutDraft;
-  terrain: TerrainAvailable | null;
-  environment: EnvironmentProfile;
-  metrics: DerivedMetrics;
-}): string {
-  const terrainNote = input.terrain
-    ? ` Suggested terrain: ${formatTerrainLabel(input.terrain)}.`
-    : "";
-  const effortNote =
-    !input.environment.flatRoutesAvailable && !input.environment.treadmillAvailable
-      ? " Use effort as the primary guide if terrain makes exact pace unrealistic."
-      : "";
-  const bridgeNote =
-    input.metrics.feasibilityRating === "low_confidence" ||
-    input.metrics.feasibilityRating === "not_credible"
-      ? " Goal pace is not the default target yet; use the planned target range, not dream pace."
-      : "";
-  const instructions: Record<WeekWorkoutDraft["role"], string> = {
-    calibration:
-      "Warm up for 10 minutes, run the middle section steady and controlled, then cool down. Record effort and any discomfort.",
-    easy: "Keep the effort conversational and relaxed.",
-    recovery: "Keep this deliberately easy enough to finish fresher than you started.",
-    medium_long:
-      "Keep most of this easy. If feeling good, let the final third become steady but not hard.",
-    steady: "Run controlled and smooth, below threshold. You should not be racing the workout.",
-    threshold:
-      "Warm up easily. Run the focused work at controlled threshold effort, then cool down.",
-    interval:
-      "Warm up well. Keep fast reps smooth, with easy recoveries. Stop early if form breaks down.",
-    race_pace:
-      "Warm up easily, settle into the planned race-specific range for the focused work, then cool down.",
-    long_easy:
-      "Start slower than planned if needed. Keep the effort easy and practice fueling if the run exceeds 105 minutes.",
-    long_steady:
-      "Run the first 70-85% easy. Finish steady only if effort, form, and fueling are under control.",
-    long_race_specific:
-      "Keep the early miles easy. Add controlled race-pace blocks only if the day feels stable; skip the blocks if fatigue is high.",
-    race_day:
-      "Use the target range as a guide, but prioritize controlled execution and even effort.",
-    rest: "Take the day off running. Gentle walking or mobility is fine if it feels good.",
-    strength:
-      "Keep this light: squats, lunges, calf raises, glute bridges, and planks. Stop before fatigue affects running.",
-  };
-
-  return `${instructions[input.draft.role]}${bridgeNote}${effortNote}${terrainNote}`;
-}
-
-function getTargetHeartRateZone(draft: WeekWorkoutDraft): string | null {
-  const zones: Record<WeekWorkoutDraft["role"], string | null> = {
-    calibration: "Zone 2 to low Zone 3",
-    easy: "Zone 2",
-    recovery: "Zone 1 to Zone 2",
-    medium_long: "Zone 2",
-    steady: "Upper Zone 2 to Zone 3",
-    threshold: "Zone 3 to Zone 4",
-    interval: "Zone 4",
-    race_pace: "Zone 3",
-    long_easy: "Zone 2",
-    long_steady: "Zone 2 to Zone 3",
-    long_race_specific: "Zone 2 to Zone 3",
-    race_day: "Race effort",
-    rest: null,
-    strength: null,
-  };
-
-  return zones[draft.role];
-}
-
 function buildGeneratedWorkout(input: {
   prescription: WorkoutPrescription;
   profileId: string;
@@ -2660,7 +2395,8 @@ function buildGeneratedWorkout(input: {
 
   return {
     ...workout,
-    structured_workout: buildStructuredWorkout(workout),
+    structured_workout:
+      input.prescription.structuredWorkout ?? buildStructuredWorkout(workout),
   };
 }
 
@@ -3039,38 +2775,8 @@ function addUniqueWarning(warnings: string[], warning: string): void {
   }
 }
 
-function formatRaceDistance(raceDistance: RaceDistance): string {
-  return raceDistance === "marathon" ? "marathon" : "half marathon";
-}
-
-function formatPhaseLabel(phase: PhaseLabel): string {
-  const labels: Record<PhaseLabel, string> = {
-    base: "base",
-    build: "build",
-    specific: "specific",
-    peak: "peak",
-    taper: "taper",
-    race_prep: "race prep",
-  };
-
-  return labels[phase];
-}
-
 function formatDayLabel(trainingDay: TrainingDay): string {
   return `${trainingDay.charAt(0).toUpperCase()}${trainingDay.slice(1)}`;
-}
-
-function formatTerrainLabel(terrain: TerrainAvailable): string {
-  const labels: Record<TerrainAvailable, string> = {
-    flat: "flat route",
-    hills: "hills",
-    track: "track",
-    treadmill: "treadmill",
-    trails: "trails",
-    downhill: "downhill route",
-  };
-
-  return labels[terrain];
 }
 
 function formatPaceLabel(secondsPerKm: number): string {
