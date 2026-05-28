@@ -51,7 +51,7 @@ For production deployment setup and production smoke tests, use
 - A header sign-out button signs out the current browser session and returns to `/login`.
 - User-owned Supabase tables are protected with `user_id` ownership and RLS policies from Milestone 9.5.
 - Profile and race goal forms save to Supabase.
-- Rule-based plan generation creates planned workouts and structured workout documents through a server route that can assemble six weeks of recent run history first.
+- Rule-based plan generation creates planned workouts and structured workout documents through a server route that can assemble and analyze six weeks of recent run history first.
 - New plans start today by default, can start on a selected future date, and block starts that are in the past or too close to race day.
 - Manual workout logging saves completed workouts and generates rule-based workout scores.
 - Plan adjustment logic can update future planned workouts with an audit record.

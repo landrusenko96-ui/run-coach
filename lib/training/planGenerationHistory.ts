@@ -48,6 +48,8 @@ export type ImportMissingStravaHistoryResult = {
   skippedActivities: PlanGenerationHistorySkippedActivity[];
 };
 
+export type HistoryEvidenceMode = "auto" | "manual";
+
 const historyWindowDays = 42;
 
 export function getSixWeekHistoryWindow(
@@ -116,6 +118,21 @@ export function hasCompleteSixWeekCoverage(
   weeks: RecentTrainingWeekInput[],
 ): boolean {
   return weeks.length === 6 && weeks.every((week) => week.run_count > 0);
+}
+
+export function getPlanGenerationEvidenceWorkouts(input: {
+  historyMode: HistoryEvidenceMode;
+  appLoggedWorkouts: LoggedWorkout[];
+  importedStravaWorkouts?: LoggedWorkout[];
+}): LoggedWorkout[] {
+  if (input.historyMode === "manual") {
+    return [];
+  }
+
+  return [
+    ...input.appLoggedWorkouts,
+    ...(input.importedStravaWorkouts ?? []),
+  ];
 }
 
 export async function importMissingStravaHistoryRuns(

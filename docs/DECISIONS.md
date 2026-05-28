@@ -1,5 +1,32 @@
 # Decisions
 
+## 2026-05-28 — Add Six-Week Evidence Layer Without Changing Plan Storage
+
+Decision:
+Move six-week history interpretation into a dedicated training evidence module
+behind the existing plan generator entrypoint.
+
+Reason:
+Milestone 12C collects and loads more plan inputs, but raw weekly summaries and
+logged workouts need to become load, durability, effort-quality, and confidence
+signals before the generator can safely follow the external plan-generation
+spec. The production app loop is already working, so 12D preserves
+`generateTrainingPlan(profile, raceGoal, options)`, `training_plans`,
+`planned_workouts`, structured workout version 1, scoring, adjustment, exports,
+auth, and RLS contracts.
+
+Status:
+The generator now consumes evidence for six-week load metrics, recent ramp,
+long-run share, HR/elevation availability, cautious effort classification,
+fitness confidence, max session duration caps, beginner/low-base caution,
+injury mode blocking, and hilly-course warnings. No Supabase migration or
+database output shape change is part of this milestone.
+
+Implementation rule:
+Do not treat the fastest recent activity as proof of fitness unless effort
+evidence supports it. Missing or weak evidence should reduce confidence and
+show warnings through the existing generated-plan assumptions/warnings fields.
+
 ## 2026-05-28 — Keep Plan-Input Expansion Behind Existing Contracts
 
 Decision:

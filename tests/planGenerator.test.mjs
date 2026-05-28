@@ -121,6 +121,12 @@ function getRunningWorkouts(generatedPlan, weekNumber) {
   );
 }
 
+function getAllNonRaceRunningWorkouts(generatedPlan, raceDate) {
+  return generatedPlan.plannedWorkouts.filter(
+    (workout) => workout.distance_km !== null && workout.workout_date !== raceDate,
+  );
+}
+
 function makeRecentHistory(weeklyDistances, source = "app") {
   return weeklyDistances.map((distanceKm, index) => ({
     week_start_date: `2030-03-${String(1 + index * 7).padStart(2, "0")}`,
@@ -132,6 +138,35 @@ function makeRecentHistory(weeklyDistances, source = "app") {
     longest_run_duration_sec: Math.round(distanceKm * 0.4 * 390),
     source,
   }));
+}
+
+function makeLoggedWorkout(overrides = {}) {
+  const distanceKm = overrides.distance_km ?? 8;
+  const paceSecPerKm = overrides.avg_pace_sec_per_km ?? 360;
+
+  return {
+    id: overrides.id ?? "log-1",
+    user_id: "user-1",
+    profile_id: "profile-1",
+    race_goal_id: "goal-1",
+    training_plan_id: null,
+    planned_workout_id: null,
+    workout_date: overrides.workout_date ?? "2030-03-01",
+    workout_type: overrides.workout_type ?? "run",
+    source: overrides.source ?? "manual",
+    source_activity_id: overrides.source_activity_id ?? null,
+    distance_km: distanceKm,
+    duration_sec: overrides.duration_sec ?? Math.round(distanceKm * paceSecPerKm),
+    avg_pace_sec_per_km: paceSecPerKm,
+    avg_heart_rate: overrides.avg_heart_rate ?? null,
+    max_heart_rate: overrides.max_heart_rate ?? null,
+    cadence: null,
+    elevation_gain_m: overrides.elevation_gain_m ?? null,
+    rpe: overrides.rpe ?? null,
+    notes: overrides.notes ?? null,
+    created_at: "2030-01-01T00:00:00.000Z",
+    updated_at: "2030-01-01T00:00:00.000Z",
+  };
 }
 
 function isHardWorkout(workout) {
@@ -572,6 +607,203 @@ describe("generateTrainingPlan", () => {
           workout.profile_id === baseProfile.id &&
           workout.race_goal_id === baseRaceGoal.id &&
           workout.status === "planned",
+      ),
+    );
+  });
+
+  it("caps generated workout durations by saved weekday and weekend limits", () => {
+    const generatedPlan = generateTrainingPlan(
+      makeProfile({
+        current_weekly_mileage_km: 45,
+        longest_recent_run_km: 18,
+        maximum_weekday_session_duration_min: 45,
+        maximum_weekend_session_duration_min: 75,
+      }),
+      baseRaceGoal,
+      { startDate: "2030-05-06" },
+    );
+    const nonRaceRuns = getAllNonRaceRunningWorkouts(
+      generatedPlan,
+      baseRaceGoal.race_date,
+    );
+
+    assert.ok(nonRaceRuns.length > 0);
+    for (const workout of nonRaceRuns) {
+      const cap =
+        workout.day_label === "saturday" || workout.day_label === "sunday" ? 75 : 45;
+
+      assert.ok(
+        workout.duration_min <= cap,
+        `${workout.workout_date} should be capped at ${cap} minutes`,
+      );
+    }
+    assert.ok(
+      generatedPlan.trainingPlan.warnings.some((warning) =>
+        warning.includes("Max session duration limits"),
+      ),
+    );
+  });
+
+  it("reduces peak load for beginner low-base runners", () => {
+    const sharedProfile = {
+      current_weekly_mileage_km: 22,
+      longest_recent_run_km: 8,
+      available_training_days: [
+        "monday",
+        "tuesday",
+        "wednesday",
+        "friday",
+        "saturday",
+      ],
+      running_days_per_week: 5,
+      training_aggressiveness: "aggressive",
+    };
+    const beginnerPlan = generateTrainingPlan(
+      makeProfile({
+        ...sharedProfile,
+        running_experience_level: "beginner",
+      }),
+      baseRaceGoal,
+      { startDate: "2030-05-06" },
+    );
+    const intermediatePlan = generateTrainingPlan(
+      makeProfile({
+        ...sharedProfile,
+        running_experience_level: "intermediate",
+      }),
+      baseRaceGoal,
+      { startDate: "2030-05-06" },
+    );
+
+    assert.ok(
+      getMaxNonRaceWeekDistance(beginnerPlan) < getMaxNonRaceWeekDistance(intermediatePlan),
+    );
+    assert.equal(
+      beginnerPlan.plannedWorkouts.some(
+        (workout) => workout.workout_type === "interval",
+      ),
+      false,
+    );
+  });
+
+  it("blocks aggressive mode when current pain or serious injury is present", () => {
+    const generatedPlan = generateTrainingPlan(
+      makeProfile({
+        training_aggressiveness: "very_aggressive",
+        current_pain_or_injury: true,
+        serious_recent_injury: true,
+      }),
+      baseRaceGoal,
+      { startDate: "2030-05-06" },
+    );
+
+    assert.ok(
+      generatedPlan.trainingPlan.warnings.some((warning) =>
+        warning.includes("aggressive mode is blocked"),
+      ),
+    );
+  });
+
+  it("keeps low confidence when only easy pace evidence is available", () => {
+    const generatedPlan = generateTrainingPlan(
+      makeProfile({
+        threshold_pace_sec_per_km: null,
+        max_heart_rate: null,
+      }),
+      baseRaceGoal,
+      {
+        startDate: "2030-05-06",
+        recentHistory: makeRecentHistory([35, 36, 37, 38, 39, 40], "mixed"),
+        recentHistoryWorkouts: [
+          makeLoggedWorkout({
+            id: "easy-only",
+            avg_pace_sec_per_km: 365,
+            rpe: 2,
+          }),
+        ],
+      },
+    );
+
+    assert.ok(
+      generatedPlan.trainingPlan.assumptions.some((assumption) =>
+        assumption.includes("Current race ability") &&
+        assumption.includes("low confidence"),
+      ),
+    );
+    assert.ok(
+      generatedPlan.trainingPlan.warnings.some((warning) =>
+        warning.includes("Fitness confidence is low"),
+      ),
+    );
+  });
+
+  it("warns when a hilly race course is not supported by terrain or elevation evidence", () => {
+    const generatedPlan = generateTrainingPlan(
+      makeProfile({
+        terrain_available: ["flat"],
+      }),
+      makeRaceGoal({
+        race_course_profile: "hilly",
+        course_elevation_notes: "Rolling hills throughout the course.",
+      }),
+      {
+        startDate: "2030-05-06",
+        recentHistory: makeRecentHistory([35, 36, 37, 38, 39, 40], "mixed"),
+        recentHistoryWorkouts: [
+          makeLoggedWorkout({ id: "flat-1", elevation_gain_m: 10 }),
+          makeLoggedWorkout({ id: "flat-2", elevation_gain_m: 12 }),
+        ],
+      },
+    );
+
+    assert.ok(
+      generatedPlan.trainingPlan.warnings.some((warning) =>
+        warning.includes("race course looks hilly"),
+      ),
+    );
+  });
+
+  it("uses saved threshold pace with higher confidence than easy-pace-only estimates", () => {
+    const recentHistory = makeRecentHistory([35, 36, 37, 38, 39, 40], "mixed");
+    const thresholdPlan = generateTrainingPlan(
+      makeProfile({
+        threshold_pace_sec_per_km: 315,
+      }),
+      baseRaceGoal,
+      {
+        startDate: "2030-05-06",
+        recentHistory,
+      },
+    );
+    const easyOnlyPlan = generateTrainingPlan(
+      makeProfile({
+        threshold_pace_sec_per_km: null,
+        max_heart_rate: null,
+      }),
+      baseRaceGoal,
+      {
+        startDate: "2030-05-06",
+        recentHistory,
+        recentHistoryWorkouts: [
+          makeLoggedWorkout({
+            id: "easy-only-confidence",
+            avg_pace_sec_per_km: 365,
+            rpe: 2,
+          }),
+        ],
+      },
+    );
+
+    assert.ok(
+      thresholdPlan.trainingPlan.assumptions.some((assumption) =>
+        assumption.includes("Current race ability") &&
+        assumption.includes("high confidence"),
+      ),
+    );
+    assert.ok(
+      easyOnlyPlan.trainingPlan.assumptions.some((assumption) =>
+        assumption.includes("Current race ability") &&
+        assumption.includes("low confidence"),
       ),
     );
   });

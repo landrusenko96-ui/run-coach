@@ -27,6 +27,7 @@ import { createServiceRoleClient } from "@/lib/supabase/serviceRole";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import {
   buildPlanGenerationHistorySummary,
+  getPlanGenerationEvidenceWorkouts,
   getSixWeekHistoryWindow,
   hasCompleteSixWeekCoverage,
   importMissingStravaHistoryRuns,
@@ -251,6 +252,10 @@ export async function POST(request: Request) {
       },
       dbOptions,
     );
+    let historyWorkoutsForGeneration = getPlanGenerationEvidenceWorkouts({
+      historyMode: generateRequest.historyMode,
+      appLoggedWorkouts,
+    });
     let historySummary = buildPlanGenerationHistorySummary({
       profile,
       appLoggedWorkouts,
@@ -420,6 +425,11 @@ export async function POST(request: Request) {
         skippedStravaActivities: stravaHistoryImport.skippedActivities,
         windowEndDate: historyWindow.endDate,
       });
+      historyWorkoutsForGeneration = getPlanGenerationEvidenceWorkouts({
+        historyMode: generateRequest.historyMode,
+        appLoggedWorkouts,
+        importedStravaWorkouts: stravaHistoryImport.importedWorkouts,
+      });
 
       if (!hasCompleteSixWeekCoverage(historySummary.weeks)) {
         historySummary = withHistoryNeeds(historySummary, {
@@ -442,6 +452,7 @@ export async function POST(request: Request) {
     const generatedPlan = generateTrainingPlan(profile, raceGoal, {
       startDate: generateRequest.startDate,
       recentHistory: historySummary.weeks,
+      recentHistoryWorkouts: historyWorkoutsForGeneration,
     });
     const customPlanName = normalizePlanName(generateRequest.planName);
     const savedPlan = await saveTrainingPlan(

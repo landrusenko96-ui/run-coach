@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   buildPlanGenerationHistorySummary,
+  getPlanGenerationEvidenceWorkouts,
   hasCompleteSixWeekCoverage,
 } from "../lib/training/planGenerationHistory.ts";
 
@@ -110,5 +111,27 @@ describe("plan generation history summary", () => {
     assert.equal(completeManualSummary.needs_manual_history, false);
     assert.equal(incompleteManualSummary.coverage, "partial");
     assert.equal(incompleteManualSummary.needs_manual_history, true);
+  });
+
+  it("returns the logged workouts that should feed generation evidence", () => {
+    const appWorkout = makeLoggedWorkout("2030-03-01", 8, "manual");
+    const importedWorkout = makeLoggedWorkout("2030-03-08", 10, "strava");
+
+    assert.deepEqual(
+      getPlanGenerationEvidenceWorkouts({
+        historyMode: "auto",
+        appLoggedWorkouts: [appWorkout],
+        importedStravaWorkouts: [importedWorkout],
+      }),
+      [appWorkout, importedWorkout],
+    );
+    assert.deepEqual(
+      getPlanGenerationEvidenceWorkouts({
+        historyMode: "manual",
+        appLoggedWorkouts: [appWorkout],
+        importedStravaWorkouts: [importedWorkout],
+      }),
+      [],
+    );
   });
 });
