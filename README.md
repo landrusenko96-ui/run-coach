@@ -51,7 +51,7 @@ For production deployment setup and production smoke tests, use
 - A header sign-out button signs out the current browser session and returns to `/login`.
 - User-owned Supabase tables are protected with `user_id` ownership and RLS policies from Milestone 9.5.
 - Profile and race goal forms save to Supabase.
-- Rule-based plan generation creates planned workouts and structured workout documents.
+- Rule-based plan generation creates planned workouts and structured workout documents through a server route that can assemble six weeks of recent run history first.
 - New plans start today by default, can start on a selected future date, and block starts that are in the past or too close to race day.
 - Manual workout logging saves completed workouts and generates rule-based workout scores.
 - Plan adjustment logic can update future planned workouts with an audit record.
@@ -69,6 +69,7 @@ For production deployment setup and production smoke tests, use
 - Settings includes a Direct Garmin Bridge troubleshooting panel.
 - Strava OAuth connection and manual run import are available from Settings and Workouts.
 - Strava import skips duplicate activities, non-runs, invalid runs, pre-plan runs, and active-plan days already covered by logged workouts.
+- Initial plan generation can also use the Strava connection to fetch the last 42 days when saved app workout history is incomplete.
 - Strava webhooks can store new activity events, process them server-side, and fall back to manual pending-event processing.
 - Production deployment readiness has been documented for Vercel, Supabase, Strava, Intervals.icu, and the private Garmin bridge.
 - The hosted Garmin deployment was infrastructure-only. No app UI, plan generation, or product functionality changed for that deployment.

@@ -3,6 +3,8 @@ import type {
   TrainingAggressiveness,
 } from "@/types/training";
 
+type LegacyTrainingAggressiveness = "conservative" | "balanced";
+
 export const runningDaysPerWeekOptions: RunningDaysPerWeek[] = [
   2,
   3,
@@ -12,13 +14,21 @@ export const runningDaysPerWeekOptions: RunningDaysPerWeek[] = [
 ];
 
 export function getDefaultRunningDaysPerWeek(
-  trainingAggressiveness: TrainingAggressiveness,
+  trainingAggressiveness:
+    | TrainingAggressiveness
+    | LegacyTrainingAggressiveness,
 ): RunningDaysPerWeek {
-  if (trainingAggressiveness === "conservative") {
+  if (
+    trainingAggressiveness === "relaxed" ||
+    trainingAggressiveness === "conservative"
+  ) {
     return 2;
   }
 
-  if (trainingAggressiveness === "aggressive") {
+  if (
+    trainingAggressiveness === "aggressive" ||
+    trainingAggressiveness === "very_aggressive"
+  ) {
     return 5;
   }
 
@@ -27,7 +37,7 @@ export function getDefaultRunningDaysPerWeek(
 
 export function getEffectiveRunningDaysPerWeek(input: {
   running_days_per_week: RunningDaysPerWeek | null;
-  training_aggressiveness: TrainingAggressiveness;
+  training_aggressiveness: TrainingAggressiveness | LegacyTrainingAggressiveness;
 }): RunningDaysPerWeek {
   return (
     input.running_days_per_week ??

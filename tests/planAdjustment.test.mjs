@@ -20,7 +20,7 @@ const baseProfile = {
   running_days_per_week: 3,
   preferred_long_run_day: "saturday",
   terrain_available: ["flat"],
-  training_aggressiveness: "balanced",
+  training_aggressiveness: "moderate",
   injury_notes: null,
   created_at: "2026-05-04T00:00:00.000Z",
   updated_at: "2026-05-04T00:00:00.000Z",

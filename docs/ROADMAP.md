@@ -302,7 +302,7 @@ Fields should be optional unless essential.
 Add validation with Zod.
 Store profile data in Supabase.
 Include terrain availability options: flat, hills, track, treadmill, trails, downhill.
-Include training preferences: conservative, balanced, aggressive.
+Include training preferences: relaxed, moderate, aggressive, very aggressive.
 ```
 
 **Checkpoint:**

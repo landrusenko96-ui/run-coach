@@ -40,6 +40,33 @@ export async function fetchLoggedWorkoutsForTrainingPlan(
   return (data ?? []) as LoggedWorkout[];
 }
 
+export async function fetchLoggedWorkoutsForProfileDateRange(
+  input: {
+    profileId: string;
+    startDate: string;
+    endDate: string;
+  },
+  options?: UserScopedDbOptions,
+): Promise<LoggedWorkout[]> {
+  const supabase = getDbClient(options);
+  const userId = await getAuthenticatedUserId(options);
+
+  const { data, error } = await supabase
+    .from("logged_workouts")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("profile_id", input.profileId)
+    .gte("workout_date", input.startDate)
+    .lte("workout_date", input.endDate)
+    .order("workout_date", { ascending: true });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return (data ?? []) as LoggedWorkout[];
+}
+
 export async function fetchWorkoutEvaluationsForTrainingPlan(
   trainingPlanId: string,
   options?: UserScopedDbOptions,

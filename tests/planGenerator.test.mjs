@@ -22,8 +22,24 @@ const baseProfile = {
   running_days_per_week: 3,
   preferred_long_run_day: "saturday",
   terrain_available: ["flat"],
-  training_aggressiveness: "balanced",
+  training_aggressiveness: "moderate",
   injury_notes: null,
+  maximum_weekday_session_duration_min: null,
+  maximum_weekend_session_duration_min: null,
+  running_experience_level: null,
+  previous_half_marathon_history: null,
+  previous_marathon_history: null,
+  current_pain_or_injury: false,
+  serious_recent_injury: false,
+  injury_risk_notes: null,
+  preferred_rest_day: null,
+  preferred_workout_days: [],
+  cross_training_available: false,
+  double_run_willingness: false,
+  typical_surface: null,
+  typical_elevation_profile: null,
+  manual_six_week_history: null,
+  manual_six_week_history_updated_at: null,
   created_at: "2026-05-04T00:00:00.000Z",
   updated_at: "2026-05-04T00:00:00.000Z",
 };
@@ -37,6 +53,9 @@ const baseRaceGoal = {
   distance: "marathon",
   target_finish_time_sec: 14400,
   target_priority: "finish",
+  race_priority: "casual",
+  goal_flexibility: "finish_only",
+  race_course_profile: null,
   course_elevation_notes: null,
   expected_weather_notes: null,
   is_active: true,
@@ -100,6 +119,19 @@ function getRunningWorkouts(generatedPlan, weekNumber) {
   return getWeekWorkouts(generatedPlan, weekNumber).filter(
     (workout) => workout.distance_km !== null,
   );
+}
+
+function makeRecentHistory(weeklyDistances, source = "app") {
+  return weeklyDistances.map((distanceKm, index) => ({
+    week_start_date: `2030-03-${String(1 + index * 7).padStart(2, "0")}`,
+    week_end_date: `2030-03-${String(7 + index * 7).padStart(2, "0")}`,
+    distance_km: distanceKm,
+    duration_sec: Math.round(distanceKm * 360),
+    run_count: 3,
+    longest_run_km: Math.round(distanceKm * 0.4 * 10) / 10,
+    longest_run_duration_sec: Math.round(distanceKm * 0.4 * 390),
+    source,
+  }));
 }
 
 function isHardWorkout(workout) {
@@ -341,7 +373,7 @@ describe("generateTrainingPlan", () => {
           available_training_days: layout.days,
           running_days_per_week: layout.runningDaysPerWeek,
           training_aggressiveness:
-            layout.runningDaysPerWeek === 6 ? "aggressive" : "balanced",
+            layout.runningDaysPerWeek === 6 ? "aggressive" : "moderate",
         }),
         baseRaceGoal,
         { startDate: "2030-05-06" },
@@ -445,6 +477,8 @@ describe("generateTrainingPlan", () => {
       makeRaceGoal({
         target_finish_time_sec: 10800,
         target_priority: "aggressive",
+        race_priority: "A",
+        goal_flexibility: "fixed",
       }),
       { startDate: "2030-05-06" },
     );
@@ -456,6 +490,30 @@ describe("generateTrainingPlan", () => {
           warning.includes("large jump") ||
           warning.includes("very ambitious"),
       ),
+    );
+  });
+
+  it("uses assembled six-week history when it is supplied", () => {
+    const generatedPlan = generateTrainingPlan(
+      makeProfile({
+        current_weekly_mileage_km: 5,
+        longest_recent_run_km: 4,
+      }),
+      makeRaceGoal(),
+      {
+        startDate: "2030-05-06",
+        recentHistory: makeRecentHistory([38, 40, 42, 39, 41, 43], "mixed"),
+      },
+    );
+
+    assert.ok(
+      generatedPlan.trainingPlan.assumptions.some((assumption) =>
+        assumption.includes("assembled app and Strava six-week history"),
+      ),
+    );
+    assert.ok(
+      getMaxNonRaceWeekDistance(generatedPlan) > 35,
+      "plan should use supplied history load instead of the low profile fallback",
     );
   });
 
@@ -482,7 +540,7 @@ describe("generateTrainingPlan", () => {
     );
     assert.ok(
       generatedPlan.trainingPlan.assumptions.some((assumption) =>
-        assumption.includes("Six-week training history"),
+        assumption.includes("Current weekly mileage is missing"),
       ),
     );
     assert.ok(

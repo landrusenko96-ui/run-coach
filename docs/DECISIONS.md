@@ -1,5 +1,31 @@
 # Decisions
 
+## 2026-05-28 — Keep Plan-Input Expansion Behind Existing Contracts
+
+Decision:
+Collect the missing plan-generation spec inputs through the existing Profile and
+Race Goal forms, then generate plans through a server route that assembles six
+weeks of history before calling the existing generator entrypoint.
+
+Reason:
+The app is production deployed and the workout loop is working. The safer
+change is to preserve `generateTrainingPlan(profile, raceGoal, options)`,
+`training_plans`, `planned_workouts`, scoring, adjustment, exports, and auth
+contracts while adding better inputs around them.
+
+Status:
+A local Supabase migration adds the new profile and race-goal fields and
+migrates plan aggressiveness values from `conservative/balanced` to
+`relaxed/moderate`. The migration is intentionally not applied remotely in the
+same turn it was created.
+
+Implementation rule:
+Initial plan generation should call `POST /api/training-plans/generate`, not
+the old client-side save helper. The route may use secure Strava token access
+to fetch the last 42 days when app logs do not cover all six history weeks.
+Imported pre-generation Strava history remains unlinked to active planned
+workouts and must not trigger scoring or adaptive adjustment.
+
 ## 2026-05-02 — Use Strava before Garmin
 
 Decision: Use Strava as the first activity import source.

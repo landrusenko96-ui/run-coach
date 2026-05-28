@@ -6,6 +6,7 @@ import type {
   GeneratedTrainingPlan,
   RaceDistance,
   RaceGoal,
+  RecentTrainingWeekInput,
   RunnerProfile,
   RunningDaysPerWeek,
   TerrainAvailable,
@@ -16,9 +17,10 @@ import type {
 
 type PlanGeneratorOptions = {
   startDate?: string;
+  recentHistory?: RecentTrainingWeekInput[];
 };
 
-type PlanMode = "relaxed" | "moderate" | "aggressive";
+type PlanMode = "relaxed" | "moderate" | "aggressive" | "very_aggressive";
 
 type RacePriority = "A" | "B" | "casual";
 
@@ -101,7 +103,11 @@ type RecentTrainingHistory = {
   recentRamp: number;
   longestRunKm6w: number;
   longestRunDurationMin6w: number | null;
-  source: "self_reported_profile" | "fallback_estimate";
+  source:
+    | "assembled_six_week_history"
+    | "manual_six_week_history"
+    | "self_reported_profile"
+    | "fallback_estimate";
 };
 
 type DerivedMetrics = {
@@ -250,6 +256,7 @@ export function generateTrainingPlan(
     runnerProfile,
     raceGoal,
     startDate,
+    recentHistory: options.recentHistory,
   });
   const derivedMetrics = deriveMetrics({
     input: normalizedInput,
@@ -303,6 +310,7 @@ function normalizePlanInput(input: {
   runnerProfile: RunnerProfile;
   raceGoal: RaceGoal;
   startDate: Date;
+  recentHistory?: RecentTrainingWeekInput[];
 }): NormalizedPlanInput {
   const assumptions: string[] = [];
   const warnings: string[] = [];
@@ -330,19 +338,24 @@ function normalizePlanInput(input: {
   const athlete = buildAthleteProfile(input.runnerProfile, input.startDate, warnings);
   let normalizedPlanMode = planMode;
 
-  if (athlete.injurySignal === "current_or_serious" && normalizedPlanMode === "aggressive") {
+  if (
+    athlete.injurySignal === "current_or_serious" &&
+    isAggressivePlanMode(normalizedPlanMode)
+  ) {
     normalizedPlanMode = "relaxed";
     warnings.push(
       "Injury notes look current or serious, so aggressive mode is blocked and the generated plan uses relaxed load progression.",
     );
   }
 
-  assumptions.push(
-    "Maximum weekday and weekend session durations are not collected yet, so Milestone 12B treats session duration as uncapped.",
-  );
-  assumptions.push(
-    "Six-week training history is not stored yet, so current weekly mileage and longest recent run are used as the fallback recent-history baseline.",
-  );
+  if (
+    !input.runnerProfile.maximum_weekday_session_duration_min &&
+    !input.runnerProfile.maximum_weekend_session_duration_min
+  ) {
+    assumptions.push(
+      "Maximum weekday and weekend session durations are missing, so session duration is treated as uncapped.",
+    );
+  }
 
   return {
     profileId: input.runnerProfile.id,
@@ -363,8 +376,10 @@ function normalizePlanInput(input: {
       preferredLongRunDay: input.runnerProfile.preferred_long_run_day,
       longRunDay,
       unavailableDays: dayOrder.filter((day) => !selectedRunningDays.includes(day)),
-      maximumWeekdaySessionDurationMin: null,
-      maximumWeekendSessionDurationMin: null,
+      maximumWeekdaySessionDurationMin:
+        input.runnerProfile.maximum_weekday_session_duration_min,
+      maximumWeekendSessionDurationMin:
+        input.runnerProfile.maximum_weekend_session_duration_min,
     },
     athlete,
     environment: {
@@ -373,13 +388,19 @@ function normalizePlanInput(input: {
       hillsAvailable: terrainAvailable.includes("hills"),
       treadmillAvailable: terrainAvailable.includes("treadmill"),
       trailAccess: terrainAvailable.includes("trails"),
-      raceCourseProfileKnown: Boolean(input.raceGoal.course_elevation_notes?.trim()),
-      raceCourseLooksHilly: hasHillSignal(input.raceGoal.course_elevation_notes),
+      raceCourseProfileKnown:
+        Boolean(input.raceGoal.race_course_profile) ||
+        Boolean(input.raceGoal.course_elevation_notes?.trim()),
+      raceCourseLooksHilly:
+        input.raceGoal.race_course_profile === "hilly" ||
+        input.raceGoal.race_course_profile === "mountainous" ||
+        hasHillSignal(input.raceGoal.course_elevation_notes),
     },
     history: buildRecentTrainingHistory({
       runnerProfile: input.runnerProfile,
       raceDistance: input.raceGoal.distance,
       runningDaysPerWeek: selectedRunningDays.length,
+      recentHistory: input.recentHistory,
       assumptions,
       warnings,
     }),
@@ -388,19 +409,29 @@ function normalizePlanInput(input: {
   };
 }
 
-function getPlanMode(trainingAggressiveness: TrainingAggressiveness): PlanMode {
+function getPlanMode(
+  trainingAggressiveness: TrainingAggressiveness | "conservative" | "balanced",
+): PlanMode {
   if (trainingAggressiveness === "conservative") {
     return "relaxed";
   }
 
-  if (trainingAggressiveness === "aggressive") {
-    return "aggressive";
+  if (trainingAggressiveness === "balanced") {
+    return "moderate";
   }
 
-  return "moderate";
+  return trainingAggressiveness;
+}
+
+function isAggressivePlanMode(planMode: PlanMode): boolean {
+  return planMode === "aggressive" || planMode === "very_aggressive";
 }
 
 function getRacePriority(raceGoal: RaceGoal): RacePriority {
+  if (raceGoal.race_priority) {
+    return raceGoal.race_priority;
+  }
+
   if (raceGoal.target_priority === "aggressive") {
     return "A";
   }
@@ -413,6 +444,10 @@ function getRacePriority(raceGoal: RaceGoal): RacePriority {
 }
 
 function getGoalFlexibility(raceGoal: RaceGoal): GoalFlexibility {
+  if (raceGoal.goal_flexibility) {
+    return raceGoal.goal_flexibility;
+  }
+
   if (raceGoal.target_finish_time_sec === null || raceGoal.target_priority === "finish") {
     return raceGoal.target_finish_time_sec === null ? "finish_only" : "flexible";
   }
@@ -428,7 +463,14 @@ function buildAthleteProfile(
   const age = runnerProfile.birth_year
     ? Math.max(0, startDate.getFullYear() - runnerProfile.birth_year)
     : null;
-  const injurySignal = getInjurySignal(runnerProfile.injury_notes);
+  const injurySignal =
+    runnerProfile.current_pain_or_injury || runnerProfile.serious_recent_injury
+      ? "current_or_serious"
+      : getInjurySignal(
+          [runnerProfile.injury_notes, runnerProfile.injury_risk_notes]
+            .filter(Boolean)
+            .join(" "),
+        );
 
   if (injurySignal === "note") {
     warnings.push(
@@ -484,9 +526,22 @@ function buildRecentTrainingHistory(input: {
   runnerProfile: RunnerProfile;
   raceDistance: RaceDistance;
   runningDaysPerWeek: number;
+  recentHistory?: RecentTrainingWeekInput[];
   assumptions: string[];
   warnings: string[];
 }): RecentTrainingHistory {
+  const recentHistory = buildHistoryFromRecentWeeks(input.recentHistory);
+
+  if (recentHistory) {
+    input.assumptions.push(
+      recentHistory.source === "manual_six_week_history"
+        ? "Recent training load uses manually entered six-week history."
+        : "Recent training load uses assembled app and Strava six-week history.",
+    );
+
+    return recentHistory;
+  }
+
   const fallbackWeeklyKm = input.raceDistance === "marathon" ? 24 : 16;
   const currentWeeklyKm = input.runnerProfile.current_weekly_mileage_km;
   const hasCurrentMileage = currentWeeklyKm !== null && currentWeeklyKm > 0;
@@ -532,6 +587,64 @@ function buildRecentTrainingHistory(input: {
     longestRunKm6w,
     longestRunDurationMin6w: Math.round((longestRunKm6w * (easyPace + 30)) / 60),
     source: hasCurrentMileage && hasLongestRun ? "self_reported_profile" : "fallback_estimate",
+  };
+}
+
+function buildHistoryFromRecentWeeks(
+  weeks: RecentTrainingWeekInput[] | undefined,
+): RecentTrainingHistory | null {
+  if (!weeks || weeks.length !== 6 || weeks.some((week) => week.run_count <= 0)) {
+    return null;
+  }
+
+  const distances = weeks.map((week) => Math.max(0, week.distance_km));
+  const totalDistanceKm = distances.reduce((total, distance) => total + distance, 0);
+  const durations = weeks.map((week) => week.duration_sec ?? 0);
+  const totalDurationSec = durations.reduce((total, duration) => total + duration, 0);
+  const longestRunKm6w = Math.max(
+    ...weeks.map((week) => week.longest_run_km ?? 0),
+    ...distances.map((distance) => distance * 0.4),
+  );
+  const longestRunDurationMin6w = Math.max(
+    ...weeks.map((week) => week.longest_run_duration_sec ?? 0),
+  );
+  const avgKm6w = roundDistance(totalDistanceKm / 6);
+  const sortedDistances = [...distances].sort((a, b) => a - b);
+  const maxWeekKm6w = Math.max(...distances);
+  const nonzeroDistances = distances.filter((distance) => distance > 0);
+  const minNonzeroWeekKm6w =
+    nonzeroDistances.length > 0 ? Math.min(...nonzeroDistances) : avgKm6w;
+  const firstTwoWeekAvg = (distances[0] + distances[1]) / 2;
+  const lastTwoWeekAvg = (distances[4] + distances[5]) / 2;
+  const source =
+    weeks.every((week) => week.source === "manual")
+      ? "manual_six_week_history"
+      : "assembled_six_week_history";
+
+  return {
+    avgKm6w,
+    avgTimeMin6w:
+      totalDurationSec > 0 ? Math.round(totalDurationSec / 6 / 60) : null,
+    medianKm6w: roundDistance((sortedDistances[2] + sortedDistances[3]) / 2),
+    maxWeekKm6w: roundDistance(maxWeekKm6w),
+    minNonzeroWeekKm6w: roundDistance(minNonzeroWeekKm6w),
+    runsPerWeek6w: roundToTenth(
+      weeks.reduce((total, week) => total + week.run_count, 0) / 6,
+    ),
+    loadConsistency:
+      maxWeekKm6w > 0 ? clamp(minNonzeroWeekKm6w / maxWeekKm6w, 0.35, 1) : 0.5,
+    recentRamp:
+      firstTwoWeekAvg > 0
+        ? clamp(lastTwoWeekAvg / firstTwoWeekAvg, 0.4, 2.5)
+        : lastTwoWeekAvg > 0
+          ? 2.5
+          : 1,
+    longestRunKm6w: roundDistance(longestRunKm6w),
+    longestRunDurationMin6w:
+      longestRunDurationMin6w > 0
+        ? Math.round(longestRunDurationMin6w / 60)
+        : null,
+    source,
   };
 }
 
@@ -753,7 +866,7 @@ function getStartLoadKm(input: NormalizedPlanInput): number {
   const modeMultiplier =
     input.goal.planMode === "relaxed"
       ? 0.95
-      : input.goal.planMode === "aggressive"
+      : isAggressivePlanMode(input.goal.planMode)
         ? 1.03
         : 1;
   const injuryMultiplier =
@@ -780,7 +893,13 @@ function getPeakLoadKm(input: {
 }): number {
   const [low, high] = getPeakLoadRange(input.raceDistance, input.avgKm6w, input.planMode);
   const modePosition =
-    input.planMode === "relaxed" ? 0.35 : input.planMode === "aggressive" ? 0.9 : 0.6;
+    input.planMode === "relaxed"
+      ? 0.35
+      : input.planMode === "very_aggressive"
+        ? 1
+        : input.planMode === "aggressive"
+          ? 0.9
+          : 0.6;
   const rawPeak = low + (high - low) * modePosition;
   const sessionCapacityCap = input.runDaysPerWeek * getRealisticAverageSessionKm(input.avgKm6w);
   const ageLoadMultiplier = input.age !== null && input.age >= 55 ? 0.92 : input.age !== null && input.age >= 45 ? 0.96 : 1;
@@ -861,7 +980,7 @@ function getCutbackIntervalWeeks(planMode: PlanMode): number {
     return 3;
   }
 
-  if (planMode === "aggressive") {
+  if (isAggressivePlanMode(planMode)) {
     return 5;
   }
 
@@ -880,7 +999,7 @@ function getTaperWeeks(input: {
       return 1;
     }
 
-    return input.planMode === "aggressive" || input.volumeCategory !== "low_base" ? 2 : 1;
+    return isAggressivePlanMode(input.planMode) || input.volumeCategory !== "low_base" ? 2 : 1;
   }
 
   if (input.totalWeeks < 8) {
@@ -888,7 +1007,7 @@ function getTaperWeeks(input: {
   }
 
   if (
-    input.planMode === "aggressive" ||
+    isAggressivePlanMode(input.planMode) ||
     input.volumeCategory === "strong_hobby" ||
     input.volumeCategory === "advanced_hobby" ||
     input.injurySignal === "current_or_serious"
@@ -907,11 +1026,11 @@ function getWeeklyIncreaseCap(input: {
   age: number | null;
 }): number {
   const baseCaps: Record<VolumeCategory, number> = {
-    low_base: input.planMode === "aggressive" ? 0.05 : 0.04,
-    developing: input.planMode === "relaxed" ? 0.04 : input.planMode === "aggressive" ? 0.07 : 0.06,
-    intermediate: input.planMode === "relaxed" ? 0.05 : input.planMode === "aggressive" ? 0.09 : 0.07,
-    strong_hobby: input.planMode === "relaxed" ? 0.06 : input.planMode === "aggressive" ? 0.1 : 0.08,
-    advanced_hobby: input.planMode === "relaxed" ? 0.07 : input.planMode === "aggressive" ? 0.12 : 0.09,
+    low_base: isAggressivePlanMode(input.planMode) ? 0.05 : 0.04,
+    developing: input.planMode === "relaxed" ? 0.04 : isAggressivePlanMode(input.planMode) ? 0.07 : 0.06,
+    intermediate: input.planMode === "relaxed" ? 0.05 : isAggressivePlanMode(input.planMode) ? 0.09 : 0.07,
+    strong_hobby: input.planMode === "relaxed" ? 0.06 : isAggressivePlanMode(input.planMode) ? 0.1 : 0.08,
+    advanced_hobby: input.planMode === "relaxed" ? 0.07 : input.planMode === "very_aggressive" ? 0.12 : input.planMode === "aggressive" ? 0.1 : 0.09,
   };
   let cap = baseCaps[input.volumeCategory];
 
@@ -941,7 +1060,13 @@ function getPeakLongRunKm(input: {
 }): number {
   const [low, high] = getLongRunPeakRange(input.raceDistance, input.volumeCategory);
   const modePosition =
-    input.planMode === "relaxed" ? 0.25 : input.planMode === "aggressive" ? 0.9 : 0.6;
+    input.planMode === "relaxed"
+      ? 0.25
+      : input.planMode === "very_aggressive"
+        ? 1
+        : input.planMode === "aggressive"
+          ? 0.9
+          : 0.6;
   const categoryPeak = low + (high - low) * modePosition;
   const longRunShareCap = getLongRunShareCap(input.volumeCategory) * input.peakLoadKm;
   const durationCapMin = getLongRunDurationCapMin(input.raceDistance, input.volumeCategory);
@@ -959,11 +1084,11 @@ function getInitialLongRunKm(input: {
   longestRunKm6w: number;
 }): number {
   const initialIncreaseCap =
-    input.planMode === "aggressive" &&
+    isAggressivePlanMode(input.planMode) &&
     (input.volumeCategory === "strong_hobby" ||
       input.volumeCategory === "advanced_hobby")
       ? 1.25
-      : input.planMode === "aggressive"
+      : isAggressivePlanMode(input.planMode)
         ? 1.2
         : 1.12;
   const shareCap = getLongRunShareCap(input.volumeCategory) * input.startLoadKm;
@@ -1308,7 +1433,7 @@ function getCutbackVolumeMultiplier(planMode: PlanMode): number {
     return 0.75;
   }
 
-  if (planMode === "aggressive") {
+  if (isAggressivePlanMode(planMode)) {
     return 0.86;
   }
 
@@ -1630,7 +1755,7 @@ function assignQualityDrafts(input: {
 
   const canAddSecondControlledStimulus =
     runCount >= 6 &&
-    input.input.goal.planMode === "aggressive" &&
+    isAggressivePlanMode(input.input.goal.planMode) &&
     (input.weekPlan.phase === "specific" || input.weekPlan.phase === "peak") &&
     input.metrics.volumeCategory !== "low_base";
 
@@ -2602,6 +2727,16 @@ function getTerrainAvailable(
   runnerProfile: RunnerProfile,
   assumptions: string[],
 ): TerrainAvailable[] {
+  if (runnerProfile.terrain_available.length > 0) {
+    return runnerProfile.terrain_available;
+  }
+
+  const terrainFromNewFields = getTerrainFromNewProfileFields(runnerProfile);
+
+  if (terrainFromNewFields.length > 0) {
+    return terrainFromNewFields;
+  }
+
   if (runnerProfile.terrain_available.length === 0) {
     assumptions.push(
       "No terrain options were saved, so the plan assumes flat routes and treadmill access.",
@@ -2610,6 +2745,42 @@ function getTerrainAvailable(
   }
 
   return runnerProfile.terrain_available;
+}
+
+function getTerrainFromNewProfileFields(
+  runnerProfile: RunnerProfile,
+): TerrainAvailable[] {
+  const terrain = new Set<TerrainAvailable>();
+
+  if (
+    runnerProfile.typical_surface === "road" ||
+    runnerProfile.typical_surface === "mixed"
+  ) {
+    terrain.add("flat");
+  }
+
+  if (runnerProfile.typical_surface === "trail") {
+    terrain.add("trails");
+  }
+
+  if (runnerProfile.typical_surface === "track") {
+    terrain.add("track");
+  }
+
+  if (runnerProfile.typical_surface === "treadmill") {
+    terrain.add("treadmill");
+  }
+
+  if (
+    runnerProfile.typical_elevation_profile === "rolling" ||
+    runnerProfile.typical_elevation_profile === "hilly" ||
+    runnerProfile.typical_elevation_profile === "mountainous" ||
+    runnerProfile.typical_elevation_profile === "mixed"
+  ) {
+    terrain.add("hills");
+  }
+
+  return Array.from(terrain);
 }
 
 function getLongRunDay(
@@ -2782,6 +2953,10 @@ function clamp(value: number, min: number, max: number): number {
 
 function roundDistance(distanceKm: number): number {
   return Math.round(distanceKm * 10) / 10;
+}
+
+function roundToTenth(value: number): number {
+  return Math.round(value * 10) / 10;
 }
 
 function formatRaceDistance(raceDistance: RaceDistance): string {

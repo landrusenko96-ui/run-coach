@@ -7,7 +7,15 @@ import {
   saveRaceGoal,
   type SaveRaceGoalInput,
 } from "@/lib/db/raceGoals";
-import type { Profile, RaceDistance, RaceGoal, TargetPriority } from "@/types";
+import type {
+  GoalFlexibility,
+  Profile,
+  RaceCourseProfile,
+  RaceDistance,
+  RaceGoal,
+  RacePriority,
+  TargetPriority,
+} from "@/types";
 
 type FormStatus = "loading" | "ready" | "saving" | "saved" | "error";
 
@@ -18,7 +26,9 @@ type FormState = {
   target_hours: string;
   target_minutes: string;
   target_seconds: string;
-  target_priority: TargetPriority;
+  race_priority: RacePriority;
+  goal_flexibility: GoalFlexibility;
+  race_course_profile: RaceCourseProfile | "";
   course_elevation_notes: string;
   expected_weather_notes: string;
 };
@@ -30,7 +40,9 @@ const emptyForm: FormState = {
   target_hours: "",
   target_minutes: "",
   target_seconds: "",
-  target_priority: "finish",
+  race_priority: "casual",
+  goal_flexibility: "finish_only",
+  race_course_profile: "",
   course_elevation_notes: "",
   expected_weather_notes: "",
 };
@@ -40,26 +52,56 @@ const inputClass =
 
 const labelClass = "text-sm font-medium text-slate-800";
 
-const priorityOptions: {
-  value: TargetPriority;
+const racePriorityOptions: {
+  value: RacePriority;
   label: string;
   description: string;
 }[] = [
   {
-    value: "finish",
-    label: "Finish",
+    value: "casual",
+    label: "Casual",
     description: "The main goal is completing the race safely.",
   },
   {
-    value: "personal_best",
-    label: "PR",
+    value: "B",
+    label: "B race",
     description: "You want to beat your previous best time.",
   },
   {
-    value: "aggressive",
-    label: "Aggressive",
+    value: "A",
+    label: "A race",
     description: "A stretch goal with more training risk.",
   },
+];
+
+const goalFlexibilityOptions: {
+  value: GoalFlexibility;
+  label: string;
+  description: string;
+}[] = [
+  {
+    value: "finish_only",
+    label: "Finish only",
+    description: "No strict time target.",
+  },
+  {
+    value: "flexible",
+    label: "Flexible",
+    description: "Time target can move if training data suggests it should.",
+  },
+  {
+    value: "fixed",
+    label: "Fixed",
+    description: "Time target should be treated as firm.",
+  },
+];
+
+const raceCourseProfileOptions: { value: RaceCourseProfile; label: string }[] = [
+  { value: "flat", label: "Flat" },
+  { value: "rolling", label: "Rolling" },
+  { value: "hilly", label: "Hilly" },
+  { value: "mountainous", label: "Mountainous" },
+  { value: "unknown", label: "Unknown" },
 ];
 
 function optionalText(value: string): string | null {
@@ -92,6 +134,34 @@ function secondsToTimeParts(value: number | null): {
   };
 }
 
+function getRacePriorityFallback(raceGoal: RaceGoal): RacePriority {
+  if (raceGoal.race_priority) {
+    return raceGoal.race_priority;
+  }
+
+  if (raceGoal.target_priority === "aggressive") {
+    return "A";
+  }
+
+  if (raceGoal.target_priority === "personal_best") {
+    return "B";
+  }
+
+  return "casual";
+}
+
+function getGoalFlexibilityFallback(raceGoal: RaceGoal): GoalFlexibility {
+  if (raceGoal.goal_flexibility) {
+    return raceGoal.goal_flexibility;
+  }
+
+  if (raceGoal.target_finish_time_sec === null) {
+    return "finish_only";
+  }
+
+  return raceGoal.target_priority === "aggressive" ? "fixed" : "flexible";
+}
+
 function raceGoalToForm(raceGoal: RaceGoal): FormState {
   const targetTime = secondsToTimeParts(raceGoal.target_finish_time_sec);
 
@@ -102,7 +172,9 @@ function raceGoalToForm(raceGoal: RaceGoal): FormState {
     target_hours: targetTime.hours,
     target_minutes: targetTime.minutes,
     target_seconds: targetTime.seconds,
-    target_priority: raceGoal.target_priority,
+    race_priority: getRacePriorityFallback(raceGoal),
+    goal_flexibility: getGoalFlexibilityFallback(raceGoal),
+    race_course_profile: raceGoal.race_course_profile ?? "",
     course_elevation_notes: raceGoal.course_elevation_notes ?? "",
     expected_weather_notes: raceGoal.expected_weather_notes ?? "",
   };
@@ -155,6 +227,22 @@ function buildTargetFinishTimeSeconds(form: FormState): number | null {
   return totalSeconds;
 }
 
+function buildLegacyTargetPriority(form: FormState): TargetPriority {
+  if (form.goal_flexibility === "finish_only") {
+    return "finish";
+  }
+
+  if (form.race_priority === "A" && form.goal_flexibility === "fixed") {
+    return "aggressive";
+  }
+
+  if (form.race_priority === "B") {
+    return "personal_best";
+  }
+
+  return "finish";
+}
+
 function buildRaceGoalInput(
   form: FormState,
   profileId: string,
@@ -169,13 +257,26 @@ function buildRaceGoalInput(
     throw new Error("Race date is required.");
   }
 
+  const targetFinishTimeSec =
+    form.goal_flexibility === "finish_only"
+      ? null
+      : buildTargetFinishTimeSeconds(form);
+
+  if (form.goal_flexibility === "fixed" && targetFinishTimeSec === null) {
+    throw new Error("A fixed goal needs a target finish time.");
+  }
+
   return {
     profile_id: profileId,
     race_name: raceName,
     race_date: form.race_date,
     distance: form.distance,
-    target_finish_time_sec: buildTargetFinishTimeSeconds(form),
-    target_priority: form.target_priority,
+    target_finish_time_sec: targetFinishTimeSec,
+    target_priority: buildLegacyTargetPriority(form),
+    race_priority: form.race_priority,
+    goal_flexibility: form.goal_flexibility,
+    race_course_profile:
+      form.race_course_profile === "" ? null : form.race_course_profile,
     course_elevation_notes: optionalText(form.course_elevation_notes),
     expected_weather_notes: optionalText(form.expected_weather_notes),
     is_active: true,
@@ -374,7 +475,7 @@ export function RaceGoalForm() {
 
       <section className="rounded-md border border-slate-200 bg-white p-6">
         <h2 className="text-base font-medium text-slate-950">
-          Distance and priority
+          Distance and goal model
         </h2>
 
         <div className="mt-4 grid gap-4 md:grid-cols-2">
@@ -397,9 +498,9 @@ export function RaceGoalForm() {
         </div>
 
         <div className="mt-4">
-          <p className={labelClass}>Target priority</p>
+          <p className={labelClass}>Race priority</p>
           <div className="mt-2 grid gap-2 md:grid-cols-3">
-            {priorityOptions.map((option) => (
+            {racePriorityOptions.map((option) => (
               <label
                 key={option.value}
                 className="rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-700"
@@ -407,11 +508,39 @@ export function RaceGoalForm() {
                 <span className="flex items-center gap-2 font-medium text-slate-900">
                   <input
                     type="radio"
-                    name="target_priority"
+                    name="race_priority"
                     value={option.value}
-                    checked={form.target_priority === option.value}
+                    checked={form.race_priority === option.value}
                     onChange={() =>
-                      setForm({ ...form, target_priority: option.value })
+                      setForm({ ...form, race_priority: option.value })
+                    }
+                  />
+                  {option.label}
+                </span>
+                <span className="mt-1 block text-xs leading-5 text-slate-500">
+                  {option.description}
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>
+
+        <div className="mt-4">
+          <p className={labelClass}>Goal flexibility</p>
+          <div className="mt-2 grid gap-2 md:grid-cols-3">
+            {goalFlexibilityOptions.map((option) => (
+              <label
+                key={option.value}
+                className="rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-700"
+              >
+                <span className="flex items-center gap-2 font-medium text-slate-900">
+                  <input
+                    type="radio"
+                    name="goal_flexibility"
+                    value={option.value}
+                    checked={form.goal_flexibility === option.value}
+                    onChange={() =>
+                      setForm({ ...form, goal_flexibility: option.value })
                     }
                   />
                   {option.label}
@@ -485,6 +614,28 @@ export function RaceGoalForm() {
       <section className="rounded-md border border-slate-200 bg-white p-6">
         <h2 className="text-base font-medium text-slate-950">Race notes</h2>
         <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <label className={labelClass}>
+            Course profile
+            <select
+              className={inputClass}
+              value={form.race_course_profile}
+              onChange={(event) =>
+                setForm({
+                  ...form,
+                  race_course_profile: event.target
+                    .value as RaceCourseProfile | "",
+                })
+              }
+            >
+              <option value="">Not set</option>
+              {raceCourseProfileOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
           <label className={labelClass}>
             Course elevation notes
             <textarea

@@ -13,7 +13,6 @@ import {
   type DeleteTrainingPlanResult,
   type TrainingPlanDeletePreview,
 } from "@/lib/db/trainingPlans";
-import { generateAndSaveTrainingPlan } from "@/lib/training/generateAndSaveTrainingPlan";
 import {
   filterPlanChangingAdjustments,
   formatAdjustmentTypeLabel,
@@ -34,7 +33,9 @@ import type {
   GarminBulkPublishWindowDays,
   GarminBulkPublishWorkoutsResponse,
   GarminPlanDeleteCleanupMode,
+  GenerateTrainingPlanApiResponse,
   PlannedWorkout,
+  PlanGenerationHistorySummary,
   Profile,
   RaceGoal,
   TrainingPlan,
@@ -533,6 +534,115 @@ function StructuredWorkoutPreview({ workout }: { workout: PlannedWorkout }) {
   );
 }
 
+function PlanGenerationHistorySummaryCard({
+  summary,
+  isBusy,
+  canGeneratePlan,
+  onUseManualHistory,
+}: {
+  summary: PlanGenerationHistorySummary;
+  isBusy: boolean;
+  canGeneratePlan: boolean;
+  onUseManualHistory: () => void;
+}) {
+  return (
+    <section className="rounded-md border border-slate-200 bg-white p-6">
+      <h2 className="text-base font-medium text-slate-950">
+        Plan history audit
+      </h2>
+      <p className="mt-1 text-sm text-slate-600">{summary.message}</p>
+
+      <dl className="mt-4 grid gap-3 text-sm md:grid-cols-4">
+        <div className="rounded-md border border-slate-200 p-3">
+          <dt className="font-medium text-slate-700">Window</dt>
+          <dd className="mt-1 text-slate-600">
+            {formatDate(summary.window_start_date)} to{" "}
+            {formatDate(summary.window_end_date)}
+          </dd>
+        </div>
+        <div className="rounded-md border border-slate-200 p-3">
+          <dt className="font-medium text-slate-700">Coverage</dt>
+          <dd className="mt-1 text-slate-600">{formatLabel(summary.coverage)}</dd>
+        </div>
+        <div className="rounded-md border border-slate-200 p-3">
+          <dt className="font-medium text-slate-700">App runs</dt>
+          <dd className="mt-1 text-slate-600">
+            {summary.app_workouts_used.length}
+          </dd>
+        </div>
+        <div className="rounded-md border border-slate-200 p-3">
+          <dt className="font-medium text-slate-700">Strava imported</dt>
+          <dd className="mt-1 text-slate-600">
+            {summary.strava_workouts_imported.length}
+          </dd>
+        </div>
+      </dl>
+
+      <div className="mt-4 grid gap-2 md:grid-cols-6">
+        {summary.weeks.map((week, index) => (
+          <div
+            key={`${week.week_start_date}-${index}`}
+            className="rounded-md border border-slate-200 p-3 text-sm"
+          >
+            <div className="font-medium text-slate-950">Week {index + 1}</div>
+            <div className="mt-1 text-xs text-slate-500">
+              {week.week_start_date} to {week.week_end_date}
+            </div>
+            <div className="mt-2 text-slate-700">
+              {week.run_count} run{week.run_count === 1 ? "" : "s"}
+            </div>
+            <div className="text-slate-700">{week.distance_km} km</div>
+            <div className="text-xs text-slate-500">
+              {formatLabel(week.source)}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {summary.strava_workouts_skipped.length > 0 ? (
+        <details className="mt-4 rounded-md border border-slate-200 p-3 text-sm text-slate-700">
+          <summary className="cursor-pointer font-medium text-slate-900">
+            Strava skipped activities ({summary.strava_workouts_skipped.length})
+          </summary>
+          <ul className="mt-3 list-disc space-y-1 pl-5">
+            {summary.strava_workouts_skipped.slice(0, 20).map((activity) => (
+              <li key={activity.strava_activity_id}>
+                {activity.date}: {activity.name} ({activity.reason})
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+
+      {summary.needs_strava_connection || summary.needs_manual_history ? (
+        <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+          {summary.needs_strava_connection ? (
+            <p>
+              Connect Strava from the Workouts page, then generate again to let
+              the server import missing six-week runs.
+            </p>
+          ) : null}
+          {summary.needs_manual_history ? (
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <Link className="font-medium underline" href="/profile">
+                Fill manual history on Profile
+              </Link>
+              <button
+                className="rounded-md bg-amber-900 px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:bg-amber-300"
+                disabled={isBusy || !canGeneratePlan}
+                onClick={onUseManualHistory}
+                type="button"
+              >
+                Generate from manual history
+              </button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 export function TrainingPlanPanel() {
   const [status, setStatus] = useState<LoadStatus>("loading");
   const [message, setMessage] = useState<string | null>(null);
@@ -543,6 +653,8 @@ export function TrainingPlanPanel() {
     [],
   );
   const [generationWarnings, setGenerationWarnings] = useState<string[]>([]);
+  const [generationHistorySummary, setGenerationHistorySummary] =
+    useState<PlanGenerationHistorySummary | null>(null);
   const [planNameInput, setPlanNameInput] = useState("");
   const [planStartDateInput, setPlanStartDateInput] = useState(() =>
     getLocalDateText(),
@@ -665,7 +777,31 @@ export function TrainingPlanPanel() {
     void Promise.resolve().then(() => loadGarminBridgeStatus());
   }, [loadGarminBridgeStatus]);
 
-  async function handleGeneratePlan(replaceActivePlan: boolean) {
+  async function requestGeneratedPlan(input: {
+    replaceActivePlan: boolean;
+    historyMode: "auto" | "manual";
+  }): Promise<GenerateTrainingPlanApiResponse> {
+    const response = await fetch("/api/training-plans/generate", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        planName: planNameInput,
+        replaceActivePlan: input.replaceActivePlan,
+        startDate: planStartDateInput,
+        historyMode: input.historyMode,
+      }),
+    });
+    const result = (await response.json()) as GenerateTrainingPlanApiResponse;
+
+    return result;
+  }
+
+  async function handleGeneratePlan(
+    replaceActivePlan: boolean,
+    historyMode: "auto" | "manual" = "auto",
+  ) {
     const activeRaceGoal = plansState.raceGoal;
 
     if (!activeRaceGoal) {
@@ -693,12 +829,26 @@ export function TrainingPlanPanel() {
     setPendingDeletePlanId(null);
     setGenerationAssumptions([]);
     setGenerationWarnings([]);
+    setGenerationHistorySummary(null);
 
-    const result = await generateAndSaveTrainingPlan({
-      planName: planNameInput,
-      replaceActivePlan,
-      startDate: planStartDateInput,
-    });
+    let result: GenerateTrainingPlanApiResponse;
+
+    try {
+      result = await requestGeneratedPlan({
+        replaceActivePlan,
+        historyMode,
+      });
+    } catch (error) {
+      setStatus("error");
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Could not generate and save the training plan.",
+      );
+      return;
+    }
+
+    setGenerationHistorySummary(result.historySummary);
 
     if (result.needsConfirmation) {
       setStatus("ready");
@@ -717,6 +867,7 @@ export function TrainingPlanPanel() {
     setPlanNameInput("");
     setGenerationAssumptions(result.assumptions);
     setGenerationWarnings(result.warnings);
+    setGenerationHistorySummary(result.historySummary);
   }
 
   async function handleActivatePlan(trainingPlanId: string) {
@@ -1283,7 +1434,14 @@ export function TrainingPlanPanel() {
               <button
                 className="rounded-md bg-amber-900 px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:bg-amber-300"
                 disabled={isBusy || !canGeneratePlan}
-                onClick={() => handleGeneratePlan(true)}
+                onClick={() =>
+                  handleGeneratePlan(
+                    true,
+                    generationHistorySummary?.coverage === "manual"
+                      ? "manual"
+                      : "auto",
+                  )
+                }
                 type="button"
               >
                 Generate and activate replacement
@@ -1303,6 +1461,15 @@ export function TrainingPlanPanel() {
           </div>
         ) : null}
       </section>
+
+      {generationHistorySummary ? (
+        <PlanGenerationHistorySummaryCard
+          canGeneratePlan={canGeneratePlan}
+          isBusy={isBusy}
+          onUseManualHistory={() => handleGeneratePlan(false, "manual")}
+          summary={generationHistorySummary}
+        />
+      ) : null}
 
       {profile ? (
         <section className="rounded-md border border-slate-200 bg-white p-6">

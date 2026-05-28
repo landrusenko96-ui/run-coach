@@ -20,15 +20,91 @@ export type TerrainAvailable =
   | "downhill";
 
 export type TrainingAggressiveness =
-  | "conservative"
-  | "balanced"
-  | "aggressive";
+  | "relaxed"
+  | "moderate"
+  | "aggressive"
+  | "very_aggressive";
 
 export type RunningDaysPerWeek = 2 | 3 | 4 | 5 | 6;
 
 export type RaceDistance = "half_marathon" | "marathon";
 
 export type TargetPriority = "finish" | "personal_best" | "aggressive";
+
+export type RacePriority = "A" | "B" | "casual";
+
+export type GoalFlexibility = "fixed" | "flexible" | "finish_only";
+
+export type TypicalSurface = "road" | "trail" | "track" | "treadmill" | "mixed";
+
+export type TypicalElevationProfile =
+  | "flat"
+  | "rolling"
+  | "hilly"
+  | "mountainous"
+  | "mixed";
+
+export type RaceCourseProfile =
+  | "flat"
+  | "rolling"
+  | "hilly"
+  | "mountainous"
+  | "unknown";
+
+export type RecentTrainingWeekInput = {
+  week_start_date: string;
+  week_end_date: string;
+  distance_km: number;
+  duration_sec: number | null;
+  run_count: number;
+  longest_run_km: number | null;
+  longest_run_duration_sec: number | null;
+  source: "app" | "strava" | "manual" | "mixed";
+};
+
+export type PlanGenerationHistoryWorkout = {
+  id: string;
+  source: "app" | "strava" | "manual";
+  workout_date: string;
+  name: string;
+  distance_km: number | null;
+  duration_sec: number | null;
+  source_activity_id: string | null;
+};
+
+export type PlanGenerationHistorySkippedActivity = {
+  strava_activity_id: string;
+  name: string;
+  date: string;
+  reason: string;
+};
+
+export type PlanGenerationHistorySummary = {
+  window_start_date: string;
+  window_end_date: string;
+  coverage: "complete" | "partial" | "manual";
+  weeks: RecentTrainingWeekInput[];
+  app_workouts_used: PlanGenerationHistoryWorkout[];
+  strava_workouts_imported: PlanGenerationHistoryWorkout[];
+  strava_workouts_skipped: PlanGenerationHistorySkippedActivity[];
+  manual_weeks_used: RecentTrainingWeekInput[];
+  needs_strava_connection: boolean;
+  needs_manual_history: boolean;
+  message: string;
+};
+
+export type GenerateTrainingPlanApiResponse = {
+  success: boolean;
+  message: string;
+  needsConfirmation: boolean;
+  needsStravaConnection: boolean;
+  needsManualHistory: boolean;
+  plan: TrainingPlan | null;
+  workouts: PlannedWorkout[];
+  assumptions: string[];
+  warnings: string[];
+  historySummary: PlanGenerationHistorySummary | null;
+};
 
 export type WorkoutType =
   | "easy"
@@ -283,6 +359,22 @@ export type Profile = {
   terrain_available: TerrainAvailable[];
   training_aggressiveness: TrainingAggressiveness;
   injury_notes: string | null;
+  maximum_weekday_session_duration_min: number | null;
+  maximum_weekend_session_duration_min: number | null;
+  running_experience_level: ExperienceLevel | null;
+  previous_half_marathon_history: string | null;
+  previous_marathon_history: string | null;
+  current_pain_or_injury: boolean;
+  serious_recent_injury: boolean;
+  injury_risk_notes: string | null;
+  preferred_rest_day: TrainingDay | null;
+  preferred_workout_days: TrainingDay[];
+  cross_training_available: boolean;
+  double_run_willingness: boolean;
+  typical_surface: TypicalSurface | null;
+  typical_elevation_profile: TypicalElevationProfile | null;
+  manual_six_week_history: RecentTrainingWeekInput[] | null;
+  manual_six_week_history_updated_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -296,6 +388,9 @@ export type RaceGoal = {
   distance: RaceDistance;
   target_finish_time_sec: number | null;
   target_priority: TargetPriority;
+  race_priority: RacePriority;
+  goal_flexibility: GoalFlexibility;
+  race_course_profile: RaceCourseProfile | null;
   course_elevation_notes: string | null;
   expected_weather_notes: string | null;
   is_active: boolean;
