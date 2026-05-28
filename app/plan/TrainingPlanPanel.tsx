@@ -234,6 +234,20 @@ function formatPlanDateRange(plan: TrainingPlan): string {
   return `${formatDate(plan.start_date)} - ${formatDate(plan.end_date)}`;
 }
 
+function formatOptionalLabel(value: string | null | undefined): string {
+  return value ? formatLabel(value) : "Not recorded";
+}
+
+function formatWeekRange(startWeek: number | null, endWeek: number | null): string {
+  if (startWeek === null || endWeek === null) {
+    return "Not recorded";
+  }
+
+  return startWeek === endWeek
+    ? `Week ${startWeek}`
+    : `Weeks ${startWeek}-${endWeek}`;
+}
+
 function getStatusBadgeClass(status: string): string {
   if (status === "active") {
     return "border-emerald-200 bg-emerald-50 text-emerald-800";
@@ -638,6 +652,158 @@ function PlanGenerationHistorySummaryCard({
             </div>
           ) : null}
         </div>
+      ) : null}
+    </section>
+  );
+}
+
+function PlanGenerationMetadataCard({ plan }: { plan: TrainingPlan }) {
+  const phaseSummaries = plan.phase_summaries ?? [];
+  const weeklySummaries = plan.weekly_summaries ?? [];
+  const peakSummary = plan.peak_summary ?? null;
+  const taperSummary = plan.taper_summary ?? null;
+  const generationWarnings = plan.generation_warnings ?? [];
+  const generationAssumptions = plan.generation_assumptions ?? [];
+
+  return (
+    <section className="rounded-md border border-slate-200 bg-white p-6">
+      <h2 className="text-base font-medium text-slate-950">
+        Plan generation summary
+      </h2>
+      <p className="mt-1 text-sm text-slate-600">
+        Stored metadata from the generator that created this active plan.
+      </p>
+
+      <dl className="mt-4 grid gap-3 text-sm md:grid-cols-4">
+        <div className="rounded-md border border-slate-200 p-3">
+          <dt className="font-medium text-slate-700">Generator</dt>
+          <dd className="mt-1 text-slate-600">
+            {formatOptionalLabel(plan.generator_version)}
+          </dd>
+        </div>
+        <div className="rounded-md border border-slate-200 p-3">
+          <dt className="font-medium text-slate-700">Feasibility</dt>
+          <dd className="mt-1 text-slate-600">
+            {formatOptionalLabel(plan.feasibility_rating)}
+          </dd>
+        </div>
+        <div className="rounded-md border border-slate-200 p-3">
+          <dt className="font-medium text-slate-700">Fitness confidence</dt>
+          <dd className="mt-1 text-slate-600">
+            {formatOptionalLabel(plan.fitness_confidence)}
+          </dd>
+        </div>
+        <div className="rounded-md border border-slate-200 p-3">
+          <dt className="font-medium text-slate-700">Evidence notes</dt>
+          <dd className="mt-1 text-slate-600">
+            {generationWarnings.length} warning
+            {generationWarnings.length === 1 ? "" : "s"} /{" "}
+            {generationAssumptions.length} assumption
+            {generationAssumptions.length === 1 ? "" : "s"}
+          </dd>
+        </div>
+      </dl>
+
+      <dl className="mt-3 grid gap-3 text-sm md:grid-cols-2">
+        <div className="rounded-md border border-slate-200 p-3">
+          <dt className="font-medium text-slate-700">Peak week</dt>
+          <dd className="mt-1 text-slate-600">
+            {peakSummary
+              ? `Week ${peakSummary.week_number}: ${peakSummary.volume_km} km, long run ${peakSummary.long_run_km} km`
+              : "Not recorded"}
+          </dd>
+        </div>
+        <div className="rounded-md border border-slate-200 p-3">
+          <dt className="font-medium text-slate-700">Taper</dt>
+          <dd className="mt-1 text-slate-600">
+            {taperSummary
+              ? `${formatWeekRange(
+                  taperSummary.start_week,
+                  taperSummary.end_week,
+                )}; race week ${taperSummary.race_week_volume_km} km; ${taperSummary.peak_to_race_week_reduction_percent}% reduction`
+              : "Not recorded"}
+          </dd>
+        </div>
+      </dl>
+
+      {phaseSummaries.length > 0 ? (
+        <details className="mt-4 rounded-md border border-slate-200 p-3 text-sm text-slate-700">
+          <summary className="cursor-pointer font-medium text-slate-900">
+            Phase summaries ({phaseSummaries.length})
+          </summary>
+          <div className="mt-3 grid gap-2 md:grid-cols-3">
+            {phaseSummaries.map((phaseSummary) => (
+              <div
+                className="rounded-md border border-slate-200 p-3"
+                key={`${phaseSummary.phase}-${phaseSummary.start_week}`}
+              >
+                <div className="font-medium text-slate-950">
+                  {formatLabel(phaseSummary.phase)}
+                </div>
+                <div className="mt-1 text-slate-600">
+                  Weeks {phaseSummary.start_week}-{phaseSummary.end_week}
+                </div>
+                <div className="text-slate-600">
+                  {phaseSummary.start_volume_km} to{" "}
+                  {phaseSummary.end_volume_km} km/week
+                </div>
+                <div className="text-slate-600">
+                  Peak long run {phaseSummary.peak_long_run_km} km
+                </div>
+              </div>
+            ))}
+          </div>
+        </details>
+      ) : null}
+
+      {weeklySummaries.length > 0 ? (
+        <details className="mt-3 rounded-md border border-slate-200 p-3 text-sm text-slate-700">
+          <summary className="cursor-pointer font-medium text-slate-900">
+            Weekly volume and long-run progression ({weeklySummaries.length})
+          </summary>
+          <div className="mt-3 max-h-72 overflow-auto">
+            <table className="w-full min-w-[520px] text-left text-sm">
+              <thead className="border-b border-slate-200 text-xs uppercase text-slate-500">
+                <tr>
+                  <th className="py-2 pr-3">Week</th>
+                  <th className="py-2 pr-3">Phase</th>
+                  <th className="py-2 pr-3">Volume</th>
+                  <th className="py-2 pr-3">Long run</th>
+                  <th className="py-2 pr-3">Flags</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {weeklySummaries.map((weekSummary) => {
+                  const flags = [
+                    weekSummary.is_cutback ? "Cutback" : null,
+                    weekSummary.is_taper ? "Taper" : null,
+                    weekSummary.is_race_week ? "Race week" : null,
+                  ].filter(Boolean);
+
+                  return (
+                    <tr key={weekSummary.week_number}>
+                      <td className="py-2 pr-3 text-slate-950">
+                        {weekSummary.week_number}
+                      </td>
+                      <td className="py-2 pr-3">
+                        {formatLabel(weekSummary.phase)}
+                      </td>
+                      <td className="py-2 pr-3">
+                        {weekSummary.volume_km} km
+                      </td>
+                      <td className="py-2 pr-3">
+                        {weekSummary.long_run_km} km
+                      </td>
+                      <td className="py-2 pr-3">
+                        {flags.length > 0 ? flags.join(", ") : "Normal"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </details>
       ) : null}
     </section>
   );
@@ -1278,6 +1444,14 @@ export function TrainingPlanPanel() {
   const plannedWorkoutById = buildPlannedWorkoutById(workouts);
   const planChangingAdjustments =
     filterPlanChangingAdjustments(planAdjustments).slice(0, 10);
+  const visibleGenerationWarnings =
+    generationWarnings.length > 0
+      ? generationWarnings
+      : activePlan?.generation_warnings ?? [];
+  const visibleGenerationAssumptions =
+    generationAssumptions.length > 0
+      ? generationAssumptions
+      : activePlan?.generation_assumptions ?? [];
   const garminBulkPreviewPublishCount = garminBulkPreview
     ? garminBulkPreview.summary.readyCount +
       (includeGarminRetryStatuses
@@ -1470,6 +1644,8 @@ export function TrainingPlanPanel() {
           summary={generationHistorySummary}
         />
       ) : null}
+
+      {activePlan ? <PlanGenerationMetadataCard plan={activePlan} /> : null}
 
       {profile ? (
         <section className="rounded-md border border-slate-200 bg-white p-6">
@@ -1750,26 +1926,26 @@ export function TrainingPlanPanel() {
         </section>
       ) : null}
 
-      {generationWarnings.length > 0 ? (
+      {visibleGenerationWarnings.length > 0 ? (
         <section className="rounded-md border border-amber-200 bg-amber-50 p-6">
           <h2 className="text-base font-medium text-amber-950">
             Plan warnings
           </h2>
           <ul className="mt-3 list-disc space-y-2 pl-5 text-sm leading-6 text-amber-900">
-            {generationWarnings.map((warning) => (
+            {visibleGenerationWarnings.map((warning) => (
               <li key={warning}>{warning}</li>
             ))}
           </ul>
         </section>
       ) : null}
 
-      {generationAssumptions.length > 0 ? (
+      {visibleGenerationAssumptions.length > 0 ? (
         <section className="rounded-md border border-slate-200 bg-white p-6">
           <h2 className="text-base font-medium text-slate-950">
             Generation assumptions
           </h2>
           <ul className="mt-3 list-disc space-y-2 pl-5 text-sm leading-6 text-slate-600">
-            {generationAssumptions.map((assumption) => (
+            {visibleGenerationAssumptions.map((assumption) => (
               <li key={assumption}>{assumption}</li>
             ))}
           </ul>

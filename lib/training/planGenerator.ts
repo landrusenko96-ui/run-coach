@@ -4,7 +4,6 @@ import { buildStructuredWorkout } from "./structuredWorkout.ts";
 import {
   analyzeTrainingEvidence,
   type TrainingEvidence,
-  type TrainingEvidenceConfidence,
 } from "./trainingEvidence.ts";
 import {
   getRoleForSubtype,
@@ -20,6 +19,12 @@ import type {
   GeneratedPlannedWorkout,
   GeneratedTrainingPlan,
   LoggedWorkout,
+  PlanGenerationFeasibilityRating,
+  PlanGenerationFitnessConfidence,
+  PlanGenerationPeakSummary,
+  PlanGenerationPhaseLabel,
+  PlanGenerationPhaseSummary,
+  PlanGenerationTaperSummary,
   RaceDistance,
   RaceGoal,
   RecentTrainingWeekInput,
@@ -44,15 +49,9 @@ type RacePriority = "A" | "B" | "casual";
 
 type GoalFlexibility = "fixed" | "flexible" | "finish_only";
 
-type FitnessConfidence = TrainingEvidenceConfidence;
+type FitnessConfidence = PlanGenerationFitnessConfidence;
 
-type GoalFeasibilityRating =
-  | "finish_only"
-  | "realistic"
-  | "ambitious"
-  | "very_ambitious"
-  | "low_confidence"
-  | "not_credible";
+type GoalFeasibilityRating = PlanGenerationFeasibilityRating;
 
 type VolumeCategory =
   | "low_base"
@@ -67,7 +66,7 @@ type FrequencyCategory =
   | "standard_performance"
   | "advanced_hobby";
 
-type PhaseLabel = "base" | "build" | "specific" | "peak" | "taper" | "race_prep";
+type PhaseLabel = PlanGenerationPhaseLabel;
 
 type GoalProfile = {
   raceType: RaceDistance;
@@ -275,6 +274,12 @@ export function generateTrainingPlan(
     metrics: derivedMetrics,
     weekPlans,
   });
+  const generationMetadata = buildPlanGenerationMetadata({
+    metrics: derivedMetrics,
+    weekPlans,
+    assumptions: normalizedInput.assumptions,
+    warnings: normalizedInput.warnings,
+  });
 
   return {
     trainingPlan: {
@@ -287,6 +292,15 @@ export function generateTrainingPlan(
       total_weeks: totalWeeks,
       assumptions: normalizedInput.assumptions,
       warnings: normalizedInput.warnings,
+      generator_version: generationMetadata.generator_version,
+      feasibility_rating: generationMetadata.feasibility_rating,
+      fitness_confidence: generationMetadata.fitness_confidence,
+      generation_assumptions: generationMetadata.generation_assumptions,
+      generation_warnings: generationMetadata.generation_warnings,
+      phase_summaries: generationMetadata.phase_summaries,
+      weekly_summaries: generationMetadata.weekly_summaries,
+      peak_summary: generationMetadata.peak_summary,
+      taper_summary: generationMetadata.taper_summary,
       generated_by: "rule_based_v1",
     },
     plannedWorkouts,
@@ -2418,6 +2432,125 @@ function addPlanSummaryWarnings(input: {
       "Longest recent run is well below the planned peak long run, so long-run progression is capped and cutback weeks matter.",
     );
   }
+}
+
+function buildPlanGenerationMetadata(input: {
+  metrics: DerivedMetrics;
+  weekPlans: WeekPlan[];
+  assumptions: string[];
+  warnings: string[];
+}): Pick<
+  GeneratedTrainingPlan["trainingPlan"],
+  | "generator_version"
+  | "feasibility_rating"
+  | "fitness_confidence"
+  | "generation_assumptions"
+  | "generation_warnings"
+  | "phase_summaries"
+  | "weekly_summaries"
+  | "peak_summary"
+  | "taper_summary"
+> {
+  return {
+    generator_version: "rule_based_v1",
+    feasibility_rating: input.metrics.feasibilityRating,
+    fitness_confidence: input.metrics.fitnessConfidence,
+    generation_assumptions: [...input.assumptions],
+    generation_warnings: [...input.warnings],
+    phase_summaries: buildPhaseSummaries(input.weekPlans),
+    weekly_summaries: input.weekPlans.map((weekPlan) => ({
+      week_number: weekPlan.weekNumber,
+      phase: weekPlan.phase,
+      volume_km: weekPlan.volumeKm,
+      long_run_km: weekPlan.longRunKm,
+      is_cutback: weekPlan.isCutback,
+      is_taper: weekPlan.isTaper,
+      is_race_week: weekPlan.isRaceWeek,
+    })),
+    peak_summary: buildPeakSummary(input.weekPlans),
+    taper_summary: buildTaperSummary(input.weekPlans),
+  };
+}
+
+function buildPhaseSummaries(weekPlans: WeekPlan[]): PlanGenerationPhaseSummary[] {
+  const summaries: PlanGenerationPhaseSummary[] = [];
+
+  for (const weekPlan of weekPlans) {
+    const currentSummary = summaries[summaries.length - 1];
+
+    if (currentSummary?.phase === weekPlan.phase) {
+      currentSummary.end_week = weekPlan.weekNumber;
+      currentSummary.week_count += 1;
+      currentSummary.end_volume_km = weekPlan.volumeKm;
+      currentSummary.peak_volume_km = Math.max(
+        currentSummary.peak_volume_km,
+        weekPlan.volumeKm,
+      );
+      currentSummary.peak_long_run_km = Math.max(
+        currentSummary.peak_long_run_km,
+        weekPlan.longRunKm,
+      );
+
+      if (weekPlan.isCutback) {
+        currentSummary.cutback_week_numbers.push(weekPlan.weekNumber);
+      }
+
+      continue;
+    }
+
+    summaries.push({
+      phase: weekPlan.phase,
+      start_week: weekPlan.weekNumber,
+      end_week: weekPlan.weekNumber,
+      week_count: 1,
+      start_volume_km: weekPlan.volumeKm,
+      end_volume_km: weekPlan.volumeKm,
+      peak_volume_km: weekPlan.volumeKm,
+      peak_long_run_km: weekPlan.longRunKm,
+      cutback_week_numbers: weekPlan.isCutback ? [weekPlan.weekNumber] : [],
+    });
+  }
+
+  return summaries;
+}
+
+function buildPeakSummary(
+  weekPlans: WeekPlan[],
+): PlanGenerationPeakSummary | null {
+  if (weekPlans.length === 0) {
+    return null;
+  }
+
+  const peakWeek = weekPlans.reduce((bestWeek, weekPlan) =>
+    weekPlan.volumeKm > bestWeek.volumeKm ? weekPlan : bestWeek,
+  );
+
+  return {
+    week_number: peakWeek.weekNumber,
+    phase: peakWeek.phase,
+    volume_km: peakWeek.volumeKm,
+    long_run_km: peakWeek.longRunKm,
+  };
+}
+
+function buildTaperSummary(weekPlans: WeekPlan[]): PlanGenerationTaperSummary {
+  const taperWeeks = weekPlans.filter((weekPlan) => weekPlan.isTaper);
+  const raceWeek = weekPlans[weekPlans.length - 1] ?? null;
+  const peakWeek = buildPeakSummary(weekPlans);
+  const raceWeekVolumeKm = raceWeek?.volumeKm ?? 0;
+  const peakVolumeKm = peakWeek?.volume_km ?? raceWeekVolumeKm;
+  const reductionPercent =
+    peakVolumeKm > 0
+      ? Math.max(0, Math.round((1 - raceWeekVolumeKm / peakVolumeKm) * 100))
+      : 0;
+
+  return {
+    taper_weeks: taperWeeks.length,
+    start_week: taperWeeks[0]?.weekNumber ?? null,
+    end_week: taperWeeks[taperWeeks.length - 1]?.weekNumber ?? null,
+    race_week_volume_km: raceWeekVolumeKm,
+    peak_to_race_week_reduction_percent: reductionPercent,
+  };
 }
 
 function getAvailableTrainingDays(

@@ -612,6 +612,34 @@ describe("generateTrainingPlan", () => {
     );
   });
 
+  it("returns persisted generator metadata for plan explainability", () => {
+    const generatedPlan = generateTrainingPlan(baseProfile, baseRaceGoal, {
+      startDate: "2030-05-06",
+    });
+    const { trainingPlan } = generatedPlan;
+    const maxWeeklyVolume = Math.max(
+      ...trainingPlan.weekly_summaries.map((week) => week.volume_km),
+    );
+
+    assert.equal(trainingPlan.generator_version, "rule_based_v1");
+    assert.equal(trainingPlan.generated_by, "rule_based_v1");
+    assert.equal(trainingPlan.feasibility_rating, "finish_only");
+    assert.equal(trainingPlan.fitness_confidence, "high");
+    assert.deepEqual(trainingPlan.generation_assumptions, trainingPlan.assumptions);
+    assert.deepEqual(trainingPlan.generation_warnings, trainingPlan.warnings);
+    assert.equal(trainingPlan.weekly_summaries.length, trainingPlan.total_weeks);
+    assert.ok(trainingPlan.phase_summaries.length > 0);
+    assert.equal(trainingPlan.phase_summaries[0].start_week, 1);
+    assert.equal(
+      trainingPlan.phase_summaries[trainingPlan.phase_summaries.length - 1]
+        .end_week,
+      trainingPlan.total_weeks,
+    );
+    assert.equal(trainingPlan.peak_summary.volume_km, maxWeeklyVolume);
+    assert.ok(trainingPlan.taper_summary.taper_weeks > 0);
+    assert.ok(trainingPlan.taper_summary.race_week_volume_km > 0);
+  });
+
   it("creates one DB-compatible planned workout row for every date through race day", () => {
     const generatedPlan = generateTrainingPlan(baseProfile, baseRaceGoal, {
       startDate: "2030-05-06",

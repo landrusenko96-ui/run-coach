@@ -457,6 +457,15 @@ export type TrainingPlan = {
   start_date: string;
   end_date: string;
   total_weeks: number;
+  generator_version: PlanGeneratorVersion;
+  feasibility_rating: PlanGenerationFeasibilityRating | null;
+  fitness_confidence: PlanGenerationFitnessConfidence | null;
+  generation_assumptions: string[];
+  generation_warnings: string[];
+  phase_summaries: PlanGenerationPhaseSummary[];
+  weekly_summaries: PlanGenerationWeeklySummary[];
+  peak_summary: PlanGenerationPeakSummary | null;
+  taper_summary: PlanGenerationTaperSummary | null;
   created_at: string;
   updated_at: string;
 };
@@ -467,7 +476,64 @@ export type GeneratedTrainingPlanMetadata = Omit<
 > & {
   assumptions: string[];
   warnings: string[];
-  generated_by: "rule_based_v1";
+  generated_by: PlanGeneratorVersion;
+};
+
+export type PlanGeneratorVersion = "rule_based_v1";
+
+export type PlanGenerationFeasibilityRating =
+  | "finish_only"
+  | "realistic"
+  | "ambitious"
+  | "very_ambitious"
+  | "low_confidence"
+  | "not_credible";
+
+export type PlanGenerationFitnessConfidence = "low" | "medium" | "high";
+
+export type PlanGenerationPhaseLabel =
+  | "base"
+  | "build"
+  | "specific"
+  | "peak"
+  | "taper"
+  | "race_prep";
+
+export type PlanGenerationWeeklySummary = {
+  week_number: number;
+  phase: PlanGenerationPhaseLabel;
+  volume_km: number;
+  long_run_km: number;
+  is_cutback: boolean;
+  is_taper: boolean;
+  is_race_week: boolean;
+};
+
+export type PlanGenerationPhaseSummary = {
+  phase: PlanGenerationPhaseLabel;
+  start_week: number;
+  end_week: number;
+  week_count: number;
+  start_volume_km: number;
+  end_volume_km: number;
+  peak_volume_km: number;
+  peak_long_run_km: number;
+  cutback_week_numbers: number[];
+};
+
+export type PlanGenerationPeakSummary = {
+  week_number: number;
+  phase: PlanGenerationPhaseLabel;
+  volume_km: number;
+  long_run_km: number;
+};
+
+export type PlanGenerationTaperSummary = {
+  taper_weeks: number;
+  start_week: number | null;
+  end_week: number | null;
+  race_week_volume_km: number;
+  peak_to_race_week_reduction_percent: number;
 };
 
 export type PlannedWorkout = {

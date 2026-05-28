@@ -1,5 +1,27 @@
 # Decisions
 
+## 2026-05-28 — Persist Plan Generator Metadata Before Further Intelligence
+
+Decision:
+Store initial plan-generation metadata on `training_plans` so generated plans
+remain auditable after reloads and before future evidence/model changes.
+
+Reason:
+The generator now makes important decisions about feasibility, fitness
+confidence, phase structure, weekly load, long-run progression, peak week,
+taper, assumptions, and warnings. Keeping those decisions only in the transient
+API response makes later milestones harder to verify and compare.
+
+Status:
+A local migration adds additive metadata columns to `training_plans`, and the
+Plan page displays the active plan's persisted generation summary. The
+migration has not been applied remotely in the same turn it was created.
+
+Implementation rule:
+Persist metadata for explainability only. Do not use this milestone to change
+workout generation behavior, exports, scoring, adjustment, Strava webhooks,
+auth, RLS, or deployment behavior.
+
 ## 2026-05-28 — Add Spec Workout Library Behind Existing Plan Contracts
 
 Decision:
