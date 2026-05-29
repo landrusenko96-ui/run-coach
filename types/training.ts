@@ -518,6 +518,21 @@ export type PlanGenerationWeeklySummary = {
   is_cutback: boolean;
   is_taper: boolean;
   is_race_week: boolean;
+  intensity_total_run_km?: number;
+  intensity_easy_km?: number;
+  intensity_moderate_km?: number;
+  intensity_threshold_km?: number;
+  intensity_vo2_km?: number;
+  intensity_repetition_km?: number;
+  intensity_hard_km?: number;
+  hill_load_km?: number;
+  intensity_easy_share?: number;
+  intensity_moderate_share?: number;
+  intensity_hard_share?: number;
+  threshold_cap_km?: number;
+  vo2_cap_km?: number;
+  repetition_cap_km?: number;
+  load_risk_flags?: string[];
 };
 
 export type PlanGenerationPhaseSummary = {

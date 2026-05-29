@@ -124,6 +124,37 @@ function getRunningWorkouts(generatedPlan, weekNumber) {
   );
 }
 
+function getNonRaceWeeklySummaries(generatedPlan) {
+  return generatedPlan.trainingPlan.weekly_summaries.filter(
+    (week) => !week.is_race_week,
+  );
+}
+
+function assertWeeklyIntensityCaps(summary) {
+  assert.ok(summary.intensity_total_run_km > 0);
+  assert.ok(summary.intensity_easy_km >= 0);
+  assert.ok(summary.intensity_moderate_km >= 0);
+  assert.ok(summary.intensity_threshold_km <= summary.threshold_cap_km + 0.2);
+  assert.ok(summary.intensity_vo2_km <= summary.vo2_cap_km + 0.2);
+  assert.ok(summary.intensity_repetition_km <= summary.repetition_cap_km + 0.2);
+  assert.deepEqual(summary.load_risk_flags, []);
+}
+
+function countMajorLoadJumps(previousWeek, currentWeek) {
+  const volumeJump =
+    currentWeek.volume_km > previousWeek.volume_km + Math.max(2, previousWeek.volume_km * 0.06);
+  const longRunJump =
+    currentWeek.long_run_km > previousWeek.long_run_km + Math.max(1, previousWeek.long_run_km * 0.08);
+  const previousIntensity =
+    (previousWeek.intensity_moderate_km ?? 0) + (previousWeek.intensity_hard_km ?? 0);
+  const currentIntensity =
+    (currentWeek.intensity_moderate_km ?? 0) + (currentWeek.intensity_hard_km ?? 0);
+  const intensityJump = currentIntensity > previousIntensity + 1;
+  const hillJump = (currentWeek.hill_load_km ?? 0) > (previousWeek.hill_load_km ?? 0) + 0.8;
+
+  return [volumeJump, longRunJump, intensityJump, hillJump].filter(Boolean).length;
+}
+
 function getAllNonRaceRunningWorkouts(generatedPlan, raceDate) {
   return generatedPlan.plannedWorkouts.filter(
     (workout) => workout.distance_km !== null && workout.workout_date !== raceDate,
@@ -641,6 +672,108 @@ describe("generateTrainingPlan", () => {
     assert.equal(trainingPlan.peak_summary.volume_km, maxWeeklyVolume);
     assert.ok(trainingPlan.taper_summary.taper_weeks > 0);
     assert.ok(trainingPlan.taper_summary.race_week_volume_km > 0);
+  });
+
+  it("records weekly intensity distribution metadata and keeps work inside weekly caps", () => {
+    const generatedPlan = generateTrainingPlan(
+      makeProfile({
+        current_weekly_mileage_km: 55,
+        longest_recent_run_km: 22,
+        available_training_days: [
+          "monday",
+          "tuesday",
+          "wednesday",
+          "thursday",
+          "friday",
+          "saturday",
+        ],
+        running_days_per_week: 6,
+        training_aggressiveness: "aggressive",
+        running_experience_level: "advanced",
+      }),
+      baseRaceGoal,
+      { startDate: "2030-05-06" },
+    );
+    const nonRaceWeeks = getNonRaceWeeklySummaries(generatedPlan);
+
+    assert.ok(nonRaceWeeks.length > 0);
+    for (const summary of nonRaceWeeks) {
+      assertWeeklyIntensityCaps(summary);
+    }
+  });
+
+  it("limits gray-zone load in low-base duration-capped plans", () => {
+    const generatedPlan = generateTrainingPlan(
+      makeProfile({
+        current_weekly_mileage_km: 18,
+        longest_recent_run_km: 7,
+        available_training_days: ["tuesday", "thursday", "saturday"],
+        running_days_per_week: 3,
+        maximum_weekday_session_duration_min: 35,
+        maximum_weekend_session_duration_min: 60,
+        training_aggressiveness: "aggressive",
+        running_experience_level: "beginner",
+      }),
+      baseRaceGoal,
+      { startDate: "2030-05-06" },
+    );
+    const nonRaceWeeks = getNonRaceWeeklySummaries(generatedPlan);
+
+    for (const summary of nonRaceWeeks) {
+      assert.ok(
+        (summary.intensity_moderate_share ?? 0) + (summary.intensity_hard_share ?? 0) <=
+          0.24,
+      );
+      assertWeeklyIntensityCaps(summary);
+    }
+  });
+
+  it("avoids stacking volume, long-run, intensity, and hill-load jumps in normal build weeks", () => {
+    const generatedPlan = generateTrainingPlan(
+      makeProfile({
+        current_weekly_mileage_km: 55,
+        longest_recent_run_km: 22,
+        available_training_days: [
+          "monday",
+          "tuesday",
+          "wednesday",
+          "thursday",
+          "friday",
+          "saturday",
+        ],
+        running_days_per_week: 6,
+        terrain_available: ["hills", "track", "flat"],
+        training_aggressiveness: "aggressive",
+        running_experience_level: "advanced",
+      }),
+      makeRaceGoal({
+        race_course_profile: "hilly",
+        course_elevation_notes: "Rolling hilly course.",
+      }),
+      { startDate: "2030-05-06" },
+    );
+    const summaries = generatedPlan.trainingPlan.weekly_summaries;
+
+    for (let index = 1; index < summaries.length; index += 1) {
+      const previousWeek = summaries[index - 1];
+      const currentWeek = summaries[index];
+
+      if (
+        previousWeek.is_cutback ||
+        currentWeek.is_cutback ||
+        currentWeek.is_taper ||
+        currentWeek.is_race_week
+      ) {
+        continue;
+      }
+
+      assert.ok(countMajorLoadJumps(previousWeek, currentWeek) < 3);
+    }
+    assert.ok(
+      generatedPlan.trainingPlan.warnings.some((warning) =>
+        warning.includes("simultaneous volume, long-run, intensity, or hill-load"),
+      ),
+    );
   });
 
   it("creates one DB-compatible planned workout row for every date through race day", () => {

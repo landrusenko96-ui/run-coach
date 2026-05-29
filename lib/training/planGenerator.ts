@@ -14,7 +14,13 @@ import {
   type PlanWorkoutSubtype,
   type WorkoutLibraryRole,
   type WorkoutLibraryStress,
+  type WorkoutLibraryVariables,
 } from "./workoutLibrary.ts";
+import {
+  summarizePlanIntensity,
+  summarizeWeeklyIntensity,
+  type WeeklyIntensitySummary,
+} from "./loadRisk.ts";
 import type {
   GeneratedPlannedWorkout,
   GeneratedTrainingPlan,
@@ -177,6 +183,9 @@ type PlannedDay = {
 };
 
 type WorkoutPrescription = PlannedDay & {
+  subtype: PlanWorkoutSubtype;
+  role: WorkoutLibraryRole;
+  stress: WorkoutLibraryStress;
   workoutType: WorkoutType;
   title: string;
   description: string;
@@ -189,6 +198,7 @@ type WorkoutPrescription = PlannedDay & {
   purpose: string;
   instructions: string;
   structuredWorkout: StructuredWorkout | null;
+  variables: WorkoutLibraryVariables;
 };
 
 type WeekWorkoutDraft = {
@@ -198,6 +208,16 @@ type WeekWorkoutDraft = {
   role: WorkoutLibraryRole;
   stress: WorkoutLibraryStress;
   title: string;
+};
+
+type ResolvedWorkoutDraft = {
+  draft: WeekWorkoutDraft;
+  prescription: WorkoutPrescription;
+};
+
+type PlanIntensityAudit = {
+  weeklySummaries: WeeklyIntensitySummary[];
+  planSummary: ReturnType<typeof summarizePlanIntensity>;
 };
 
 const dayOrder: TrainingDay[] = [
@@ -274,13 +294,13 @@ export function generateTrainingPlan(
     metrics: derivedMetrics,
   });
   const plannedDays = buildPlannedDays(startDate, raceDate);
-  const prescriptions = buildWorkoutPrescriptions({
+  const prescriptionBuild = buildWorkoutPrescriptions({
     input: normalizedInput,
     metrics: derivedMetrics,
     weekPlans,
     plannedDays,
   });
-  const plannedWorkouts = prescriptions.map((prescription) =>
+  const plannedWorkouts = prescriptionBuild.prescriptions.map((prescription) =>
     buildGeneratedWorkout({
       prescription,
       profileId: normalizedInput.profileId,
@@ -292,10 +312,12 @@ export function generateTrainingPlan(
     input: normalizedInput,
     metrics: derivedMetrics,
     weekPlans,
+    intensityAudit: prescriptionBuild.intensityAudit,
   });
   const generationMetadata = buildPlanGenerationMetadata({
     metrics: derivedMetrics,
     weekPlans,
+    intensityAudit: prescriptionBuild.intensityAudit,
     assumptions: normalizedInput.assumptions,
     warnings: normalizedInput.warnings,
   });
@@ -1998,7 +2020,10 @@ function buildWorkoutPrescriptions(input: {
   metrics: DerivedMetrics;
   weekPlans: WeekPlan[];
   plannedDays: PlannedDay[];
-}): WorkoutPrescription[] {
+}): {
+  prescriptions: WorkoutPrescription[];
+  intensityAudit: PlanIntensityAudit;
+} {
   const drafts: WeekWorkoutDraft[] = [];
 
   for (const weekPlan of input.weekPlans) {
@@ -2016,16 +2041,47 @@ function buildWorkoutPrescriptions(input: {
   }
 
   softenUnsafeHardWorkoutSpacing(drafts);
+  enforceIntensityDistributionAndLoadRisk({
+    drafts,
+    input: input.input,
+    metrics: input.metrics,
+    weekPlans: input.weekPlans,
+  });
 
-  return drafts.map((draft) =>
-    buildPrescriptionFromDraft({
+  const resolvedDrafts = resolveWorkoutDrafts({
+    drafts,
+    input: input.input,
+    metrics: input.metrics,
+    weekPlans: input.weekPlans,
+  });
+
+  return {
+    prescriptions: resolvedDrafts.map((resolvedDraft) => resolvedDraft.prescription),
+    intensityAudit: buildIntensityAudit({
+      resolvedDrafts,
+      weekPlans: input.weekPlans,
+    }),
+  };
+}
+
+function resolveWorkoutDrafts(input: {
+  drafts: WeekWorkoutDraft[];
+  input: NormalizedPlanInput;
+  metrics: DerivedMetrics;
+  weekPlans: WeekPlan[];
+}): ResolvedWorkoutDraft[] {
+  return input.drafts.map((draft) => ({
+    draft,
+    prescription: buildPrescriptionFromDraft({
       draft,
-      weekDrafts: drafts.filter((candidate) => candidate.day.weekNumber === draft.day.weekNumber),
+      weekDrafts: input.drafts.filter(
+        (candidate) => candidate.day.weekNumber === draft.day.weekNumber,
+      ),
       weekPlan: input.weekPlans[draft.day.weekNumber - 1],
       input: input.input,
       metrics: input.metrics,
     }),
-  );
+  }));
 }
 
 function buildWeekDrafts(input: {
@@ -2651,6 +2707,495 @@ function softenDraftToSteady(draft: WeekWorkoutDraft): void {
   applyWorkoutSubtype(draft, "steady_aerobic");
 }
 
+function enforceIntensityDistributionAndLoadRisk(input: {
+  drafts: WeekWorkoutDraft[];
+  input: NormalizedPlanInput;
+  metrics: DerivedMetrics;
+  weekPlans: WeekPlan[];
+}): void {
+  const capResult = enforceWeeklyIntensityCaps(input);
+  const grayZoneResult = enforceWeeklyGrayZoneBalance(input);
+  const stressJumpResult = enforceStressJumpRules(input);
+
+  if (capResult.changed) {
+    addUniqueWarning(
+      input.input.warnings,
+      "Weekly intensity caps softened one or more quality workouts so threshold, VO2, and repetition work stay within the plan's volume.",
+    );
+  }
+
+  if (grayZoneResult.changed) {
+    addUniqueWarning(
+      input.input.warnings,
+      "Moderate and race-specific running was limited in one or more weeks to avoid hidden gray-zone overload.",
+    );
+  }
+
+  if (stressJumpResult.changed) {
+    addUniqueWarning(
+      input.input.warnings,
+      "Weeks with simultaneous volume, long-run, intensity, or hill-load increases were softened to reduce load-stacking risk.",
+    );
+  }
+
+  if (
+    (capResult.changed || grayZoneResult.changed || stressJumpResult.changed) &&
+    input.input.availability.selectedRunningDays.length <= 3
+  ) {
+    addUniqueWarning(
+      input.input.warnings,
+      "Low weekly run frequency limits how much quality work can be safely distributed, so some sessions stay easier than the goal mode might otherwise allow.",
+    );
+  }
+
+  if (
+    (capResult.changed || grayZoneResult.changed || stressJumpResult.changed) &&
+    input.metrics.volumeCategory === "low_base"
+  ) {
+    addUniqueWarning(
+      input.input.warnings,
+      "Low recent running volume limits safe intensity distribution, so the plan protects easy aerobic work first.",
+    );
+  }
+}
+
+function enforceWeeklyIntensityCaps(input: {
+  drafts: WeekWorkoutDraft[];
+  input: NormalizedPlanInput;
+  metrics: DerivedMetrics;
+  weekPlans: WeekPlan[];
+}): { changed: boolean } {
+  let changed = false;
+
+  for (let iteration = 0; iteration < 3; iteration += 1) {
+    const audit = buildCurrentIntensityAudit(input);
+    let changedThisIteration = false;
+
+    for (const weeklySummary of audit.weeklySummaries) {
+      const weekPlan = input.weekPlans[weeklySummary.weekNumber - 1];
+
+      if (!weekPlan || weekPlan.isRaceWeek) {
+        continue;
+      }
+
+      for (const flag of weeklySummary.loadRiskFlags) {
+        const bucket =
+          flag === "threshold_cap_exceeded"
+            ? "threshold"
+            : flag === "vo2_cap_exceeded"
+              ? "vo2"
+              : "repetition";
+
+        if (
+          softenWeekForIntensityBucket({
+            drafts: input.drafts,
+            weekNumber: weeklySummary.weekNumber,
+            bucket,
+          })
+        ) {
+          changed = true;
+          changedThisIteration = true;
+        }
+      }
+    }
+
+    if (!changedThisIteration) {
+      break;
+    }
+  }
+
+  return { changed };
+}
+
+function enforceWeeklyGrayZoneBalance(input: {
+  drafts: WeekWorkoutDraft[];
+  input: NormalizedPlanInput;
+  metrics: DerivedMetrics;
+  weekPlans: WeekPlan[];
+}): { changed: boolean } {
+  let changed = false;
+  const targets = getIntensityTargets(input.input.goal.planMode);
+
+  for (let iteration = 0; iteration < 3; iteration += 1) {
+    const audit = buildCurrentIntensityAudit(input);
+    let changedThisIteration = false;
+
+    for (const weeklySummary of audit.weeklySummaries) {
+      const weekPlan = input.weekPlans[weeklySummary.weekNumber - 1];
+
+      if (!weekPlan || weekPlan.isRaceWeek || weeklySummary.totalRunKm <= 0) {
+        continue;
+      }
+
+      const moderateAndHardShare =
+        weeklySummary.moderateShare + weeklySummary.hardShare;
+
+      if (moderateAndHardShare <= targets.moderateHardMaxShare + 0.04) {
+        continue;
+      }
+
+      if (
+        softenWeekForGrayZone({
+          drafts: input.drafts,
+          weekNumber: weeklySummary.weekNumber,
+        })
+      ) {
+        changed = true;
+        changedThisIteration = true;
+      }
+    }
+
+    if (!changedThisIteration) {
+      break;
+    }
+  }
+
+  return { changed };
+}
+
+function enforceStressJumpRules(input: {
+  drafts: WeekWorkoutDraft[];
+  input: NormalizedPlanInput;
+  metrics: DerivedMetrics;
+  weekPlans: WeekPlan[];
+}): { changed: boolean } {
+  let changed = false;
+
+  for (let iteration = 0; iteration < 3; iteration += 1) {
+    const audit = buildCurrentIntensityAudit(input);
+    let changedThisIteration = false;
+
+    for (let index = 1; index < input.weekPlans.length; index += 1) {
+      const previousWeek = input.weekPlans[index - 1];
+      const currentWeek = input.weekPlans[index];
+      const previousSummary = audit.weeklySummaries[index - 1];
+      const currentSummary = audit.weeklySummaries[index];
+
+      if (
+        !previousSummary ||
+        !currentSummary ||
+        currentWeek.isRaceWeek ||
+        currentWeek.isCutback ||
+        currentWeek.isTaper
+      ) {
+        continue;
+      }
+
+      const volumeJump =
+        currentWeek.volumeKm > previousWeek.volumeKm + Math.max(2, previousWeek.volumeKm * 0.06);
+      const longRunJump =
+        currentWeek.longRunKm > previousWeek.longRunKm + Math.max(1, previousWeek.longRunKm * 0.08);
+      const intensityJump =
+        currentSummary.hardKm + currentSummary.moderateKm >
+        previousSummary.hardKm + previousSummary.moderateKm + 1;
+      const hillJump =
+        currentSummary.hillLoadKm > previousSummary.hillLoadKm + 0.8 &&
+        !canCarryHillLoadIncrease(input);
+      const jumpCount = [volumeJump, longRunJump, intensityJump, hillJump].filter(
+        Boolean,
+      ).length;
+
+      if (
+        longRunJump &&
+        hasLongRunIntensity(input.drafts, currentWeek.weekNumber) &&
+        !canCarryLongRunIntensityIncrease(input)
+      ) {
+        if (
+          softenLongRunIntensity({
+            drafts: input.drafts,
+            weekNumber: currentWeek.weekNumber,
+          })
+        ) {
+          changed = true;
+          changedThisIteration = true;
+          continue;
+        }
+      }
+
+      if (jumpCount < 3) {
+        continue;
+      }
+
+      if (
+        softenWeekForLoadStack({
+          drafts: input.drafts,
+          weekNumber: currentWeek.weekNumber,
+        })
+      ) {
+        changed = true;
+        changedThisIteration = true;
+      }
+    }
+
+    if (!changedThisIteration) {
+      break;
+    }
+  }
+
+  return { changed };
+}
+
+function buildCurrentIntensityAudit(input: {
+  drafts: WeekWorkoutDraft[];
+  input: NormalizedPlanInput;
+  metrics: DerivedMetrics;
+  weekPlans: WeekPlan[];
+}): PlanIntensityAudit {
+  const resolvedDrafts = resolveWorkoutDrafts({
+    drafts: input.drafts,
+    input: input.input,
+    metrics: input.metrics,
+    weekPlans: input.weekPlans,
+  });
+
+  return buildIntensityAudit({
+    resolvedDrafts,
+    weekPlans: input.weekPlans,
+  });
+}
+
+function buildIntensityAudit(input: {
+  resolvedDrafts: ResolvedWorkoutDraft[];
+  weekPlans: WeekPlan[];
+}): PlanIntensityAudit {
+  const weeklySummaries = input.weekPlans.map((weekPlan) =>
+    summarizeWeeklyIntensity({
+      weekNumber: weekPlan.weekNumber,
+      volumeKm: weekPlan.volumeKm,
+      workouts: input.resolvedDrafts
+        .filter((resolvedDraft) => resolvedDraft.draft.day.weekNumber === weekPlan.weekNumber)
+        .map((resolvedDraft) => ({
+          subtype: resolvedDraft.prescription.subtype,
+          role: resolvedDraft.prescription.role,
+          stress: resolvedDraft.prescription.stress,
+          distanceKm: resolvedDraft.prescription.distanceKm,
+          durationMin: resolvedDraft.prescription.durationMin,
+          targetPaceMaxSecPerKm:
+            resolvedDraft.prescription.targetPaceMaxSecPerKm,
+          terrain: resolvedDraft.prescription.terrain,
+          variables: resolvedDraft.prescription.variables,
+        })),
+    }),
+  );
+
+  return {
+    weeklySummaries,
+    planSummary: summarizePlanIntensity(weeklySummaries),
+  };
+}
+
+function softenWeekForIntensityBucket(input: {
+  drafts: WeekWorkoutDraft[];
+  weekNumber: number;
+  bucket: "threshold" | "vo2" | "repetition";
+}): boolean {
+  const weekDrafts = getWeekDrafts(input.drafts, input.weekNumber);
+  const candidates = weekDrafts.filter((draft) => {
+    if (draft.role === "race_day") {
+      return false;
+    }
+
+    if (input.bucket === "threshold") {
+      return draft.role === "threshold";
+    }
+
+    if (input.bucket === "vo2") {
+      return draft.subtype === "vo2_intervals" || draft.subtype === "hill_repeats";
+    }
+
+    return (
+      draft.subtype === "easy_strides" ||
+      draft.subtype === "hill_strides" ||
+      draft.subtype === "fartlek"
+    );
+  });
+  const candidate = getLatestDraft(candidates);
+
+  if (!candidate) {
+    return false;
+  }
+
+  if (input.bucket === "threshold") {
+    softenDraftToSteady(candidate);
+    return true;
+  }
+
+  if (input.bucket === "vo2") {
+    applyWorkoutSubtype(candidate, "fartlek");
+    return true;
+  }
+
+  softenDraftToEasy(candidate);
+  return true;
+}
+
+function softenWeekForGrayZone(input: {
+  drafts: WeekWorkoutDraft[];
+  weekNumber: number;
+}): boolean {
+  const weekDrafts = getWeekDrafts(input.drafts, input.weekNumber);
+  const candidate =
+    getLatestDraft(
+      weekDrafts.filter((draft) =>
+        draft.subtype === "long_mp_blocks" ||
+        draft.subtype === "mp_steady" ||
+        draft.subtype === "hm_pace_blocks" ||
+        draft.subtype === "long_steady_finish" ||
+        draft.subtype === "medium_long_steady" ||
+        draft.subtype === "steady_aerobic" ||
+        draft.subtype === "fartlek",
+      ),
+    ) ?? null;
+
+  if (!candidate) {
+    return false;
+  }
+
+  softenGrayZoneDraft(candidate);
+  return true;
+}
+
+function softenWeekForLoadStack(input: {
+  drafts: WeekWorkoutDraft[];
+  weekNumber: number;
+}): boolean {
+  const weekDrafts = getWeekDrafts(input.drafts, input.weekNumber);
+  const candidate =
+    getLatestDraft(
+      weekDrafts.filter((draft) =>
+        draft.subtype === "hill_repeats" ||
+        draft.subtype === "vo2_intervals" ||
+        draft.subtype === "long_mp_blocks" ||
+        draft.subtype === "long_steady_finish" ||
+        draft.subtype === "mp_steady" ||
+        draft.subtype === "hm_pace_blocks" ||
+        draft.subtype === "medium_long_steady" ||
+        draft.subtype === "steady_aerobic" ||
+        draft.subtype === "fartlek" ||
+        draft.role === "threshold",
+      ),
+    ) ?? null;
+
+  if (!candidate) {
+    return false;
+  }
+
+  if (candidate.role === "threshold") {
+    softenDraftToSteady(candidate);
+    return true;
+  }
+
+  softenGrayZoneDraft(candidate);
+  return true;
+}
+
+function softenLongRunIntensity(input: {
+  drafts: WeekWorkoutDraft[];
+  weekNumber: number;
+}): boolean {
+  const longRunDraft = getWeekDrafts(input.drafts, input.weekNumber).find(
+    (draft) =>
+      draft.subtype === "long_mp_blocks" ||
+      draft.subtype === "long_steady_finish",
+  );
+
+  if (!longRunDraft) {
+    return false;
+  }
+
+  applyWorkoutSubtype(longRunDraft, "long_easy");
+  return true;
+}
+
+function softenGrayZoneDraft(draft: WeekWorkoutDraft): void {
+  if (draft.subtype === "long_mp_blocks" || draft.subtype === "long_steady_finish") {
+    applyWorkoutSubtype(draft, "long_easy");
+    return;
+  }
+
+  if (draft.subtype === "medium_long_steady") {
+    applyWorkoutSubtype(draft, "medium_long_easy");
+    return;
+  }
+
+  if (draft.subtype === "hill_repeats" || draft.subtype === "vo2_intervals") {
+    applyWorkoutSubtype(draft, "fartlek");
+    return;
+  }
+
+  softenDraftToEasy(draft);
+}
+
+function hasLongRunIntensity(
+  drafts: WeekWorkoutDraft[],
+  weekNumber: number,
+): boolean {
+  return getWeekDrafts(drafts, weekNumber).some(
+    (draft) =>
+      draft.subtype === "long_mp_blocks" ||
+      draft.subtype === "long_steady_finish",
+  );
+}
+
+function canCarryLongRunIntensityIncrease(input: {
+  input: NormalizedPlanInput;
+  metrics: DerivedMetrics;
+}): boolean {
+  return (
+    input.input.athlete.runningExperienceLevel === "advanced" &&
+    input.metrics.fitnessConfidence === "high" &&
+    input.metrics.volumeCategory !== "low_base" &&
+    input.input.history.longestRunToWeeklyVolumeRatio >= 0.28
+  );
+}
+
+function canCarryHillLoadIncrease(input: {
+  input: NormalizedPlanInput;
+  metrics: DerivedMetrics;
+}): boolean {
+  return (
+    input.input.environment.hillsAvailable &&
+    (input.input.history.elevationTolerance === "moderate" ||
+      input.input.history.elevationTolerance === "high") &&
+    input.input.athlete.injurySignal !== "current_or_serious" &&
+    input.metrics.volumeCategory !== "low_base"
+  );
+}
+
+function getIntensityTargets(planMode: PlanMode): {
+  moderateHardMaxShare: number;
+  hardMaxShare: number;
+} {
+  const targets: Record<
+    PlanMode,
+    { moderateHardMaxShare: number; hardMaxShare: number }
+  > = {
+    relaxed: { moderateHardMaxShare: 0.15, hardMaxShare: 0.05 },
+    moderate: { moderateHardMaxShare: 0.2, hardMaxShare: 0.08 },
+    aggressive: { moderateHardMaxShare: 0.25, hardMaxShare: 0.1 },
+    very_aggressive: { moderateHardMaxShare: 0.28, hardMaxShare: 0.1 },
+  };
+
+  return targets[planMode];
+}
+
+function getWeekDrafts(
+  drafts: WeekWorkoutDraft[],
+  weekNumber: number,
+): WeekWorkoutDraft[] {
+  return drafts.filter((draft) => draft.day.weekNumber === weekNumber);
+}
+
+function getLatestDraft(drafts: WeekWorkoutDraft[]): WeekWorkoutDraft | null {
+  if (drafts.length === 0) {
+    return null;
+  }
+
+  return [...drafts].sort(
+    (first, second) => second.day.date.getTime() - first.day.date.getTime(),
+  )[0];
+}
+
 function buildPrescriptionFromDraft(input: {
   draft: WeekWorkoutDraft;
   weekDrafts: WeekWorkoutDraft[];
@@ -2705,6 +3250,9 @@ function buildPrescriptionFromDraft(input: {
 
   return {
     ...input.draft.day,
+    subtype: input.draft.subtype,
+    role: input.draft.role,
+    stress: input.draft.stress,
     workoutType: resolvedPrescription.workoutType,
     title: resolvedPrescription.title,
     description: resolvedPrescription.description,
@@ -2717,6 +3265,7 @@ function buildPrescriptionFromDraft(input: {
     purpose: resolvedPrescription.purpose,
     instructions: resolvedPrescription.instructions,
     structuredWorkout: resolvedPrescription.structuredWorkout,
+    variables: resolvedPrescription.variables,
   };
 }
 
@@ -3014,6 +3563,7 @@ function addPlanSummaryWarnings(input: {
   input: NormalizedPlanInput;
   metrics: DerivedMetrics;
   weekPlans: WeekPlan[];
+  intensityAudit: PlanIntensityAudit;
 }): void {
   const minimumMeaningfulWeeks = input.input.goal.raceType === "marathon" ? 12 : 8;
 
@@ -3028,11 +3578,32 @@ function addPlanSummaryWarnings(input: {
       "Longest recent run is well below the planned peak long run, so long-run progression is capped and cutback weeks matter.",
     );
   }
+
+  const targets = getIntensityTargets(input.input.goal.planMode);
+
+  if (input.intensityAudit.planSummary.hardShare > targets.hardMaxShare + 0.02) {
+    addUniqueWarning(
+      input.input.warnings,
+      "Whole-plan hard-work share is near the top of the safe range, so quality sessions should stay controlled and easy days should remain easy.",
+    );
+  }
+
+  if (
+    input.intensityAudit.planSummary.moderateShare +
+      input.intensityAudit.planSummary.hardShare >
+    targets.moderateHardMaxShare + 0.04
+  ) {
+    addUniqueWarning(
+      input.input.warnings,
+      "Whole-plan moderate and hard running is close to the upper safe range for this goal mode.",
+    );
+  }
 }
 
 function buildPlanGenerationMetadata(input: {
   metrics: DerivedMetrics;
   weekPlans: WeekPlan[];
+  intensityAudit: PlanIntensityAudit;
   assumptions: string[];
   warnings: string[];
 }): Pick<
@@ -3055,16 +3626,52 @@ function buildPlanGenerationMetadata(input: {
     generation_warnings: [...input.warnings],
     phase_summaries: buildPhaseSummaries(input.weekPlans),
     weekly_summaries: input.weekPlans.map((weekPlan) => ({
-      week_number: weekPlan.weekNumber,
-      phase: weekPlan.phase,
-      volume_km: weekPlan.volumeKm,
-      long_run_km: weekPlan.longRunKm,
-      is_cutback: weekPlan.isCutback,
-      is_taper: weekPlan.isTaper,
-      is_race_week: weekPlan.isRaceWeek,
+      ...buildWeeklyGenerationSummary({
+        weekPlan,
+        intensitySummary:
+          input.intensityAudit.weeklySummaries[weekPlan.weekNumber - 1] ?? null,
+      }),
     })),
     peak_summary: buildPeakSummary(input.weekPlans),
     taper_summary: buildTaperSummary(input.weekPlans),
+  };
+}
+
+function buildWeeklyGenerationSummary(input: {
+  weekPlan: WeekPlan;
+  intensitySummary: WeeklyIntensitySummary | null;
+}): GeneratedTrainingPlan["trainingPlan"]["weekly_summaries"][number] {
+  const baseSummary = {
+    week_number: input.weekPlan.weekNumber,
+    phase: input.weekPlan.phase,
+    volume_km: input.weekPlan.volumeKm,
+    long_run_km: input.weekPlan.longRunKm,
+    is_cutback: input.weekPlan.isCutback,
+    is_taper: input.weekPlan.isTaper,
+    is_race_week: input.weekPlan.isRaceWeek,
+  };
+
+  if (!input.intensitySummary) {
+    return baseSummary;
+  }
+
+  return {
+    ...baseSummary,
+    intensity_total_run_km: input.intensitySummary.totalRunKm,
+    intensity_easy_km: input.intensitySummary.easyKm,
+    intensity_moderate_km: input.intensitySummary.moderateKm,
+    intensity_threshold_km: input.intensitySummary.thresholdKm,
+    intensity_vo2_km: input.intensitySummary.vo2Km,
+    intensity_repetition_km: input.intensitySummary.repetitionKm,
+    intensity_hard_km: input.intensitySummary.hardKm,
+    hill_load_km: input.intensitySummary.hillLoadKm,
+    intensity_easy_share: input.intensitySummary.easyShare,
+    intensity_moderate_share: input.intensitySummary.moderateShare,
+    intensity_hard_share: input.intensitySummary.hardShare,
+    threshold_cap_km: input.intensitySummary.thresholdCapKm,
+    vo2_cap_km: input.intensitySummary.vo2CapKm,
+    repetition_cap_km: input.intensitySummary.repetitionCapKm,
+    load_risk_flags: input.intensitySummary.loadRiskFlags,
   };
 }
 
