@@ -1,5 +1,35 @@
 # Decisions
 
+## 2026-05-29 — Treat Initial Plan Generator As Complete For Current Product State
+
+Decision:
+Treat the Milestone 12B-12L initial plan generator as the current source of
+truth for new marathon and half-marathon plan creation.
+
+Reason:
+The generator now follows the external plan-generation specification closely
+enough for the current product constraints: server-side generation, six-week
+app/Strava/manual history assembly, richer evidence analysis, feasibility
+confirmation, persisted metadata, variable-driven workout prescriptions,
+intensity and load-risk enforcement, terrain/course specificity, and a
+conformance regression harness.
+
+Status:
+Milestone 12L adds `tests/planGeneratorConformance.test.mjs` and documents the
+full generator architecture in `docs/PLAN_GENERATOR_LOGIC.md`. The conformance
+estimate is about 88%, with remaining gaps intentionally deferred because they
+require larger product changes: full aerobic-efficiency modeling, true
+power-zone modeling, detailed weather modeling, persisted fueling/nutrition,
+true double-run scheduling, and adaptive adjustment understanding the richer
+prescriptions.
+
+Implementation rule:
+Do not rewrite the initial generator again unless a specific spec regression or
+production issue is found. The next training milestone should improve
+adjustment logic so it understands generated workout intent, weekly caps,
+terrain load, and metadata while preserving completed workouts and export
+contracts.
+
 ## 2026-05-28 — Persist Plan Generator Metadata Before Further Intelligence
 
 Decision:

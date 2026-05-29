@@ -51,7 +51,8 @@ For production deployment setup and production smoke tests, use
 - A header sign-out button signs out the current browser session and returns to `/login`.
 - User-owned Supabase tables are protected with `user_id` ownership and RLS policies from Milestone 9.5.
 - Profile and race goal forms save to Supabase.
-- Rule-based plan generation creates planned workouts from six-week evidence and a variable-driven workout subtype library, while keeping existing DB-safe workout types, structured workout documents, and persisted generation metadata.
+- Rule-based initial plan generation is now treated as complete for the current product state. It creates planned workouts from six-week evidence, Strava detail/stream signals when available, feasibility checks, terrain/durability rules, intensity caps, and a variable-driven workout subtype library while preserving DB-safe workout types, structured workout documents, and persisted generation metadata.
+- The detailed generator architecture and rule reference is in [`docs/PLAN_GENERATOR_LOGIC.md`](docs/PLAN_GENERATOR_LOGIC.md).
 - New plans start today by default, can start on a selected future date, and block starts that are in the past or too close to race day.
 - Manual workout logging saves completed workouts and generates rule-based workout scores.
 - Plan adjustment logic can update future planned workouts with an audit record.
@@ -331,10 +332,15 @@ Common fixes:
 
 ## Next planned milestone
 
-Continue tightening the adaptive training loop before adding broad new features:
+The initial plan generator is complete enough to treat as the app's current
+source of truth. The next safe training milestone is to teach adaptive
+adjustment logic about the richer generated prescriptions and metadata before
+adding broad new features:
 
 - keep training logic deterministic and rule-based;
-- keep tightening the dashboard and active-plan reliability work;
+- keep tightening the dashboard and active-plan reliability work as needed;
+- update adjustment logic gradually so it understands workout intent, weekly
+  caps, terrain load, and generated metadata;
 - keep Intervals.icu as the primary workout export path;
 - treat the direct Garmin local bridge as experimental even though pace-target publishing has been manually verified;
 - keep Garmin cleanup explicit and user-confirmed; do not add silent automatic Garmin deletion/update.

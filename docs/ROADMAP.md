@@ -14,7 +14,7 @@ The correct strategy is not to build the full Run.B*tch.app vision immediately. 
 1. user profile;
 2. race goal;
 3. rule-based training plan generation;
-4. calibration workout;
+4. structured planned workouts;
 5. workout logging;
 6. workout scoring;
 7. plan adjustment;
@@ -42,6 +42,8 @@ Everything else is secondary until this loop works reliably.
 The private MVP core loop is now working in production. The hosted Direct
 Garmin bridge deployment is complete as infrastructure-only work; no app UI,
 plan generation, or core product functionality changed for that deployment.
+The initial plan generator has since been rebuilt through Milestones 12B-12L
+and is treated as complete for the current product state.
 
 Currently built:
 
@@ -49,6 +51,10 @@ Currently built:
 - Trusted first-time users can create accounts through OTP login.
 - Profile, race goal, plan generation, manual workout logging, workout scoring,
   adaptive plan adjustment, dashboard readiness/status, and plan deletion.
+- Spec-compatible rule-based initial plan generation using six-week history,
+  Strava detail/stream evidence when available, feasibility checks, persisted
+  metadata, variable-driven workout subtypes, intensity/load-risk enforcement,
+  terrain/course specificity, and a conformance regression harness.
 - Intervals.icu planned-workout export as the primary supported public-style
   export path and fallback.
 - Private hosted Direct Garmin bridge as a secondary path for workouts that
@@ -83,8 +89,8 @@ Current non-goals:
 | User login with username/password | Yes | Use Supabase Auth or custom auth. Supabase is recommended. |
 | User profile/questionnaire | Yes | Straightforward database forms. |
 | Marathon/half-marathon goal setup | Yes | Start with manual event input. Add race database later. |
-| Plan generation | Yes | Start rule-based, not fully AI-based. |
-| Calibration workout | Yes | Build it as the first required workout. |
+| Plan generation | Yes | Current rule-based generator is spec-compatible enough for the product state and remains deterministic. |
+| Calibration workout | Legacy support only | The old calibration workout type still exists for scoring/export compatibility, but new initial plans no longer force a calibration run first. |
 | Workout calendar/list | Yes | Store generated workouts in database. |
 | Intervals.icu planned-workout publishing | Yes | Use Intervals.icu as the first device-sync bridge to Garmin Connect and the Forerunner 265. |
 | Manual workout logging | Yes | Build before Strava. |
@@ -141,13 +147,12 @@ The first MVP is a private web app that can:
 1. create a user profile;
 2. enter a marathon or half-marathon goal;
 3. generate a 12-20 week training plan;
-4. force the first session to be a calibration workout;
-5. generate structured workout documents for planned runs;
-6. push planned run workouts to Intervals.icu so Intervals.icu can sync them to Garmin Connect and the Forerunner 265;
-7. log workouts manually;
-8. score workouts;
-9. adjust future workouts;
-10. show progress and a projected finish-time range.
+4. generate structured workout documents for planned runs;
+5. push planned run workouts to Intervals.icu so Intervals.icu can sync them to Garmin Connect and the Forerunner 265;
+6. log workouts manually;
+7. score workouts;
+8. adjust future workouts;
+9. show progress and a projected finish-time range.
 
 ### 4.1 Excluded from MVP
 
@@ -395,11 +400,12 @@ recovery
 rest
 strength_optional
 calibration
+cross_training
 ```
 
 **Plan rules:**
 
-- first workout is always calibration;
+- new initial plans no longer force a calibration workout first;
 - long run once per week;
 - one quality workout per week at first;
 - later two quality workouts only if profile supports it;
@@ -417,7 +423,7 @@ Create a deterministic marathon/half-marathon plan generator.
 Inputs: runner profile and race goal.
 Outputs: planned_workouts for each week until race.
 Rules:
-- First workout must be calibration.
+- New initial plans should start with a normal scheduled workout, not a forced calibration run.
 - Include easy runs, long runs, tempo, intervals, marathon pace, recovery, rest, and optional strength.
 - Respect available training days and terrain availability.
 - Include recovery weeks every 4th week.
@@ -437,11 +443,32 @@ Add unit tests for plan generation and workout document generation.
 - planned run workouts have structured documents ready for Intervals.icu publishing;
 - plan looks reasonable when inspected manually.
 
+**Current status:**
+
+The initial plan generator has been upgraded beyond this original v1 roadmap.
+It now uses the server-side generation route, six-week app/Strava/manual
+history, a dedicated evidence analyzer, goal-feasibility confirmation,
+persisted generator metadata, a variable-driven workout library, intensity and
+hill-load risk enforcement, terrain/course specificity, and the
+`tests/planGeneratorConformance.test.mjs` regression matrix. See
+`docs/PLAN_GENERATOR_LOGIC.md` for the current full architecture.
+
 ---
 
 ### Phase 6 - Calibration workout
 
-**Default calibration workout:**
+**Status: legacy/postponed**
+
+Calibration was part of the original roadmap, but new initial plans no longer
+force the first workout to be a calibration run. The generator now uses
+six-week history, saved threshold pace, easy pace, Strava evidence, and
+feasibility confidence instead.
+
+The `calibration` workout type and export/scoring support remain in the code so
+older data and tests stay compatible. A future calibration feature can be
+reintroduced only if it has a clearer role in the adaptive adjustment loop.
+
+**Original calibration workout idea:**
 
 ```text
 10 min easy warmup
@@ -464,9 +491,10 @@ Show explanation of how calibration affects the plan.
 
 **Checkpoint:**
 
-- calibration workout appears first;
-- logging calibration updates estimated training paces;
-- future workouts use updated paces.
+- legacy calibration rows can still be scored/exported safely;
+- new generated initial plans do not force calibration first;
+- future calibration work should be designed as part of the adjustment loop,
+  not as a required first workout.
 
 ---
 
@@ -684,7 +712,7 @@ Add Intervals.icu planned-workout publishing.
 Create /lib/intervals/client.ts, /lib/intervals/workoutDocuments.ts, and /lib/intervals/publishWorkouts.ts.
 Create intervals_connections and intervals_workout_syncs tables if needed.
 Use server-only environment variables for the private MVP Intervals.icu athlete/API credentials.
-Generate structured workout documents for calibration, easy, long run, tempo, interval, and marathon-pace runs.
+Generate structured workout documents for generated run workouts, including easy, long run, tempo, interval, marathon-pace, recovery, and legacy calibration rows.
 Build Intervals.icu calendar event payloads with category WORKOUT, type Run, name, start_date_local, stable external_id, and structured description or supported workout file payload.
 Upsert future planned run workouts to Intervals.icu.
 Record sync status, Intervals.icu event ID, last synced time, and errors.
@@ -1297,7 +1325,7 @@ Weeks until race calculated
 
 ```text
 Plan generated
-First workout is calibration
+First workout is a normal scheduled workout, not a forced calibration run
 Plan respects available days
 Plan has taper
 Plan has recovery weeks
@@ -1462,7 +1490,7 @@ Avatar
 type PlannedWorkout = {
   id: string;
   date: string;
-  type: "easy" | "long_run" | "tempo" | "interval" | "marathon_pace" | "recovery" | "rest" | "strength_optional" | "calibration";
+  type: "easy" | "long_run" | "tempo" | "interval" | "marathon_pace" | "recovery" | "rest" | "strength_optional" | "cross_training" | "calibration";
   distanceKm?: number;
   durationMin?: number;
   targetPaceMinPerKm?: {

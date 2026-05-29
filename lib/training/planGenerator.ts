@@ -2992,7 +2992,7 @@ function enforceStressJumpRules(input: {
 }): { changed: boolean } {
   let changed = false;
 
-  for (let iteration = 0; iteration < 3; iteration += 1) {
+  for (let iteration = 0; iteration < 10; iteration += 1) {
     const audit = buildCurrentIntensityAudit(input);
     let changedThisIteration = false;
 
@@ -3020,8 +3020,7 @@ function enforceStressJumpRules(input: {
         currentSummary.hardKm + currentSummary.moderateKm >
         previousSummary.hardKm + previousSummary.moderateKm + 1;
       const hillJump =
-        currentSummary.hillLoadKm > previousSummary.hillLoadKm + 0.8 &&
-        !canCarryHillLoadIncrease(input);
+        currentSummary.hillLoadKm > previousSummary.hillLoadKm + 0.8;
       const jumpCount = [volumeJump, longRunJump, intensityJump, hillJump].filter(
         Boolean,
       ).length;
@@ -3203,6 +3202,8 @@ function softenWeekForLoadStack(input: {
         draft.subtype === "medium_long_steady" ||
         draft.subtype === "steady_aerobic" ||
         draft.subtype === "fartlek" ||
+        draft.subtype === "hill_strides" ||
+        draft.subtype === "easy_strides" ||
         draft.role === "threshold",
       ),
     ) ?? null;
@@ -3277,19 +3278,6 @@ function canCarryLongRunIntensityIncrease(input: {
     input.metrics.fitnessConfidence === "high" &&
     input.metrics.volumeCategory !== "low_base" &&
     input.input.history.longestRunToWeeklyVolumeRatio >= 0.28
-  );
-}
-
-function canCarryHillLoadIncrease(input: {
-  input: NormalizedPlanInput;
-  metrics: DerivedMetrics;
-}): boolean {
-  return (
-    input.input.environment.hillsAvailable &&
-    (input.input.history.elevationTolerance === "moderate" ||
-      input.input.history.elevationTolerance === "high") &&
-    input.input.athlete.injurySignal !== "current_or_serious" &&
-    input.metrics.volumeCategory !== "low_base"
   );
 }
 

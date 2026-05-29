@@ -236,21 +236,24 @@ Run these when you want to confirm local behavior still works:
 3. Confirm the Sign out button appears in the header after login.
 4. Open Dashboard, Profile, Goal, Plan, Workouts, and Settings.
 5. Confirm Dashboard and Plan load the active plan.
-6. Log one manual workout.
-7. Confirm the workout receives a score.
-8. If the workout should trigger an adaptive adjustment, confirm future
+6. Generate a disposable plan and review the history/assumption/warning summary.
+7. Confirm generated run workouts have structured workout details and no forced
+   first calibration run.
+8. Log one manual workout.
+9. Confirm the workout receives a score.
+10. If the workout should trigger an adaptive adjustment, confirm future
    planned workouts update and the reason is visible.
-9. Test deletion only with disposable data.
-10. If Intervals env vars are configured, publish one future planned workout.
-11. If Intervals env vars are not configured, confirm the app shows a clear
+11. Test deletion only with disposable data.
+12. If Intervals env vars are configured, publish one future planned workout.
+13. If Intervals env vars are not configured, confirm the app shows a clear
     missing-config message.
-12. With Garmin bridge env vars unset, confirm Direct Garmin shows unavailable.
-13. If testing Direct Garmin locally, start the bridge and confirm Settings
+14. With Garmin bridge env vars unset, confirm Direct Garmin shows unavailable.
+15. If testing Direct Garmin locally, start the bridge and confirm Settings
     shows bridge status without exposing the bridge key.
-14. If Strava env vars are configured, connect Strava and run manual import.
-15. If webhook testing is configured with a public callback URL, create a new
+16. If Strava env vars are configured, connect Strava and run manual import.
+17. If webhook testing is configured with a public callback URL, create a new
     Strava activity and confirm a webhook event is stored or safely ignored.
-16. Use Settings -> Process pending webhook events to confirm the fallback still
+18. Use Settings -> Process pending webhook events to confirm the fallback still
     works.
 
 ## 6. Local Verification Commands
@@ -260,6 +263,7 @@ Run these before committing meaningful code changes:
 ```bash
 npm run typecheck
 npm run lint
+npm test -- tests/planGeneratorConformance.test.mjs
 npm test
 npm run build
 ```
