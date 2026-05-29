@@ -138,6 +138,7 @@ function makeStravaEvidence(overrides = {}) {
     perceivedExertion: overrides.perceivedExertion ?? null,
     workoutType: overrides.workoutType ?? null,
     paceFadePercent: overrides.paceFadePercent ?? null,
+    heartRateDriftPercent: overrides.heartRateDriftPercent ?? null,
     negativeSplit: overrides.negativeSplit ?? null,
     splitPaceVariationPercent: overrides.splitPaceVariationPercent ?? null,
     sustainedHardSectionCount: overrides.sustainedHardSectionCount ?? 0,
@@ -403,5 +404,73 @@ describe("training evidence analyzer", () => {
         assumption.includes("Strava detail/stream evidence was available"),
       ),
     );
+  });
+
+  it("uses Strava pace fade, negative splits, and HR drift as durability evidence", () => {
+    const evidence = analyzeTrainingEvidence({
+      runnerProfile: makeProfile(),
+      raceGoal: makeRaceGoal(),
+      selectedRunningDaysPerWeek: 4,
+      recentHistory: makeWeeks([35, 36, 37, 38, 39, 40]),
+      recentHistoryWorkouts: [
+        makeWorkout({
+          id: "fade-1",
+          source: "strava",
+          source_activity_id: "activity-fade-1",
+          avg_pace_sec_per_km: 370,
+        }),
+        makeWorkout({
+          id: "fade-2",
+          source: "strava",
+          source_activity_id: "activity-fade-2",
+          avg_pace_sec_per_km: 365,
+        }),
+      ],
+      stravaActivityEvidence: [
+        makeStravaEvidence({
+          stravaActivityId: "activity-fade-1",
+          hasHeartRateStream: true,
+          paceFadePercent: 8,
+          heartRateDriftPercent: 7,
+          classificationHint: "easy_non_limit",
+        }),
+        makeStravaEvidence({
+          stravaActivityId: "activity-fade-2",
+          hasHeartRateStream: true,
+          paceFadePercent: -2,
+          heartRateDriftPercent: 3,
+          negativeSplit: true,
+          classificationHint: "easy_non_limit",
+        }),
+      ],
+    });
+
+    assert.equal(evidence.paceFadeAvgPercent, 3);
+    assert.equal(evidence.heartRateDriftAvgPercent, 5);
+    assert.equal(evidence.negativeSplitCount6w, 1);
+    assert.equal(evidence.durabilityTrend, "caution");
+    assert.ok(
+      evidence.assumptions.some((assumption) =>
+        assumption.includes("negative-split evidence"),
+      ),
+    );
+  });
+
+  it("keeps durability trend unknown when stream/detail durability data is missing", () => {
+    const evidence = analyzeTrainingEvidence({
+      runnerProfile: makeProfile({
+        current_weekly_mileage_km: null,
+        longest_recent_run_km: null,
+      }),
+      raceGoal: makeRaceGoal(),
+      selectedRunningDaysPerWeek: 3,
+      recentHistory: [],
+      recentHistoryWorkouts: [],
+    });
+
+    assert.equal(evidence.paceFadeAvgPercent, null);
+    assert.equal(evidence.heartRateDriftAvgPercent, null);
+    assert.equal(evidence.negativeSplitCount6w, 0);
+    assert.equal(evidence.durabilityTrend, "unknown");
   });
 });

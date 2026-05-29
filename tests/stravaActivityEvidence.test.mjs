@@ -96,6 +96,7 @@ describe("Strava activity evidence", () => {
     assert.equal(evidence.classificationHint, "race_time_trial");
     assert.equal(evidence.altitudeRangeM, 30);
     assert.equal(evidence.gradeRangePercent, 4);
+    assert.equal(evidence.heartRateDriftPercent, 14.8);
     assert.ok(
       evidence.effortSignals.some((signal) =>
         signal.includes("Strava PR/best-effort"),
@@ -128,6 +129,42 @@ describe("Strava activity evidence", () => {
     });
 
     assert.equal(evidence.classificationHint, "possible_near_max");
+  });
+
+  it("calculates HR drift from streams when distance, time, and heart-rate data exist", () => {
+    const summary = makeSummary({
+      id: "drift-1",
+      distanceM: 6000,
+      movingTimeSec: 2100,
+    });
+    const evidence = buildStravaActivityEvidence({
+      summary,
+      detail: makeDetail(summary),
+      streams: makeStreams({
+        time: [0, 600, 1200, 1800],
+        distance: [0, 2000, 4000, 6000],
+        heartrate: [140, 142, 154, 158],
+      }),
+    });
+
+    assert.equal(evidence.heartRateDriftPercent, 10.6);
+    assert.ok(
+      evidence.effortSignals.some((signal) =>
+        signal.includes("heart-rate drift 10.6%"),
+      ),
+    );
+  });
+
+  it("leaves HR drift unknown when stream data is missing", () => {
+    const summary = makeSummary({ id: "missing-streams-1" });
+    const evidence = buildStravaActivityEvidence({
+      summary,
+      detail: makeDetail(summary),
+      streams: null,
+    });
+
+    assert.equal(evidence.heartRateDriftPercent, null);
+    assert.equal(evidence.paceFadePercent, null);
   });
 
   it("enriches only eligible six-week run activities and stores compact evidence in raw summary", async () => {

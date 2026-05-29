@@ -31,6 +31,7 @@ export type StravaActivityEvidence = {
   perceivedExertion: number | null;
   workoutType: number | null;
   paceFadePercent: number | null;
+  heartRateDriftPercent: number | null;
   negativeSplit: boolean | null;
   splitPaceVariationPercent: number | null;
   sustainedHardSectionCount: number;
@@ -166,6 +167,7 @@ export function buildStravaActivityEvidence(input: {
     detail,
     streams,
   });
+  const heartRateDriftPercent = getHeartRateDriftPercent(streams);
   const sustainedHardSectionCount = getSustainedHardSectionCount({
     segmentPaces,
     averagePaceSecPerKm,
@@ -198,6 +200,7 @@ export function buildStravaActivityEvidence(input: {
     splitPaceVariationPercent,
     sustainedHardSectionCount,
     paceFadePercent: paceTrend.paceFadePercent,
+    heartRateDriftPercent,
     negativeSplit: paceTrend.negativeSplit,
     hasHeartRateStream,
     hasPowerStream,
@@ -215,6 +218,7 @@ export function buildStravaActivityEvidence(input: {
     perceivedExertion,
     workoutType: detail?.workoutType ?? null,
     paceFadePercent: paceTrend.paceFadePercent,
+    heartRateDriftPercent,
     negativeSplit: paceTrend.negativeSplit,
     splitPaceVariationPercent,
     sustainedHardSectionCount,
@@ -456,6 +460,56 @@ function getPaceFade(
   };
 }
 
+function getHeartRateDriftPercent(
+  streams: StravaActivityStreams | null,
+): number | null {
+  if (
+    !streams?.time ||
+    !streams.distance ||
+    !streams.heartrate ||
+    streams.time.length < 4 ||
+    streams.distance.length < 4 ||
+    streams.heartrate.length < 4
+  ) {
+    return null;
+  }
+
+  const lastIndex = Math.min(
+    streams.time.length,
+    streams.distance.length,
+    streams.heartrate.length,
+  ) - 1;
+  const firstDistance = streams.distance[0];
+  const lastDistance = streams.distance[lastIndex];
+  const totalDistance = lastDistance - firstDistance;
+
+  if (totalDistance <= 1000) {
+    return null;
+  }
+
+  const halfwayDistance = firstDistance + totalDistance / 2;
+  const midpointIndex = streams.distance.findIndex(
+    (distance) => distance >= halfwayDistance,
+  );
+
+  if (midpointIndex <= 0 || midpointIndex >= lastIndex) {
+    return null;
+  }
+
+  const firstHalfHr = mean(
+    streams.heartrate.slice(0, midpointIndex).filter(isPositiveNumber),
+  );
+  const secondHalfHr = mean(
+    streams.heartrate.slice(midpointIndex, lastIndex + 1).filter(isPositiveNumber),
+  );
+
+  if (firstHalfHr <= 0 || secondHalfHr <= 0) {
+    return null;
+  }
+
+  return roundToTenth(((secondHalfHr - firstHalfHr) / firstHalfHr) * 100);
+}
+
 function getSustainedHardSectionCount(input: {
   segmentPaces: number[];
   averagePaceSecPerKm: number | null;
@@ -482,6 +536,7 @@ function buildEffortSignals(input: {
   splitPaceVariationPercent: number | null;
   sustainedHardSectionCount: number;
   paceFadePercent: number | null;
+  heartRateDriftPercent: number | null;
   negativeSplit: boolean | null;
   hasHeartRateStream: boolean;
   hasPowerStream: boolean;
@@ -522,6 +577,10 @@ function buildEffortSignals(input: {
 
   if (input.paceFadePercent !== null) {
     signals.push(`pace fade ${input.paceFadePercent}%`);
+  }
+
+  if (input.heartRateDriftPercent !== null) {
+    signals.push(`heart-rate drift ${input.heartRateDriftPercent}%`);
   }
 
   if (input.negativeSplit) {

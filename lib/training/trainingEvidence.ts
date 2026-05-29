@@ -35,6 +35,8 @@ export type PowerDataAvailability = "none" | "some" | "most";
 
 export type ElevationTolerance = "unknown" | "low" | "moderate" | "high";
 
+export type DurabilityTrend = "unknown" | "stable" | "caution" | "poor";
+
 export type ThresholdEstimateSource =
   | "saved_threshold"
   | "race_time_trial"
@@ -67,6 +69,10 @@ export type TrainingEvidence = {
   longestRunToGoalDistanceRatio: number;
   longestRunToWeeklyVolumeRatio: number;
   longRunDurationCategory: LongRunDurationCategory;
+  durabilityTrend: DurabilityTrend;
+  paceFadeAvgPercent: number | null;
+  heartRateDriftAvgPercent: number | null;
+  negativeSplitCount6w: number;
   hrDataAvailability: HeartRateDataAvailability;
   powerDataAvailability: PowerDataAvailability;
   elevationGainAvgMPerWeek: number | null;
@@ -397,6 +403,32 @@ function buildDurabilityMetrics(input: {
   );
   const elevationGainAvgMPerWeek =
     input.workouts.length > 0 ? Math.round(elevationGainTotalM / 6) : null;
+  const matchedEvidence = getMatchedStravaEvidenceItems({
+    workouts: input.workouts,
+    evidenceByActivityId: input.stravaEvidenceByActivityId,
+  });
+  const paceFadeValues = matchedEvidence
+    .map((evidence) => evidence.paceFadePercent)
+    .filter(isFiniteNumber);
+  const heartRateDriftValues = matchedEvidence
+    .map((evidence) => evidence.heartRateDriftPercent)
+    .filter(isFiniteNumber);
+  const negativeSplitCount6w = matchedEvidence.filter(
+    (evidence) => evidence.negativeSplit === true,
+  ).length;
+  const paceFadeAvgPercent = averageOrNull(paceFadeValues);
+  const heartRateDriftAvgPercent = averageOrNull(heartRateDriftValues);
+  const durabilityTrend = getDurabilityTrend({
+    maxLongRunShare6w: input.historyMetrics.maxLongRunShare6w,
+    paceFadeValues,
+    heartRateDriftValues,
+    longestRunToGoalDistanceRatio: roundToHundredth(
+      input.historyMetrics.longestRunKm6w / goalDistanceKm,
+    ),
+    raceDistance: input.raceDistance,
+    historySource: input.historyMetrics.source,
+    evidenceCount: matchedEvidence.length,
+  });
 
   return {
     longestRunToGoalDistanceRatio: roundToHundredth(
@@ -411,6 +443,10 @@ function buildDurabilityMetrics(input: {
     longRunDurationCategory: getLongRunDurationCategory(
       input.historyMetrics.longestRunDurationMin6w,
     ),
+    durabilityTrend,
+    paceFadeAvgPercent,
+    heartRateDriftAvgPercent,
+    negativeSplitCount6w,
     hrDataAvailability,
     powerDataAvailability,
     elevationGainAvgMPerWeek,
@@ -420,6 +456,10 @@ function buildDurabilityMetrics(input: {
     | "longestRunToGoalDistanceRatio"
     | "longestRunToWeeklyVolumeRatio"
     | "longRunDurationCategory"
+    | "durabilityTrend"
+    | "paceFadeAvgPercent"
+    | "heartRateDriftAvgPercent"
+    | "negativeSplitCount6w"
     | "hrDataAvailability"
     | "powerDataAvailability"
     | "elevationGainAvgMPerWeek"
@@ -796,6 +836,30 @@ function addEvidenceMessages(input: {
     );
   }
 
+  if (
+    input.durabilityMetrics.paceFadeAvgPercent !== null &&
+    input.durabilityMetrics.paceFadeAvgPercent >= 6
+  ) {
+    input.warnings.push(
+      "Recent Strava pace-fade evidence suggests long-run durability should progress conservatively.",
+    );
+  }
+
+  if (
+    input.durabilityMetrics.heartRateDriftAvgPercent !== null &&
+    input.durabilityMetrics.heartRateDriftAvgPercent >= 6
+  ) {
+    input.warnings.push(
+      "Recent heart-rate drift evidence suggests long-run intensity should stay conservative.",
+    );
+  }
+
+  if (input.durabilityMetrics.negativeSplitCount6w > 0) {
+    input.assumptions.push(
+      "Recent negative-split evidence is treated as supporting durability context, not proof of race fitness.",
+    );
+  }
+
   if (input.historyMetrics.recentRamp > 1.35) {
     input.warnings.push(
       "Recent weekly load ramp is high, so the generated plan reduces early progression pressure.",
@@ -916,6 +980,67 @@ function getMatchingStravaEvidence(
   return workout.source_activity_id
     ? evidenceByActivityId.get(workout.source_activity_id) ?? null
     : null;
+}
+
+function getMatchedStravaEvidenceItems(input: {
+  workouts: LoggedWorkout[];
+  evidenceByActivityId: Map<string, StravaActivityEvidence>;
+}): StravaActivityEvidence[] {
+  const evidenceItems: StravaActivityEvidence[] = [];
+  const seenActivityIds = new Set<string>();
+
+  for (const workout of input.workouts) {
+    const evidence = getMatchingStravaEvidence(workout, input.evidenceByActivityId);
+
+    if (!evidence || seenActivityIds.has(evidence.stravaActivityId)) {
+      continue;
+    }
+
+    seenActivityIds.add(evidence.stravaActivityId);
+    evidenceItems.push(evidence);
+  }
+
+  return evidenceItems;
+}
+
+function getDurabilityTrend(input: {
+  maxLongRunShare6w: number | null;
+  paceFadeValues: number[];
+  heartRateDriftValues: number[];
+  longestRunToGoalDistanceRatio: number;
+  raceDistance: RaceDistance;
+  historySource: TrainingHistorySource;
+  evidenceCount: number;
+}): DurabilityTrend {
+  const maxPaceFade = getMaxOrZero(input.paceFadeValues);
+  const maxHeartRateDrift = getMaxOrZero(input.heartRateDriftValues);
+
+  if (
+    input.evidenceCount === 0 &&
+    input.historySource === "fallback_estimate"
+  ) {
+    return "unknown";
+  }
+
+  if (
+    (input.maxLongRunShare6w !== null && input.maxLongRunShare6w > 0.55) ||
+    maxPaceFade >= 10 ||
+    maxHeartRateDrift >= 10
+  ) {
+    return "poor";
+  }
+
+  if (
+    (input.maxLongRunShare6w !== null && input.maxLongRunShare6w > 0.42) ||
+    maxPaceFade >= 6 ||
+    maxHeartRateDrift >= 6 ||
+    (input.raceDistance === "marathon" &&
+      input.longestRunToGoalDistanceRatio < 0.35)
+  ) {
+    return "caution";
+  }
+
+  return "stable";
 }
 
 function getLongRunDurationCategory(
@@ -1053,6 +1178,22 @@ function roundDistance(distanceKm: number): number {
 
 function roundToTenth(value: number): number {
   return Math.round(value * 10) / 10;
+}
+
+function averageOrNull(values: number[]): number | null {
+  if (values.length === 0) {
+    return null;
+  }
+
+  return roundToTenth(values.reduce((total, value) => total + value, 0) / values.length);
+}
+
+function getMaxOrZero(values: number[]): number {
+  return values.length > 0 ? Math.max(...values) : 0;
+}
+
+function isFiniteNumber(value: number | null): value is number {
+  return typeof value === "number" && Number.isFinite(value);
 }
 
 function roundToHundredth(value: number): number {

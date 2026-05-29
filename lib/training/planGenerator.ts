@@ -507,6 +507,9 @@ function normalizePlanInput(input: {
         hasHillSignal(input.raceGoal.course_elevation_notes),
       weatherCaution: hasWeatherCautionSignal(input.raceGoal.expected_weather_notes),
       effortTargetBias:
+        (!terrainAvailable.includes("flat") &&
+          !terrainAvailable.includes("track") &&
+          !terrainAvailable.includes("treadmill")) ||
         terrainAvailable.includes("trails") ||
         input.raceGoal.race_course_profile === "hilly" ||
         input.raceGoal.race_course_profile === "mountainous" ||
@@ -751,6 +754,7 @@ function deriveMetrics(input: {
     heightCm: input.input.athlete.heightCm,
     weightKg: input.input.athlete.weightKg,
     avgKm6w: input.input.history.avgKm6w,
+    durabilityTrend: input.input.history.durabilityTrend,
   });
   const peakLongRunKm = getPeakLongRunKm({
     raceDistance: input.input.goal.raceType,
@@ -762,6 +766,7 @@ function deriveMetrics(input: {
       input.input.availability.longRunDay,
       input.input.availability,
     ),
+    durabilityTrend: input.input.history.durabilityTrend,
   });
   const initialLongRunKm = getInitialLongRunKm({
     raceDistance: input.input.goal.raceType,
@@ -770,6 +775,7 @@ function deriveMetrics(input: {
     startLoadKm,
     peakLongRunKm,
     longestRunKm6w: input.input.history.longestRunKm6w,
+    durabilityTrend: input.input.history.durabilityTrend,
   });
 
   addDerivedMetricMessages({
@@ -875,6 +881,12 @@ function getCurrentRacePace(input: {
       : input.fitnessConfidence === "medium"
         ? 1.01
         : 1;
+  const durabilityEvidencePenalty =
+    input.history.durabilityTrend === "poor"
+      ? 1.04
+      : input.history.durabilityTrend === "caution"
+        ? 1.02
+        : 1;
 
   return Math.round(
     input.thresholdSecPerKm *
@@ -884,7 +896,8 @@ function getCurrentRacePace(input: {
       sourcePenalty *
       shortAnchorPenalty *
       longRunSharePenalty *
-      evidencePenalty,
+      evidencePenalty *
+      durabilityEvidencePenalty,
   );
 }
 
@@ -910,6 +923,12 @@ function getMarathonDurabilityPenalty(
     penalty *= 1.03;
   }
 
+  if (history.durabilityTrend === "poor") {
+    penalty *= 1.05;
+  } else if (history.durabilityTrend === "caution") {
+    penalty *= 1.025;
+  }
+
   return penalty;
 }
 
@@ -925,6 +944,12 @@ function getHalfMarathonDurabilityPenalty(
 
   if (history.loadConsistency < 0.67) {
     penalty *= 1.02;
+  }
+
+  if (history.durabilityTrend === "poor") {
+    penalty *= 1.03;
+  } else if (history.durabilityTrend === "caution") {
+    penalty *= 1.015;
   }
 
   return penalty;
@@ -1402,6 +1427,7 @@ function getWeeklyIncreaseCap(input: {
   heightCm: number | null;
   weightKg: number | null;
   avgKm6w: number;
+  durabilityTrend: RecentTrainingHistory["durabilityTrend"];
 }): number {
   const baseCaps: Record<VolumeCategory, number> = {
     low_base: isAggressivePlanMode(input.planMode) ? 0.05 : 0.04,
@@ -1414,6 +1440,12 @@ function getWeeklyIncreaseCap(input: {
 
   if (input.loadConsistency < 0.75) {
     cap = Math.min(cap, 0.05);
+  }
+
+  if (input.durabilityTrend === "poor") {
+    cap = Math.min(cap, 0.04);
+  } else if (input.durabilityTrend === "caution") {
+    cap = Math.min(cap, 0.055);
   }
 
   if (input.injurySignal === "current_or_serious") {
@@ -1454,6 +1486,7 @@ function getPeakLongRunKm(input: {
   peakLoadKm: number;
   easySecPerKm: number;
   longRunDayDurationCapMin: number | null;
+  durabilityTrend: RecentTrainingHistory["durabilityTrend"];
 }): number {
   const [low, high] = getLongRunPeakRange(input.raceDistance, input.volumeCategory);
   const modePosition =
@@ -1464,7 +1497,11 @@ function getPeakLongRunKm(input: {
         : input.planMode === "aggressive"
           ? 0.9
           : 0.6;
-  const categoryPeak = low + (high - low) * modePosition;
+  const durabilityMultiplier =
+    input.durabilityTrend === "poor"
+      ? 0.9
+      : 1;
+  const categoryPeak = (low + (high - low) * modePosition) * durabilityMultiplier;
   const longRunShareCap = getLongRunShareCap(input.volumeCategory) * input.peakLoadKm;
   const durationCapMin = getLongRunDurationCapMin(input.raceDistance, input.volumeCategory);
   const durationPeak = (durationCapMin * 60) / (input.easySecPerKm + 45);
@@ -1485,8 +1522,9 @@ function getInitialLongRunKm(input: {
   startLoadKm: number;
   peakLongRunKm: number;
   longestRunKm6w: number;
+  durabilityTrend: RecentTrainingHistory["durabilityTrend"];
 }): number {
-  const initialIncreaseCap =
+  let initialIncreaseCap =
     isAggressivePlanMode(input.planMode) &&
     (input.volumeCategory === "strong_hobby" ||
       input.volumeCategory === "advanced_hobby")
@@ -1494,6 +1532,13 @@ function getInitialLongRunKm(input: {
       : isAggressivePlanMode(input.planMode)
         ? 1.2
         : 1.12;
+
+  if (input.durabilityTrend === "poor") {
+    initialIncreaseCap = Math.min(initialIncreaseCap, 1.05);
+  } else if (input.durabilityTrend === "caution") {
+    initialIncreaseCap = Math.min(initialIncreaseCap, 1.08);
+  }
+
   const shareCap = getLongRunShareCap(input.volumeCategory) * input.startLoadKm;
   const distanceFloor = input.raceDistance === "marathon" ? 7 : 5;
 
@@ -1759,6 +1804,16 @@ function addDerivedMetricMessages(input: {
   ) {
     input.input.warnings.push(
       "The race course looks hilly, but recent elevation exposure is low or unknown.",
+    );
+  }
+
+  if (input.input.history.durabilityTrend === "poor") {
+    input.input.warnings.push(
+      "Recent durability evidence shows high long-run share, pace fade, or heart-rate drift, so long-run intensity and progression are kept conservative.",
+    );
+  } else if (input.input.history.durabilityTrend === "caution") {
+    input.input.warnings.push(
+      "Recent durability evidence suggests caution, so the plan avoids stacking long-run growth with demanding terrain or pace work.",
     );
   }
 
@@ -2212,7 +2267,8 @@ function getLongRunSubtype(input: {
     input.weekPlan.isTaper ||
     input.weekPlan.phase === "race_prep" ||
     input.input.athlete.injurySignal === "current_or_serious" ||
-    input.input.history.recentRamp > 1.35
+    input.input.history.recentRamp > 1.35 ||
+    hasWeakLongRunDurability(input.input.history)
   ) {
     return "long_easy";
   }
@@ -2339,16 +2395,13 @@ function getPrimaryQualitySubtype(input: {
   runningExperienceLevel: AthleteProfile["runningExperienceLevel"];
   fitnessConfidence: FitnessConfidence;
 }): PlanWorkoutSubtype {
+  const hillExposureSupport = getHillExposureSupport(input);
+
   if (
-    input.input.environment.raceCourseLooksHilly &&
-    input.input.environment.hillsAvailable &&
-    (input.input.history.elevationTolerance === "moderate" ||
-      input.input.history.elevationTolerance === "high") &&
+    hillExposureSupport === "repeats" &&
     (input.phase === "base" || input.phase === "build") &&
     input.weekNumber % 4 === 0 &&
-    input.runningExperienceLevel !== "beginner" &&
-    (input.input.athlete.age === null || input.input.athlete.age < 55) &&
-    input.input.athlete.injurySignal !== "current_or_serious"
+    input.weekNumber >= 4
   ) {
     return "hill_repeats";
   }
@@ -2368,6 +2421,7 @@ function getPrimaryQualitySubtype(input: {
     if (
       !input.input.environment.flatRoutesAvailable ||
       input.input.environment.trailAccess ||
+      input.input.environment.weatherCaution ||
       input.fitnessConfidence === "low"
     ) {
       return "fartlek";
@@ -2381,6 +2435,13 @@ function getPrimaryQualitySubtype(input: {
   }
 
   if (input.runCount === 3) {
+    if (
+      input.input.environment.effortTargetBias ||
+      hasWeakLongRunDurability(input.input.history)
+    ) {
+      return "fartlek";
+    }
+
     return input.phase === "base" ? "steady_aerobic" : "cruise_intervals";
   }
 
@@ -2390,6 +2451,13 @@ function getPrimaryQualitySubtype(input: {
     }
 
     if (input.weekNumber % 3 === 0) {
+      if (
+        input.input.environment.effortTargetBias ||
+        hasWeakLongRunDurability(input.input.history)
+      ) {
+        return "fartlek";
+      }
+
       return input.input.athlete.age !== null && input.input.athlete.age >= 45
         ? "cruise_intervals"
         : "vo2_intervals";
@@ -2406,12 +2474,70 @@ function getPrimaryQualitySubtype(input: {
     input.phase === "build" &&
     input.weekNumber % 4 === 0
   ) {
+    if (
+      input.input.environment.effortTargetBias ||
+      hasWeakLongRunDurability(input.input.history)
+    ) {
+      return "fartlek";
+    }
+
     return input.metrics.volumeCategory === "advanced_hobby"
       ? "vo2_intervals"
       : "fartlek";
   }
 
   return input.phase === "base" ? "steady_aerobic" : "cruise_intervals";
+}
+
+function getHillExposureSupport(input: {
+  input: NormalizedPlanInput;
+  metrics: DerivedMetrics;
+  weekPlan: WeekPlan;
+  runningExperienceLevel: AthleteProfile["runningExperienceLevel"];
+  fitnessConfidence: FitnessConfidence;
+}): "none" | "strides" | "repeats" {
+  if (
+    !input.input.environment.hillsAvailable ||
+    !input.input.environment.raceCourseLooksHilly ||
+    input.weekPlan.isCutback ||
+    input.weekPlan.isTaper ||
+    input.weekPlan.isRaceWeek ||
+    input.input.athlete.injurySignal === "current_or_serious" ||
+    input.input.history.recentRamp > 1.35 ||
+    input.input.history.elevationTolerance === "unknown" ||
+    input.input.history.elevationTolerance === "low"
+  ) {
+    return "none";
+  }
+
+  if (
+    input.runningExperienceLevel === "beginner" ||
+    input.fitnessConfidence === "low" ||
+    input.input.history.durabilityTrend === "poor" ||
+    (input.input.athlete.age !== null && input.input.athlete.age >= 55)
+  ) {
+    return "strides";
+  }
+
+  if (
+    input.input.history.elevationTolerance === "high" ||
+    (input.input.history.elevationTolerance === "moderate" &&
+      input.metrics.volumeCategory !== "low_base" &&
+      input.input.history.durabilityTrend !== "caution")
+  ) {
+    return "repeats";
+  }
+
+  return "strides";
+}
+
+function hasWeakLongRunDurability(history: RecentTrainingHistory): boolean {
+  return (
+    history.durabilityTrend === "poor" ||
+    (history.paceFadeAvgPercent !== null && history.paceFadeAvgPercent >= 6) ||
+    (history.heartRateDriftAvgPercent !== null &&
+      history.heartRateDriftAvgPercent >= 6)
+  );
 }
 
 function pickQualityDay(input: {
@@ -2583,10 +2709,15 @@ function assignStrideDraft(input: {
     return;
   }
 
+  const hillExposureSupport = getHillExposureSupport({
+    input: input.input,
+    metrics: input.metrics,
+    weekPlan: input.weekPlan,
+    runningExperienceLevel: input.input.athlete.runningExperienceLevel,
+    fitnessConfidence: input.metrics.fitnessConfidence,
+  });
   const strideSubtype =
-    input.input.environment.hillsAvailable &&
-    input.input.history.elevationTolerance !== "low" &&
-    input.input.history.elevationTolerance !== "unknown" &&
+    hillExposureSupport !== "none" &&
     input.weekPlan.weekNumber % 3 === 0
       ? "hill_strides"
       : "easy_strides";
@@ -3208,6 +3339,7 @@ function buildPrescriptionFromDraft(input: {
     draft: input.draft,
     weekNumber: input.weekPlan.weekNumber,
     environment: input.input.environment,
+    history: input.input.history,
   });
   const resolvedPrescription = resolveWorkoutPrescription({
     subtype: input.draft.subtype,
@@ -3429,6 +3561,7 @@ function getWorkoutTerrain(input: {
   draft: WeekWorkoutDraft;
   weekNumber: number;
   environment: EnvironmentProfile;
+  history: RecentTrainingHistory;
 }): TerrainAvailable | null {
   if (
     input.draft.workoutType === "rest" ||
@@ -3449,10 +3582,6 @@ function getWorkoutTerrain(input: {
   }
 
   if (input.draft.role === "interval") {
-    if (input.environment.hillsAvailable && input.weekNumber % 5 === 0) {
-      return "hills";
-    }
-
     return pickFirstAvailable(input.environment.terrainAvailable, [
       "track",
       "treadmill",
@@ -3498,7 +3627,7 @@ function getWorkoutTerrain(input: {
   ) {
     if (
       (input.environment.raceCourseLooksHilly || input.weekNumber % 4 === 0) &&
-      input.environment.hillsAvailable
+      canUseHillTerrainForLongRun(input)
     ) {
       return "hills";
     }
@@ -3525,6 +3654,28 @@ function getWorkoutTerrain(input: {
     "trails",
     "hills",
   ]);
+}
+
+function canUseHillTerrainForLongRun(input: {
+  weekNumber: number;
+  environment: EnvironmentProfile;
+  history: RecentTrainingHistory;
+}): boolean {
+  if (
+    !input.environment.hillsAvailable ||
+    input.history.elevationTolerance === "unknown" ||
+    input.history.elevationTolerance === "low" ||
+    input.history.durabilityTrend === "poor" ||
+    input.history.recentRamp > 1.35
+  ) {
+    return false;
+  }
+
+  if (input.environment.raceCourseLooksHilly) {
+    return true;
+  }
+
+  return input.weekNumber % 4 === 0 && input.history.durabilityTrend !== "caution";
 }
 
 function buildGeneratedWorkout(input: {

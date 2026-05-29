@@ -203,6 +203,31 @@ function makeLoggedWorkout(overrides = {}) {
   };
 }
 
+function makeStravaEvidence(overrides = {}) {
+  return {
+    stravaActivityId: overrides.stravaActivityId ?? "activity-1",
+    hasDetail: overrides.hasDetail ?? true,
+    hasStreams: overrides.hasStreams ?? true,
+    hasHeartRateStream: overrides.hasHeartRateStream ?? false,
+    hasPowerStream: overrides.hasPowerStream ?? false,
+    achievementCount: overrides.achievementCount ?? 0,
+    bestEffortCount: overrides.bestEffortCount ?? 0,
+    prCount: overrides.prCount ?? 0,
+    perceivedExertion: overrides.perceivedExertion ?? null,
+    workoutType: overrides.workoutType ?? null,
+    paceFadePercent: overrides.paceFadePercent ?? null,
+    heartRateDriftPercent: overrides.heartRateDriftPercent ?? null,
+    negativeSplit: overrides.negativeSplit ?? null,
+    splitPaceVariationPercent: overrides.splitPaceVariationPercent ?? null,
+    sustainedHardSectionCount: overrides.sustainedHardSectionCount ?? 0,
+    elevationGainM: overrides.elevationGainM ?? null,
+    altitudeRangeM: overrides.altitudeRangeM ?? null,
+    gradeRangePercent: overrides.gradeRangePercent ?? null,
+    effortSignals: overrides.effortSignals ?? [],
+    classificationHint: overrides.classificationHint ?? null,
+  };
+}
+
 function isHardWorkout(workout) {
   return (
     workout.workout_type === "tempo" ||
@@ -1308,6 +1333,147 @@ describe("generateTrainingPlan", () => {
     );
   });
 
+  it("uses hill strides before hill repeats when durability evidence is cautious", () => {
+    const generatedPlan = generateTrainingPlan(
+      makeProfile({
+        terrain_available: ["flat", "hills"],
+        current_weekly_mileage_km: 48,
+        longest_recent_run_km: 18,
+        available_training_days: [
+          "monday",
+          "tuesday",
+          "wednesday",
+          "friday",
+          "saturday",
+        ],
+        running_days_per_week: 5,
+        training_aggressiveness: "aggressive",
+        running_experience_level: "intermediate",
+      }),
+      makeRaceGoal({
+        race_course_profile: "hilly",
+        course_elevation_notes: "Rolling hills throughout.",
+      }),
+      {
+        startDate: "2030-05-06",
+        recentHistory: makeRecentHistory([42, 44, 45, 46, 47, 48], "mixed"),
+        recentHistoryWorkouts: [
+          makeLoggedWorkout({
+            id: "hill-caution-1",
+            source: "strava",
+            source_activity_id: "hill-caution-1",
+            elevation_gain_m: null,
+          }),
+          makeLoggedWorkout({
+            id: "hill-caution-2",
+            source: "strava",
+            source_activity_id: "hill-caution-2",
+            elevation_gain_m: null,
+          }),
+        ],
+        stravaActivityEvidence: [
+          makeStravaEvidence({
+            stravaActivityId: "hill-caution-1",
+            elevationGainM: 420,
+            paceFadePercent: 7,
+            classificationHint: "easy_non_limit",
+          }),
+          makeStravaEvidence({
+            stravaActivityId: "hill-caution-2",
+            elevationGainM: 420,
+            heartRateDriftPercent: 7,
+            hasHeartRateStream: true,
+            classificationHint: "easy_non_limit",
+          }),
+        ],
+      },
+    );
+    const titles = generatedPlan.plannedWorkouts.map((workout) => workout.title);
+
+    assert.ok(titles.some((title) => title.includes("hill strides")));
+    assert.equal(
+      titles.some((title) => title.includes("Hill repeat")),
+      false,
+    );
+    assert.ok(
+      generatedPlan.trainingPlan.warnings.some((warning) =>
+        warning.includes("durability evidence suggests caution"),
+      ),
+    );
+  });
+
+  it("uses pace fade and HR drift to keep long-run intensity conservative", () => {
+    const sharedProfile = makeProfile({
+      current_weekly_mileage_km: 55,
+      longest_recent_run_km: 22,
+      available_training_days: [
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+      ],
+      running_days_per_week: 6,
+      training_aggressiveness: "aggressive",
+      running_experience_level: "advanced",
+    });
+    const stablePlan = generateTrainingPlan(sharedProfile, baseRaceGoal, {
+      startDate: "2030-05-06",
+      recentHistory: makeRecentHistory([50, 52, 54, 55, 56, 57], "mixed"),
+    });
+    const cautiousPlan = generateTrainingPlan(sharedProfile, baseRaceGoal, {
+      startDate: "2030-05-06",
+      recentHistory: makeRecentHistory([50, 52, 54, 55, 56, 57], "mixed"),
+      recentHistoryWorkouts: [
+        makeLoggedWorkout({
+          id: "drift-1",
+          source: "strava",
+          source_activity_id: "drift-1",
+        }),
+        makeLoggedWorkout({
+          id: "drift-2",
+          source: "strava",
+          source_activity_id: "drift-2",
+        }),
+      ],
+      stravaActivityEvidence: [
+        makeStravaEvidence({
+          stravaActivityId: "drift-1",
+          paceFadePercent: 11,
+          classificationHint: "easy_non_limit",
+        }),
+        makeStravaEvidence({
+          stravaActivityId: "drift-2",
+          heartRateDriftPercent: 11,
+          hasHeartRateStream: true,
+          classificationHint: "easy_non_limit",
+        }),
+      ],
+    });
+
+    assert.ok(
+      stablePlan.plannedWorkouts.some(
+        (workout) =>
+          workout.title.includes("race-pace blocks") ||
+          workout.title.includes("steady finish"),
+      ),
+    );
+    assert.equal(
+      cautiousPlan.plannedWorkouts.some(
+        (workout) =>
+          workout.title.includes("race-pace blocks") ||
+          workout.title.includes("steady finish"),
+      ),
+      false,
+    );
+    assert.ok(
+      cautiousPlan.trainingPlan.warnings.some((warning) =>
+        warning.includes("long-run intensity"),
+      ),
+    );
+  });
+
   it("avoids the preferred rest day when enough other training days are available", () => {
     const generatedPlan = generateTrainingPlan(
       makeProfile({
@@ -1591,6 +1757,42 @@ describe("generateTrainingPlan", () => {
     assert.ok(
       generatedPlan.trainingPlan.warnings.some((warning) =>
         warning.includes("Expected weather notes mention"),
+      ),
+    );
+    assert.ok(
+      generatedPlan.plannedWorkouts.some((workout) =>
+        workout.instructions.includes("Adjust effort for expected weather"),
+      ),
+    );
+  });
+
+  it("uses effort guidance on trail-heavy or no-flat terrain while preserving pace targets", () => {
+    const generatedPlan = generateTrainingPlan(
+      makeProfile({
+        terrain_available: ["trails"],
+        current_weekly_mileage_km: 38,
+        longest_recent_run_km: 16,
+        available_training_days: ["monday", "wednesday", "friday", "saturday"],
+        running_days_per_week: 4,
+      }),
+      makeRaceGoal({
+        race_course_profile: "rolling",
+        course_elevation_notes: "Rolling mixed-surface course.",
+        expected_weather_notes: "Likely warm and humid.",
+      }),
+      { startDate: "2030-05-06" },
+    );
+    const runWithPaceTarget = generatedPlan.plannedWorkouts.find(
+      (workout) =>
+        workout.distance_km !== null &&
+        workout.target_pace_min_sec_per_km !== null &&
+        workout.target_pace_max_sec_per_km !== null,
+    );
+
+    assert.ok(runWithPaceTarget);
+    assert.ok(
+      generatedPlan.plannedWorkouts.some((workout) =>
+        workout.instructions.includes("Use effort and breathing as the primary guide"),
       ),
     );
     assert.ok(
