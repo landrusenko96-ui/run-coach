@@ -93,7 +93,7 @@ describe("Strava activity evidence", () => {
     assert.equal(evidence.prCount, 1);
     assert.equal(evidence.bestEffortCount, 1);
     assert.equal(evidence.perceivedExertion, 9);
-    assert.equal(evidence.classificationHint, "possible_near_max");
+    assert.equal(evidence.classificationHint, "race_time_trial");
     assert.equal(evidence.altitudeRangeM, 30);
     assert.equal(evidence.gradeRangePercent, 4);
     assert.ok(
@@ -101,6 +101,33 @@ describe("Strava activity evidence", () => {
         signal.includes("Strava PR/best-effort"),
       ),
     );
+  });
+
+  it("keeps near-max evidence separate from explicit race or time-trial evidence", () => {
+    const summary = makeSummary({
+      id: "near-max-1",
+      name: "Hard 5K Best Effort",
+      distanceM: 5000,
+      movingTimeSec: 1250,
+    });
+    const evidence = buildStravaActivityEvidence({
+      summary,
+      detail: makeDetail(summary, {
+        achievementCount: 2,
+        perceivedExertion: 9,
+        splitsMetric: [
+          { distanceM: 1000, movingTimeSec: 255, elapsedTimeSec: 255, averageSpeedMps: null, paceSecPerKm: 255, elevationDifferenceM: 1, split: 1, rawSplit: {} },
+          { distanceM: 1000, movingTimeSec: 242, elapsedTimeSec: 242, averageSpeedMps: null, paceSecPerKm: 242, elevationDifferenceM: 0, split: 2, rawSplit: {} },
+          { distanceM: 1000, movingTimeSec: 240, elapsedTimeSec: 240, averageSpeedMps: null, paceSecPerKm: 240, elevationDifferenceM: 0, split: 3, rawSplit: {} },
+        ],
+        bestEfforts: [
+          { name: "5k", distanceM: 5000, elapsedTimeSec: 1250, movingTimeSec: 1250, startDate: null, prRank: 2, rawEffort: {} },
+        ],
+      }),
+      streams: makeStreams(),
+    });
+
+    assert.equal(evidence.classificationHint, "possible_near_max");
   });
 
   it("enriches only eligible six-week run activities and stores compact evidence in raw summary", async () => {

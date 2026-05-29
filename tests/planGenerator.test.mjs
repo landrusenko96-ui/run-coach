@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { generateTrainingPlan } from "../lib/training/planGenerator.ts";
+import {
+  evaluatePlanGoalAdjustment,
+  generateTrainingPlan,
+} from "../lib/training/planGenerator.ts";
 import { getLocalDateText } from "../lib/training/planStart.ts";
 
 const baseProfile = {
@@ -861,6 +864,181 @@ describe("generateTrainingPlan", () => {
         assumption.includes("low confidence"),
       ),
     );
+  });
+
+  it("suggests a fastest supportable goal when the requested target is not credible", () => {
+    const suggestion = evaluatePlanGoalAdjustment(
+      makeProfile({
+        running_days_per_week: 5,
+        available_training_days: ["monday", "tuesday", "wednesday", "friday", "saturday"],
+        current_weekly_mileage_km: 70,
+        longest_recent_run_km: 30,
+        threshold_pace_sec_per_km: 285,
+      }),
+      makeRaceGoal({
+        goal_flexibility: "fixed",
+        target_finish_time_sec: 7200,
+      }),
+      {
+        startDate: "2030-05-06",
+        recentHistory: makeRecentHistory([76, 76, 76, 76, 76, 76], "mixed"),
+      },
+    );
+
+    assert.ok(suggestion);
+    assert.equal(suggestion.feasibilityRating, "very_ambitious");
+    assert.equal(suggestion.fitnessConfidence, "high");
+    assert.equal(suggestion.originalTargetFinishTimeSec, 7200);
+    assert.ok(
+      suggestion.suggestedTargetFinishTimeSec >
+        suggestion.originalTargetFinishTimeSec,
+    );
+    assert.ok(
+      suggestion.suggestedTargetFinishTimeSec <
+        suggestion.currentEstimatedFinishTimeSec,
+    );
+  });
+
+  it("generates with the confirmed suggested goal and records the adjustment", () => {
+    const profile = makeProfile({
+      running_days_per_week: 5,
+      available_training_days: ["monday", "tuesday", "wednesday", "friday", "saturday"],
+      current_weekly_mileage_km: 70,
+      longest_recent_run_km: 30,
+      threshold_pace_sec_per_km: 285,
+    });
+    const raceGoal = makeRaceGoal({
+      goal_flexibility: "fixed",
+      target_finish_time_sec: 7200,
+    });
+    const options = {
+      startDate: "2030-05-06",
+      recentHistory: makeRecentHistory([76, 76, 76, 76, 76, 76], "mixed"),
+    };
+    const suggestion = evaluatePlanGoalAdjustment(profile, raceGoal, options);
+
+    assert.ok(suggestion);
+
+    const generatedPlan = generateTrainingPlan(profile, raceGoal, {
+      ...options,
+      goalAdjustmentSuggestion: suggestion,
+    });
+
+    assert.equal(generatedPlan.trainingPlan.feasibility_rating, "very_ambitious");
+    assert.ok(
+      generatedPlan.trainingPlan.assumptions.some((assumption) =>
+        assumption.includes("confirmed suggested goal"),
+      ),
+    );
+    assert.ok(
+      generatedPlan.trainingPlan.warnings.some((warning) =>
+        warning.includes("saved Race Goal record was not edited"),
+      ),
+    );
+  });
+
+  it("uses race/time-trial evidence with stronger confidence than hard-workout evidence", () => {
+    const recentHistory = makeRecentHistory([35, 36, 37, 38, 39, 40], "mixed");
+    const raceAnchorPlan = generateTrainingPlan(
+      makeProfile({
+        threshold_pace_sec_per_km: null,
+        max_heart_rate: 190,
+      }),
+      baseRaceGoal,
+      {
+        startDate: "2030-05-06",
+        recentHistory,
+        recentHistoryWorkouts: [
+          makeLoggedWorkout({
+            id: "race-anchor",
+            distance_km: 10,
+            avg_pace_sec_per_km: 300,
+            avg_heart_rate: 174,
+            rpe: 9,
+            notes: "10K race effort",
+          }),
+        ],
+      },
+    );
+    const hardAnchorPlan = generateTrainingPlan(
+      makeProfile({
+        threshold_pace_sec_per_km: null,
+        max_heart_rate: 190,
+      }),
+      baseRaceGoal,
+      {
+        startDate: "2030-05-06",
+        recentHistory,
+        recentHistoryWorkouts: [
+          makeLoggedWorkout({
+            id: "hard-anchor",
+            distance_km: 10,
+            avg_pace_sec_per_km: 300,
+            avg_heart_rate: 174,
+            rpe: 7,
+            notes: "tempo workout",
+          }),
+        ],
+      },
+    );
+
+    assert.equal(raceAnchorPlan.trainingPlan.fitness_confidence, "high");
+    assert.equal(hardAnchorPlan.trainingPlan.fitness_confidence, "medium");
+  });
+
+  it("penalizes marathon projections from short hard efforts when durability is weak", () => {
+    const profile = makeProfile({
+      threshold_pace_sec_per_km: null,
+      current_weekly_mileage_km: 25,
+      longest_recent_run_km: 8,
+      running_days_per_week: 3,
+      max_heart_rate: 190,
+    });
+    const recentHistory = makeRecentHistory([20, 22, 24, 25, 25, 26], "mixed");
+    const workout = makeLoggedWorkout({
+      id: "short-race",
+      distance_km: 5,
+      avg_pace_sec_per_km: 280,
+      avg_heart_rate: 176,
+      rpe: 9,
+      notes: "5K race",
+    });
+    const marathonSuggestion = evaluatePlanGoalAdjustment(
+      profile,
+      makeRaceGoal({
+        distance: "marathon",
+        goal_flexibility: "fixed",
+        target_finish_time_sec: 9000,
+      }),
+      {
+        startDate: "2030-05-06",
+        recentHistory,
+        recentHistoryWorkouts: [workout],
+      },
+    );
+    const halfSuggestion = evaluatePlanGoalAdjustment(
+      profile,
+      makeRaceGoal({
+        distance: "half_marathon",
+        goal_flexibility: "fixed",
+        target_finish_time_sec: 4500,
+      }),
+      {
+        startDate: "2030-05-06",
+        recentHistory,
+        recentHistoryWorkouts: [workout],
+      },
+    );
+
+    assert.ok(marathonSuggestion);
+    assert.ok(halfSuggestion);
+
+    const marathonEstimatedPace =
+      marathonSuggestion.currentEstimatedFinishTimeSec / 42.2;
+    const halfEstimatedPace =
+      halfSuggestion.currentEstimatedFinishTimeSec / 21.1;
+
+    assert.ok(marathonEstimatedPace > halfEstimatedPace);
   });
 
   it("selects spec-style workout subtypes for supported marathon layouts", () => {

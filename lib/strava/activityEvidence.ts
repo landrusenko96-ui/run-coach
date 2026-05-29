@@ -13,6 +13,7 @@ import {
 } from "./importRuns.ts";
 
 export type StravaActivityEffortHint =
+  | "race_time_trial"
   | "easy_non_limit"
   | "controlled"
   | "hard_workout"
@@ -571,14 +572,36 @@ function getClassificationHint(input: {
     input.sustainedHardSectionCount >= 2 ||
     (input.splitPaceVariationPercent !== null &&
       input.splitPaceVariationPercent >= 8);
-
-  if (
-    nearMaxNameSignal ||
+  const hasStrongNearMaxEffort =
     (input.perceivedExertion !== null && input.perceivedExertion >= 9) ||
-    workoutType === 1 ||
     (hasAchievementSignal &&
       (hasHardShapeSignal ||
-        (input.perceivedExertion !== null && input.perceivedExertion >= 8)))
+        (input.perceivedExertion !== null && input.perceivedExertion >= 8))) ||
+    (workoutType === 1 &&
+      (hasAchievementSignal ||
+        hasHardShapeSignal ||
+        (input.perceivedExertion !== null && input.perceivedExertion >= 8)));
+
+  if (
+    nearMaxNameSignal &&
+    (hasStrongNearMaxEffort ||
+      hasAchievementSignal ||
+      (input.perceivedExertion !== null && input.perceivedExertion >= 8))
+  ) {
+    return "race_time_trial";
+  }
+
+  if (hasStrongNearMaxEffort) {
+    return "possible_near_max";
+  }
+
+  if (nearMaxNameSignal) {
+    return "hard_workout";
+  }
+
+  if (
+    hasAchievementSignal &&
+    (input.perceivedExertion !== null && input.perceivedExertion >= 7)
   ) {
     return "possible_near_max";
   }

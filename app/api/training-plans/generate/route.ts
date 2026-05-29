@@ -36,9 +36,13 @@ import {
   hasCompleteSixWeekCoverage,
   importMissingStravaHistoryRuns,
 } from "@/lib/training/planGenerationHistory";
-import { generateTrainingPlan } from "@/lib/training/planGenerator";
+import {
+  evaluatePlanGoalAdjustment,
+  generateTrainingPlan,
+} from "@/lib/training/planGenerator";
 import type {
   GenerateTrainingPlanApiResponse,
+  PlanGoalAdjustmentSuggestion,
   PlanGenerationHistorySummary,
   PlannedWorkout,
   TrainingPlan,
@@ -49,6 +53,7 @@ type GenerateTrainingPlanRequest = {
   replaceActivePlan?: unknown;
   startDate?: unknown;
   historyMode?: unknown;
+  acceptSuggestedRealisticGoal?: unknown;
 };
 
 type HistoryMode = "auto" | "manual";
@@ -69,6 +74,7 @@ async function readGenerateRequest(
   replaceActivePlan: boolean;
   startDate?: string;
   historyMode: HistoryMode;
+  acceptSuggestedRealisticGoal: boolean;
 }> {
   const bodyText = await request.text();
 
@@ -76,6 +82,7 @@ async function readGenerateRequest(
     return {
       replaceActivePlan: false,
       historyMode: "auto",
+      acceptSuggestedRealisticGoal: false,
     };
   }
 
@@ -94,20 +101,24 @@ async function readGenerateRequest(
       ? body.startDate.trim()
       : undefined;
   const historyMode = body.historyMode === "manual" ? "manual" : "auto";
+  const acceptSuggestedRealisticGoal = body.acceptSuggestedRealisticGoal === true;
 
   return {
     planName,
     replaceActivePlan,
     startDate,
     historyMode,
+    acceptSuggestedRealisticGoal,
   };
 }
 
 function buildFailureResult(input: {
   message: string;
   needsConfirmation?: boolean;
+  needsGoalAdjustmentConfirmation?: boolean;
   needsStravaConnection?: boolean;
   needsManualHistory?: boolean;
+  goalAdjustmentSuggestion?: PlanGoalAdjustmentSuggestion | null;
   plan?: TrainingPlan | null;
   historySummary?: PlanGenerationHistorySummary | null;
 }): GenerateTrainingPlanApiResponse {
@@ -115,8 +126,11 @@ function buildFailureResult(input: {
     success: false,
     message: input.message,
     needsConfirmation: input.needsConfirmation ?? false,
+    needsGoalAdjustmentConfirmation:
+      input.needsGoalAdjustmentConfirmation ?? false,
     needsStravaConnection: input.needsStravaConnection ?? false,
     needsManualHistory: input.needsManualHistory ?? false,
+    goalAdjustmentSuggestion: input.goalAdjustmentSuggestion ?? null,
     plan: input.plan ?? null,
     workouts: [],
     assumptions: [],
@@ -466,12 +480,40 @@ export async function POST(request: Request) {
       }
     }
 
-    const generatedPlan = generateTrainingPlan(profile, raceGoal, {
+    const generationOptions = {
       startDate: generateRequest.startDate,
       recentHistory: historySummary.weeks,
       recentHistoryWorkouts: historyWorkoutsForGeneration,
       stravaActivityEvidence,
       recentHistoryEvidenceWarnings: stravaEvidenceWarnings,
+    };
+    const goalAdjustmentSuggestion = evaluatePlanGoalAdjustment(
+      profile,
+      raceGoal,
+      generationOptions,
+    );
+
+    if (
+      goalAdjustmentSuggestion &&
+      !generateRequest.acceptSuggestedRealisticGoal
+    ) {
+      return jsonResponse(
+        buildFailureResult({
+          message:
+            "The requested target is not supported by current evidence. Confirm to generate the fastest currently supportable goal instead.",
+          needsGoalAdjustmentConfirmation: true,
+          goalAdjustmentSuggestion,
+          historySummary,
+        }),
+        409,
+      );
+    }
+
+    const generatedPlan = generateTrainingPlan(profile, raceGoal, {
+      ...generationOptions,
+      goalAdjustmentSuggestion: generateRequest.acceptSuggestedRealisticGoal
+        ? goalAdjustmentSuggestion
+        : null,
     });
     const customPlanName = normalizePlanName(generateRequest.planName);
     const savedPlan = await saveTrainingPlan(
@@ -516,8 +558,10 @@ export async function POST(request: Request) {
           historySummary,
         }),
         needsConfirmation: false,
+        needsGoalAdjustmentConfirmation: false,
         needsStravaConnection: false,
         needsManualHistory: false,
+        goalAdjustmentSuggestion: null,
         plan: activatedPlan,
         workouts: savedWorkouts as PlannedWorkout[],
         assumptions: generatedPlan.trainingPlan.assumptions,

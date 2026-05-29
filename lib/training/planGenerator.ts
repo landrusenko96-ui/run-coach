@@ -25,6 +25,7 @@ import type {
   PlanGenerationPhaseLabel,
   PlanGenerationPhaseSummary,
   PlanGenerationTaperSummary,
+  PlanGoalAdjustmentSuggestion,
   RaceDistance,
   RaceGoal,
   RecentTrainingWeekInput,
@@ -44,6 +45,7 @@ type PlanGeneratorOptions = {
   recentHistoryWorkouts?: LoggedWorkout[];
   stravaActivityEvidence?: StravaActivityEvidence[];
   recentHistoryEvidenceWarnings?: string[];
+  goalAdjustmentSuggestion?: PlanGoalAdjustmentSuggestion | null;
 };
 
 type PlanMode = "relaxed" | "moderate" | "aggressive" | "very_aggressive";
@@ -259,6 +261,7 @@ export function generateTrainingPlan(
     recentHistoryWorkouts: options.recentHistoryWorkouts,
     stravaActivityEvidence: options.stravaActivityEvidence,
     recentHistoryEvidenceWarnings: options.recentHistoryEvidenceWarnings,
+    goalAdjustmentSuggestion: options.goalAdjustmentSuggestion ?? null,
   });
   const derivedMetrics = deriveMetrics({
     input: normalizedInput,
@@ -323,6 +326,45 @@ export function generateTrainingPlan(
   };
 }
 
+export function evaluatePlanGoalAdjustment(
+  runnerProfile: RunnerProfile,
+  raceGoal: RaceGoal,
+  options: Omit<PlanGeneratorOptions, "goalAdjustmentSuggestion"> = {},
+): PlanGoalAdjustmentSuggestion | null {
+  if (raceGoal.distance !== "marathon" && raceGoal.distance !== "half_marathon") {
+    throw new Error("Plan Generator v1 only supports marathon and half marathon goals.");
+  }
+
+  const startDateText = options.startDate ?? getLocalDateText();
+  validateGeneratorDates({
+    startDateText,
+    raceDateText: raceGoal.race_date,
+  });
+
+  const startDate = parseDateOnly(startDateText);
+  const raceDate = parseDateOnly(raceGoal.race_date);
+  const totalWeeks = Math.max(1, Math.ceil((daysBetween(startDate, raceDate) + 1) / 7));
+  const normalizedInput = normalizePlanInput({
+    runnerProfile,
+    raceGoal,
+    startDate,
+    recentHistory: options.recentHistory,
+    recentHistoryWorkouts: options.recentHistoryWorkouts,
+    stravaActivityEvidence: options.stravaActivityEvidence,
+    recentHistoryEvidenceWarnings: options.recentHistoryEvidenceWarnings,
+    goalAdjustmentSuggestion: null,
+  });
+  const metrics = deriveMetrics({
+    input: normalizedInput,
+    totalWeeks,
+  });
+
+  return buildGoalAdjustmentSuggestion({
+    input: normalizedInput,
+    metrics,
+  });
+}
+
 function normalizePlanInput(input: {
   runnerProfile: RunnerProfile;
   raceGoal: RaceGoal;
@@ -331,6 +373,7 @@ function normalizePlanInput(input: {
   recentHistoryWorkouts?: LoggedWorkout[];
   stravaActivityEvidence?: StravaActivityEvidence[];
   recentHistoryEvidenceWarnings?: string[];
+  goalAdjustmentSuggestion: PlanGoalAdjustmentSuggestion | null;
 }): NormalizedPlanInput {
   const assumptions: string[] = [];
   const warnings: string[] = [];
@@ -379,13 +422,24 @@ function normalizePlanInput(input: {
     );
   }
 
+  if (input.goalAdjustmentSuggestion) {
+    assumptions.push(
+      `The saved target time was not supported by current evidence, so this plan uses the confirmed suggested goal of ${formatFinishTime(input.goalAdjustmentSuggestion.suggestedTargetFinishTimeSec)}.`,
+    );
+    warnings.push(
+      "The saved Race Goal record was not edited; this generated plan uses the confirmed adjusted target in its generation metadata.",
+    );
+  }
+
   return {
     profileId: input.runnerProfile.id,
     raceGoalId: input.raceGoal.id,
     goal: {
       raceType: input.raceGoal.distance,
       raceDate: input.raceGoal.race_date,
-      targetFinishTimeSec: input.raceGoal.target_finish_time_sec,
+      targetFinishTimeSec:
+        input.goalAdjustmentSuggestion?.suggestedTargetFinishTimeSec ??
+        input.raceGoal.target_finish_time_sec,
       racePriority: getRacePriority(input.raceGoal),
       goalFlexibility: getGoalFlexibility(input.raceGoal),
       planMode: normalizedPlanMode,
@@ -612,6 +666,7 @@ function deriveMetrics(input: {
     thresholdSecPerKm,
     history: input.input.history,
     volumeCategory,
+    frequencyCategory,
     fitnessConfidence: input.input.history.fitnessConfidence,
   });
   const goalRacePaceSecPerKm = input.input.goal.targetFinishTimeSec
@@ -772,32 +827,143 @@ function getCurrentRacePace(input: {
   thresholdSecPerKm: number;
   history: RecentTrainingHistory;
   volumeCategory: VolumeCategory;
+  frequencyCategory: FrequencyCategory;
   fitnessConfidence: FitnessConfidence;
 }): number {
   const baseMultiplier = input.raceDistance === "marathon" ? 1.18 : 1.08;
   const durabilityPenalty =
-    input.raceDistance === "marathon" &&
-    (input.volumeCategory === "low_base" || input.volumeCategory === "developing")
-      ? 1.06
-      : 1;
-  const longRunSupportPenalty =
-    input.raceDistance === "marathon" && input.history.longestRunKm6w < 18
+    input.raceDistance === "marathon"
+      ? getMarathonDurabilityPenalty(input.history, input.volumeCategory)
+      : getHalfMarathonDurabilityPenalty(input.history, input.volumeCategory);
+  const frequencyPenalty =
+    input.frequencyCategory === "minimal"
       ? 1.04
-      : 1;
+      : input.frequencyCategory === "basic_structured"
+        ? 1.02
+        : 1;
+  const sourcePenalty = getFitnessAnchorSourcePenalty(input.history);
+  const shortAnchorPenalty = getShortAnchorProjectionPenalty(input);
   const longRunSharePenalty =
     input.history.maxLongRunShare6w !== null && input.history.maxLongRunShare6w > 0.42
       ? 1.02
       : 1;
-  const evidencePenalty = input.fitnessConfidence === "low" ? 1.02 : 1;
+  const evidencePenalty =
+    input.fitnessConfidence === "low"
+      ? 1.03
+      : input.fitnessConfidence === "medium"
+        ? 1.01
+        : 1;
 
   return Math.round(
     input.thresholdSecPerKm *
       baseMultiplier *
       durabilityPenalty *
-      longRunSupportPenalty *
+      frequencyPenalty *
+      sourcePenalty *
+      shortAnchorPenalty *
       longRunSharePenalty *
       evidencePenalty,
   );
+}
+
+function getMarathonDurabilityPenalty(
+  history: RecentTrainingHistory,
+  volumeCategory: VolumeCategory,
+): number {
+  let penalty = 1;
+
+  if (volumeCategory === "low_base") {
+    penalty *= 1.08;
+  } else if (volumeCategory === "developing") {
+    penalty *= 1.05;
+  }
+
+  if (history.longestRunToGoalDistanceRatio < 0.35) {
+    penalty *= 1.08;
+  } else if (history.longestRunToGoalDistanceRatio < 0.45) {
+    penalty *= 1.04;
+  }
+
+  if (history.loadConsistency < 0.67) {
+    penalty *= 1.03;
+  }
+
+  return penalty;
+}
+
+function getHalfMarathonDurabilityPenalty(
+  history: RecentTrainingHistory,
+  volumeCategory: VolumeCategory,
+): number {
+  let penalty = volumeCategory === "low_base" ? 1.04 : 1;
+
+  if (history.longestRunToGoalDistanceRatio < 0.45) {
+    penalty *= 1.04;
+  }
+
+  if (history.loadConsistency < 0.67) {
+    penalty *= 1.02;
+  }
+
+  return penalty;
+}
+
+function getFitnessAnchorSourcePenalty(history: RecentTrainingHistory): number {
+  if (history.thresholdEstimateSource === "race_time_trial") {
+    return 0.99;
+  }
+
+  if (
+    history.thresholdEstimateSource === "saved_threshold" ||
+    history.thresholdEstimateSource === "near_max_effort"
+  ) {
+    return 1;
+  }
+
+  if (history.thresholdEstimateSource === "hard_workout") {
+    return 1.02;
+  }
+
+  if (history.thresholdEstimateSource === "easy_pace_estimate") {
+    return 1.03;
+  }
+
+  return 1.05;
+}
+
+function getShortAnchorProjectionPenalty(input: {
+  raceDistance: RaceDistance;
+  history: RecentTrainingHistory;
+}): number {
+  const anchorDistanceKm = input.history.fitnessAnchorDistanceKm;
+
+  if (
+    anchorDistanceKm === null ||
+    (input.history.thresholdEstimateSource !== "race_time_trial" &&
+      input.history.thresholdEstimateSource !== "near_max_effort" &&
+      input.history.thresholdEstimateSource !== "hard_workout")
+  ) {
+    return 1;
+  }
+
+  if (
+    input.raceDistance === "marathon" &&
+    anchorDistanceKm < 10 &&
+    (input.history.longestRunToGoalDistanceRatio < 0.45 ||
+      input.history.avgKm6w < 45)
+  ) {
+    return anchorDistanceKm < 5 ? 1.06 : 1.04;
+  }
+
+  if (
+    input.raceDistance === "half_marathon" &&
+    anchorDistanceKm < 5 &&
+    input.history.longestRunToGoalDistanceRatio < 0.5
+  ) {
+    return 1.03;
+  }
+
+  return 1;
 }
 
 function getGoalFeasibility(input: {
@@ -830,6 +996,94 @@ function getGoalFeasibility(input: {
   }
 
   return "not_credible";
+}
+
+function buildGoalAdjustmentSuggestion(input: {
+  input: NormalizedPlanInput;
+  metrics: DerivedMetrics;
+}): PlanGoalAdjustmentSuggestion | null {
+  const originalTargetFinishTimeSec = input.input.goal.targetFinishTimeSec;
+
+  if (
+    originalTargetFinishTimeSec === null ||
+    input.metrics.feasibilityRating !== "not_credible"
+  ) {
+    return null;
+  }
+
+  const raceDistanceKm = distanceKmByRace[input.input.goal.raceType];
+  const currentEstimatedFinishTimeSec = Math.round(
+    input.metrics.currentRacePaceSecPerKm * raceDistanceKm,
+  );
+  const cap = getSuggestedGoalImprovementCap(input.input, input.metrics);
+  const suggestedTargetFinishTimeSec = roundToNearestMinute(
+    currentEstimatedFinishTimeSec * (1 - cap.improvementPct),
+  );
+  const suggestedPaceSecPerKm = Math.round(
+    suggestedTargetFinishTimeSec / raceDistanceKm,
+  );
+  const feasibilityRating = getGoalFeasibility({
+    goalRacePaceSecPerKm: suggestedPaceSecPerKm,
+    currentRacePaceSecPerKm: input.metrics.currentRacePaceSecPerKm,
+    goalFlexibility: "fixed",
+  });
+
+  return {
+    originalTargetFinishTimeSec,
+    suggestedTargetFinishTimeSec,
+    currentEstimatedFinishTimeSec,
+    feasibilityRating,
+    fitnessConfidence: input.metrics.fitnessConfidence,
+    reason: cap.reason,
+  };
+}
+
+function getSuggestedGoalImprovementCap(
+  input: NormalizedPlanInput,
+  metrics: DerivedMetrics,
+): { improvementPct: number; reason: string } {
+  const hasWeakDurability =
+    input.goal.raceType === "marathon"
+      ? input.history.longestRunToGoalDistanceRatio < 0.45 ||
+        input.history.longestRunToWeeklyVolumeRatio > 0.42
+      : input.history.longestRunToGoalDistanceRatio < 0.5;
+  const hasWeakBase =
+    metrics.volumeCategory === "low_base" ||
+    input.availability.selectedRunningDays.length <= 3 ||
+    input.history.loadConsistency < 0.67;
+
+  if (
+    input.athlete.injurySignal === "current_or_serious" ||
+    metrics.fitnessConfidence === "low" ||
+    hasWeakBase ||
+    hasWeakDurability
+  ) {
+    return {
+      improvementPct: 0.03,
+      reason:
+        "The original target is not supported by current evidence. Because confidence, base, durability, or injury risk is limited, the suggested fastest target is capped at the realistic range.",
+    };
+  }
+
+  if (
+    metrics.fitnessConfidence === "high" &&
+    metrics.volumeCategory !== "developing" &&
+    metrics.frequencyCategory !== "minimal" &&
+    input.history.longestRunToGoalDistanceRatio >=
+      (input.goal.raceType === "marathon" ? 0.5 : 0.65)
+  ) {
+    return {
+      improvementPct: 0.12,
+      reason:
+        "The original target is not supported by current evidence. Evidence is strong enough to suggest the fastest supportable goal at the edge of very ambitious.",
+    };
+  }
+
+  return {
+    improvementPct: 0.07,
+    reason:
+      "The original target is not supported by current evidence. The suggested target keeps the goal ambitious while staying inside the currently supportable range.",
+  };
 }
 
 function getFitnessConfidence(input: NormalizedPlanInput): FitnessConfidence {
@@ -3328,6 +3582,10 @@ function roundDistance(distanceKm: number): number {
   return Math.round(distanceKm * 10) / 10;
 }
 
+function roundToNearestMinute(seconds: number): number {
+  return Math.max(60, Math.round(seconds / 60) * 60);
+}
+
 function addUniqueWarning(warnings: string[], warning: string): void {
   if (!warnings.includes(warning)) {
     warnings.push(warning);
@@ -3349,4 +3607,16 @@ function formatPaceLabel(secondsPerKm: number): string {
   const seconds = String(secondsPerKm % 60).padStart(2, "0");
 
   return `${minutes}:${seconds}`;
+}
+
+function formatFinishTime(totalSeconds: number): string {
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }

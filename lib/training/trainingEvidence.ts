@@ -8,6 +8,7 @@ import type {
 import type { StravaActivityEvidence } from "../strava/activityEvidence.ts";
 
 export type EffortQuality =
+  | "race_time_trial"
   | "easy_non_limit"
   | "controlled"
   | "hard_workout"
@@ -36,6 +37,7 @@ export type ElevationTolerance = "unknown" | "low" | "moderate" | "high";
 
 export type ThresholdEstimateSource =
   | "saved_threshold"
+  | "race_time_trial"
   | "near_max_effort"
   | "hard_workout"
   | "easy_pace_estimate"
@@ -71,10 +73,14 @@ export type TrainingEvidence = {
   elevationTolerance: ElevationTolerance;
   stravaEvidenceActivityCount: number;
   effortClassifications: WorkoutEffortClassification[];
+  raceTimeTrialCount6w: number;
   hardWorkoutCount6w: number;
   possibleNearMaxCount6w: number;
   fastestPaceSecPerKm: number | null;
   fastestRunUsedAsFitnessAnchor: boolean;
+  fitnessAnchorWorkoutId: string | null;
+  fitnessAnchorDistanceKm: number | null;
+  fitnessAnchorDurationSec: number | null;
   thresholdEstimateSecPerKm: number | null;
   thresholdEstimateSource: ThresholdEstimateSource;
   fitnessConfidence: TrainingEvidenceConfidence;
@@ -143,11 +149,17 @@ export function analyzeTrainingEvidence(
   });
   const hardWorkoutCount6w = effortClassifications.filter(
     (classification) =>
+      classification.quality === "race_time_trial" ||
       classification.quality === "hard_workout" ||
       classification.quality === "possible_near_max",
   ).length;
+  const raceTimeTrialCount6w = effortClassifications.filter(
+    (classification) => classification.quality === "race_time_trial",
+  ).length;
   const possibleNearMaxCount6w = effortClassifications.filter(
-    (classification) => classification.quality === "possible_near_max",
+    (classification) =>
+      classification.quality === "race_time_trial" ||
+      classification.quality === "possible_near_max",
   ).length;
   const fastestWorkout = getFastestWorkout(filteredWorkouts);
   const fastestClassification = fastestWorkout
@@ -156,8 +168,13 @@ export function analyzeTrainingEvidence(
       ) ?? null
     : null;
   const fastestRunUsedAsFitnessAnchor =
-    fastestClassification?.quality === "possible_near_max" &&
+    (fastestClassification?.quality === "race_time_trial" ||
+      fastestClassification?.quality === "possible_near_max") &&
     thresholdEstimate.anchorWorkoutId === fastestWorkout?.id;
+  const thresholdAnchorWorkout = thresholdEstimate.anchorWorkoutId
+    ? filteredWorkouts.find((workout) => workout.id === thresholdEstimate.anchorWorkoutId) ??
+      null
+    : null;
 
   addHistoryAssumptions(historyMetrics.source, assumptions);
   addEvidenceMessages({
@@ -180,10 +197,14 @@ export function analyzeTrainingEvidence(
     ...durabilityMetrics,
     stravaEvidenceActivityCount: input.stravaActivityEvidence?.length ?? 0,
     effortClassifications,
+    raceTimeTrialCount6w,
     hardWorkoutCount6w,
     possibleNearMaxCount6w,
     fastestPaceSecPerKm: fastestWorkout?.avg_pace_sec_per_km ?? null,
     fastestRunUsedAsFitnessAnchor,
+    fitnessAnchorWorkoutId: thresholdEstimate.anchorWorkoutId,
+    fitnessAnchorDistanceKm: thresholdAnchorWorkout?.distance_km ?? null,
+    fitnessAnchorDurationSec: thresholdAnchorWorkout?.duration_sec ?? null,
     thresholdEstimateSecPerKm: thresholdEstimate.secPerKm,
     thresholdEstimateSource: thresholdEstimate.source,
     fitnessConfidence,
@@ -451,6 +472,24 @@ function classifyWorkoutEffort(input: {
   }
 
   if (
+    (
+      workout.rpe !== null && workout.rpe >= 8 ||
+      avgHeartRateRatio !== null && avgHeartRateRatio >= 0.88 ||
+      maxHeartRateRatio !== null && maxHeartRateRatio >= 0.94 ||
+      stravaEvidence?.classificationHint === "race_time_trial"
+    ) &&
+    hasRaceTimeTrialNote(notes)
+  ) {
+    evidence.push("race/time-trial effort signal");
+    return buildEffortClassification(workout, "race_time_trial", evidence);
+  }
+
+  if (stravaEvidence?.classificationHint === "race_time_trial") {
+    evidence.push("Strava detail/stream evidence supports race/time-trial effort");
+    return buildEffortClassification(workout, "race_time_trial", evidence);
+  }
+
+  if (
     workout.rpe !== null && workout.rpe >= 9 ||
     avgHeartRateRatio !== null && avgHeartRateRatio >= 0.92 ||
     maxHeartRateRatio !== null && maxHeartRateRatio >= 0.96 ||
@@ -544,6 +583,20 @@ function estimateThresholdPace(input: {
     };
   }
 
+  const raceTimeTrialAnchor = getFastestWorkoutByQuality(
+    input.workouts,
+    input.effortClassifications,
+    "race_time_trial",
+  );
+
+  if (raceTimeTrialAnchor?.avg_pace_sec_per_km) {
+    return {
+      secPerKm: Math.round(raceTimeTrialAnchor.avg_pace_sec_per_km * 1.02),
+      source: "race_time_trial",
+      anchorWorkoutId: raceTimeTrialAnchor.id,
+    };
+  }
+
   const nearMaxAnchor = getFastestWorkoutByQuality(
     input.workouts,
     input.effortClassifications,
@@ -615,6 +668,10 @@ function getFitnessConfidence(input: {
     input.hrDataAvailability !== "none" || input.powerDataAvailability !== "none";
 
   if (input.thresholdEstimateSource === "saved_threshold") {
+    return hasUsefulHistory ? "high" : "medium";
+  }
+
+  if (input.thresholdEstimateSource === "race_time_trial") {
     return hasUsefulHistory ? "high" : "medium";
   }
 
@@ -702,6 +759,12 @@ function addEvidenceMessages(input: {
   if (input.thresholdEstimateSource === "near_max_effort") {
     input.assumptions.push(
       "A recent near-max effort is used as a cautious fitness anchor because effort evidence supports it.",
+    );
+  }
+
+  if (input.thresholdEstimateSource === "race_time_trial") {
+    input.assumptions.push(
+      "A recent race or time-trial effort is used as the strongest current fitness anchor because effort evidence supports it.",
     );
   }
 
@@ -970,6 +1033,10 @@ function isLongEnoughForFitnessAnchor(workout: LoggedWorkout): boolean {
 
 function hasNearMaxNote(notes: string): boolean {
   return /\b(race|time trial|tt|all out|max effort|near max|pr|pb)\b/.test(notes);
+}
+
+function hasRaceTimeTrialNote(notes: string): boolean {
+  return /\b(race|time trial|tt)\b/.test(notes);
 }
 
 function hasHardWorkoutNote(notes: string): boolean {

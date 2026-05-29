@@ -223,7 +223,7 @@ describe("training evidence analyzer", () => {
     assert.equal(evidence.fitnessConfidence, "high");
   });
 
-  it("classifies easy, controlled, hard, and possible near-max workouts", () => {
+  it("classifies easy, controlled, hard, near-max, and race/time-trial workouts", () => {
     const evidence = analyzeTrainingEvidence({
       runnerProfile: makeProfile(),
       raceGoal: makeRaceGoal(),
@@ -233,7 +233,8 @@ describe("training evidence analyzer", () => {
         makeWorkout({ id: "easy", avg_pace_sec_per_km: 370, rpe: 2 }),
         makeWorkout({ id: "controlled", avg_pace_sec_per_km: 340, rpe: 5 }),
         makeWorkout({ id: "hard", avg_pace_sec_per_km: 325, rpe: 7, notes: "tempo workout" }),
-        makeWorkout({ id: "max", avg_pace_sec_per_km: 300, rpe: 9, notes: "race effort" }),
+        makeWorkout({ id: "max", avg_pace_sec_per_km: 305, rpe: 9, notes: "all out effort" }),
+        makeWorkout({ id: "race", avg_pace_sec_per_km: 300, rpe: 9, notes: "race effort" }),
       ],
     });
     const qualityById = new Map(
@@ -247,8 +248,10 @@ describe("training evidence analyzer", () => {
     assert.equal(qualityById.get("controlled"), "controlled");
     assert.equal(qualityById.get("hard"), "hard_workout");
     assert.equal(qualityById.get("max"), "possible_near_max");
-    assert.equal(evidence.possibleNearMaxCount6w, 1);
-    assert.equal(evidence.thresholdEstimateSource, "near_max_effort");
+    assert.equal(qualityById.get("race"), "race_time_trial");
+    assert.equal(evidence.possibleNearMaxCount6w, 2);
+    assert.equal(evidence.raceTimeTrialCount6w, 1);
+    assert.equal(evidence.thresholdEstimateSource, "race_time_trial");
     assert.equal(evidence.fastestRunUsedAsFitnessAnchor, true);
   });
 

@@ -97,13 +97,24 @@ export type GenerateTrainingPlanApiResponse = {
   success: boolean;
   message: string;
   needsConfirmation: boolean;
+  needsGoalAdjustmentConfirmation: boolean;
   needsStravaConnection: boolean;
   needsManualHistory: boolean;
+  goalAdjustmentSuggestion: PlanGoalAdjustmentSuggestion | null;
   plan: TrainingPlan | null;
   workouts: PlannedWorkout[];
   assumptions: string[];
   warnings: string[];
   historySummary: PlanGenerationHistorySummary | null;
+};
+
+export type PlanGoalAdjustmentSuggestion = {
+  originalTargetFinishTimeSec: number;
+  suggestedTargetFinishTimeSec: number;
+  currentEstimatedFinishTimeSec: number;
+  feasibilityRating: PlanGenerationFeasibilityRating;
+  fitnessConfidence: PlanGenerationFitnessConfidence;
+  reason: string;
 };
 
 export type WorkoutType =

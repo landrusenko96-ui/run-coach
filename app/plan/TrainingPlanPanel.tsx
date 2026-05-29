@@ -34,6 +34,7 @@ import type {
   GarminBulkPublishWorkoutsResponse,
   GarminPlanDeleteCleanupMode,
   GenerateTrainingPlanApiResponse,
+  PlanGoalAdjustmentSuggestion,
   PlannedWorkout,
   PlanGenerationHistorySummary,
   Profile,
@@ -236,6 +237,18 @@ function formatPlanDateRange(plan: TrainingPlan): string {
 
 function formatOptionalLabel(value: string | null | undefined): string {
   return value ? formatLabel(value) : "Not recorded";
+}
+
+function formatFinishTime(totalSeconds: number): string {
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
 function formatWeekRange(startWeek: number | null, endWeek: number | null): string {
@@ -657,6 +670,68 @@ function PlanGenerationHistorySummaryCard({
   );
 }
 
+function GoalAdjustmentConfirmationCard({
+  suggestion,
+  isBusy,
+  canGeneratePlan,
+  onConfirm,
+  onCancel,
+}: {
+  suggestion: PlanGoalAdjustmentSuggestion;
+  isBusy: boolean;
+  canGeneratePlan: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <section className="rounded-md border border-amber-200 bg-amber-50 p-6 text-sm text-amber-950">
+      <h2 className="text-base font-medium">Goal needs adjustment</h2>
+      <p className="mt-2">{suggestion.reason}</p>
+
+      <dl className="mt-4 grid gap-3 md:grid-cols-4">
+        <div className="rounded-md border border-amber-200 bg-white/70 p-3">
+          <dt className="font-medium">Requested</dt>
+          <dd className="mt-1">{formatFinishTime(suggestion.originalTargetFinishTimeSec)}</dd>
+        </div>
+        <div className="rounded-md border border-amber-200 bg-white/70 p-3">
+          <dt className="font-medium">Suggested</dt>
+          <dd className="mt-1">{formatFinishTime(suggestion.suggestedTargetFinishTimeSec)}</dd>
+        </div>
+        <div className="rounded-md border border-amber-200 bg-white/70 p-3">
+          <dt className="font-medium">Current estimate</dt>
+          <dd className="mt-1">{formatFinishTime(suggestion.currentEstimatedFinishTimeSec)}</dd>
+        </div>
+        <div className="rounded-md border border-amber-200 bg-white/70 p-3">
+          <dt className="font-medium">Confidence</dt>
+          <dd className="mt-1">
+            {formatLabel(suggestion.feasibilityRating)} /{" "}
+            {formatLabel(suggestion.fitnessConfidence)}
+          </dd>
+        </div>
+      </dl>
+
+      <div className="mt-4 flex flex-wrap gap-3">
+        <button
+          className="rounded-md bg-amber-900 px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:bg-amber-300"
+          disabled={isBusy || !canGeneratePlan}
+          onClick={onConfirm}
+          type="button"
+        >
+          Generate with suggested goal
+        </button>
+        <button
+          className="rounded-md border border-amber-300 bg-white px-3 py-2 text-sm font-medium text-amber-900 disabled:cursor-not-allowed disabled:opacity-60"
+          disabled={isBusy}
+          onClick={onCancel}
+          type="button"
+        >
+          Keep requested goal
+        </button>
+      </div>
+    </section>
+  );
+}
+
 function PlanGenerationMetadataCard({ plan }: { plan: TrainingPlan }) {
   const phaseSummaries = plan.phase_summaries ?? [];
   const weeklySummaries = plan.weekly_summaries ?? [];
@@ -821,6 +896,13 @@ export function TrainingPlanPanel() {
   const [generationWarnings, setGenerationWarnings] = useState<string[]>([]);
   const [generationHistorySummary, setGenerationHistorySummary] =
     useState<PlanGenerationHistorySummary | null>(null);
+  const [goalAdjustmentSuggestion, setGoalAdjustmentSuggestion] =
+    useState<PlanGoalAdjustmentSuggestion | null>(null);
+  const [pendingGoalAdjustmentRequest, setPendingGoalAdjustmentRequest] =
+    useState<{
+      replaceActivePlan: boolean;
+      historyMode: "auto" | "manual";
+    } | null>(null);
   const [planNameInput, setPlanNameInput] = useState("");
   const [planStartDateInput, setPlanStartDateInput] = useState(() =>
     getLocalDateText(),
@@ -946,6 +1028,7 @@ export function TrainingPlanPanel() {
   async function requestGeneratedPlan(input: {
     replaceActivePlan: boolean;
     historyMode: "auto" | "manual";
+    acceptSuggestedRealisticGoal: boolean;
   }): Promise<GenerateTrainingPlanApiResponse> {
     const response = await fetch("/api/training-plans/generate", {
       method: "POST",
@@ -957,6 +1040,7 @@ export function TrainingPlanPanel() {
         replaceActivePlan: input.replaceActivePlan,
         startDate: planStartDateInput,
         historyMode: input.historyMode,
+        acceptSuggestedRealisticGoal: input.acceptSuggestedRealisticGoal,
       }),
     });
     const result = (await response.json()) as GenerateTrainingPlanApiResponse;
@@ -967,6 +1051,7 @@ export function TrainingPlanPanel() {
   async function handleGeneratePlan(
     replaceActivePlan: boolean,
     historyMode: "auto" | "manual" = "auto",
+    acceptSuggestedRealisticGoal = false,
   ) {
     const activeRaceGoal = plansState.raceGoal;
 
@@ -996,6 +1081,8 @@ export function TrainingPlanPanel() {
     setGenerationAssumptions([]);
     setGenerationWarnings([]);
     setGenerationHistorySummary(null);
+    setGoalAdjustmentSuggestion(null);
+    setPendingGoalAdjustmentRequest(null);
 
     let result: GenerateTrainingPlanApiResponse;
 
@@ -1003,6 +1090,7 @@ export function TrainingPlanPanel() {
       result = await requestGeneratedPlan({
         replaceActivePlan,
         historyMode,
+        acceptSuggestedRealisticGoal,
       });
     } catch (error) {
       setStatus("error");
@@ -1020,6 +1108,17 @@ export function TrainingPlanPanel() {
       setStatus("ready");
       setMessage(result.message);
       setShowReplaceConfirmation(true);
+      return;
+    }
+
+    if (result.needsGoalAdjustmentConfirmation && result.goalAdjustmentSuggestion) {
+      setStatus("ready");
+      setMessage(result.message);
+      setGoalAdjustmentSuggestion(result.goalAdjustmentSuggestion);
+      setPendingGoalAdjustmentRequest({
+        replaceActivePlan,
+        historyMode,
+      });
       return;
     }
 
@@ -1635,6 +1734,33 @@ export function TrainingPlanPanel() {
           </div>
         ) : null}
       </section>
+
+      {goalAdjustmentSuggestion ? (
+        <GoalAdjustmentConfirmationCard
+          canGeneratePlan={canGeneratePlan}
+          isBusy={isBusy}
+          onCancel={() => {
+            setGoalAdjustmentSuggestion(null);
+            setPendingGoalAdjustmentRequest(null);
+            setMessage("No plan was generated with the unsupported target.");
+          }}
+          onConfirm={() => {
+            const pendingRequest = pendingGoalAdjustmentRequest ?? {
+              replaceActivePlan: Boolean(activePlan),
+              historyMode: generationHistorySummary?.coverage === "manual"
+                ? "manual"
+                : "auto",
+            };
+
+            void handleGeneratePlan(
+              pendingRequest.replaceActivePlan,
+              pendingRequest.historyMode,
+              true,
+            );
+          }}
+          suggestion={goalAdjustmentSuggestion}
+        />
+      ) : null}
 
       {generationHistorySummary ? (
         <PlanGenerationHistorySummaryCard
