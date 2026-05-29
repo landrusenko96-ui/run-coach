@@ -49,6 +49,21 @@ type RawStravaSummaryActivity = {
   max_heartrate?: unknown;
 };
 
+type RawStravaDetailedActivity = RawStravaSummaryActivity & {
+  achievement_count?: unknown;
+  workout_type?: unknown;
+  average_speed?: unknown;
+  max_speed?: unknown;
+  perceived_exertion?: unknown;
+  average_watts?: unknown;
+  max_watts?: unknown;
+  weighted_average_watts?: unknown;
+  device_watts?: unknown;
+  splits_metric?: unknown;
+  laps?: unknown;
+  best_efforts?: unknown;
+};
+
 export type SafeStravaAthleteSummary = {
   id: string;
   username: string | null;
@@ -87,6 +102,85 @@ export type StravaSummaryActivity = {
   averageHeartRate: number | null;
   maxHeartRate: number | null;
   rawSummary: Record<string, unknown>;
+};
+
+export type StravaActivitySplit = {
+  distanceM: number | null;
+  elapsedTimeSec: number | null;
+  movingTimeSec: number | null;
+  averageSpeedMps: number | null;
+  paceSecPerKm: number | null;
+  elevationDifferenceM: number | null;
+  split: number | null;
+  rawSplit: Record<string, unknown>;
+};
+
+export type StravaActivityLap = {
+  name: string | null;
+  distanceM: number | null;
+  elapsedTimeSec: number | null;
+  movingTimeSec: number | null;
+  averageSpeedMps: number | null;
+  maxSpeedMps: number | null;
+  paceSecPerKm: number | null;
+  totalElevationGainM: number | null;
+  averageHeartRate: number | null;
+  maxHeartRate: number | null;
+  averageWatts: number | null;
+  averageCadence: number | null;
+  lapIndex: number | null;
+  split: number | null;
+  rawLap: Record<string, unknown>;
+};
+
+export type StravaBestEffort = {
+  name: string | null;
+  distanceM: number | null;
+  elapsedTimeSec: number | null;
+  movingTimeSec: number | null;
+  startDate: string | null;
+  prRank: number | null;
+  rawEffort: Record<string, unknown>;
+};
+
+export type StravaDetailedActivity = StravaSummaryActivity & {
+  achievementCount: number | null;
+  workoutType: number | null;
+  averageSpeedMps: number | null;
+  maxSpeedMps: number | null;
+  perceivedExertion: number | null;
+  averageWatts: number | null;
+  maxWatts: number | null;
+  weightedAverageWatts: number | null;
+  deviceWatts: boolean | null;
+  splitsMetric: StravaActivitySplit[];
+  laps: StravaActivityLap[];
+  bestEfforts: StravaBestEffort[];
+  rawDetail: Record<string, unknown>;
+};
+
+export type StravaActivityStreamKey =
+  | "time"
+  | "distance"
+  | "heartrate"
+  | "watts"
+  | "velocity_smooth"
+  | "altitude"
+  | "grade_smooth"
+  | "cadence"
+  | "moving";
+
+export type StravaActivityStreams = {
+  time: number[] | null;
+  distance: number[] | null;
+  heartrate: number[] | null;
+  watts: number[] | null;
+  velocitySmooth: number[] | null;
+  altitude: number[] | null;
+  gradeSmooth: number[] | null;
+  cadence: number[] | null;
+  moving: boolean[] | null;
+  rawStreams: Record<string, unknown>;
 };
 
 export class StravaApiError extends Error {
@@ -227,6 +321,27 @@ function getOptionalNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function getOptionalInteger(value: unknown): number | null {
+  const numberValue = getOptionalNumber(value);
+
+  return numberValue === null ? null : Math.round(numberValue);
+}
+
+function getOptionalBoolean(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
+function getObjectArray(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter(
+    (item): item is Record<string, unknown> =>
+      Boolean(item) && typeof item === "object" && !Array.isArray(item),
+  );
+}
+
 function getRequiredDateTimeText(value: unknown, fieldName: string): string {
   const dateTimeText = getRequiredText(value, fieldName);
   const timestamp = Date.parse(dateTimeText);
@@ -285,6 +400,183 @@ function buildStravaSummaryActivity(
     averageHeartRate: getOptionalNumber(rawActivity.average_heartrate),
     maxHeartRate: getOptionalNumber(rawActivity.max_heartrate),
     rawSummary,
+  };
+}
+
+function getPaceSecPerKm(input: {
+  distanceM: number | null;
+  movingTimeSec: number | null;
+  elapsedTimeSec: number | null;
+  averageSpeedMps: number | null;
+}): number | null {
+  const durationSec = input.movingTimeSec ?? input.elapsedTimeSec;
+
+  if (input.averageSpeedMps !== null && input.averageSpeedMps > 0) {
+    return Math.round(1000 / input.averageSpeedMps);
+  }
+
+  if (
+    input.distanceM !== null &&
+    input.distanceM > 0 &&
+    durationSec !== null &&
+    durationSec > 0
+  ) {
+    return Math.round(durationSec / (input.distanceM / 1000));
+  }
+
+  return null;
+}
+
+function buildStravaActivitySplit(rawSplit: Record<string, unknown>): StravaActivitySplit {
+  const distanceM = getOptionalNumber(rawSplit.distance);
+  const elapsedTimeSec = getOptionalInteger(rawSplit.elapsed_time);
+  const movingTimeSec = getOptionalInteger(rawSplit.moving_time);
+  const averageSpeedMps = getOptionalNumber(rawSplit.average_speed);
+
+  return {
+    distanceM,
+    elapsedTimeSec,
+    movingTimeSec,
+    averageSpeedMps,
+    paceSecPerKm: getPaceSecPerKm({
+      distanceM,
+      elapsedTimeSec,
+      movingTimeSec,
+      averageSpeedMps,
+    }),
+    elevationDifferenceM: getOptionalNumber(rawSplit.elevation_difference),
+    split: getOptionalInteger(rawSplit.split),
+    rawSplit,
+  };
+}
+
+function buildStravaActivityLap(rawLap: Record<string, unknown>): StravaActivityLap {
+  const distanceM = getOptionalNumber(rawLap.distance);
+  const elapsedTimeSec = getOptionalInteger(rawLap.elapsed_time);
+  const movingTimeSec = getOptionalInteger(rawLap.moving_time);
+  const averageSpeedMps = getOptionalNumber(rawLap.average_speed);
+
+  return {
+    name: getText(rawLap.name),
+    distanceM,
+    elapsedTimeSec,
+    movingTimeSec,
+    averageSpeedMps,
+    maxSpeedMps: getOptionalNumber(rawLap.max_speed),
+    paceSecPerKm: getPaceSecPerKm({
+      distanceM,
+      elapsedTimeSec,
+      movingTimeSec,
+      averageSpeedMps,
+    }),
+    totalElevationGainM: getOptionalNumber(rawLap.total_elevation_gain),
+    averageHeartRate: getOptionalNumber(rawLap.average_heartrate),
+    maxHeartRate: getOptionalNumber(rawLap.max_heartrate),
+    averageWatts: getOptionalNumber(rawLap.average_watts),
+    averageCadence: getOptionalNumber(rawLap.average_cadence),
+    lapIndex: getOptionalInteger(rawLap.lap_index),
+    split: getOptionalInteger(rawLap.split),
+    rawLap,
+  };
+}
+
+function buildStravaBestEffort(rawEffort: Record<string, unknown>): StravaBestEffort {
+  return {
+    name: getText(rawEffort.name),
+    distanceM: getOptionalNumber(rawEffort.distance),
+    elapsedTimeSec: getOptionalInteger(rawEffort.elapsed_time),
+    movingTimeSec: getOptionalInteger(rawEffort.moving_time),
+    startDate: getText(rawEffort.start_date),
+    prRank: getOptionalInteger(rawEffort.pr_rank),
+    rawEffort,
+  };
+}
+
+function buildStravaDetailedActivity(
+  rawActivity: RawStravaDetailedActivity,
+): StravaDetailedActivity {
+  const summary = buildStravaSummaryActivity(rawActivity);
+  const rawDetail = rawActivity as Record<string, unknown>;
+
+  return {
+    ...summary,
+    achievementCount: getOptionalInteger(rawActivity.achievement_count),
+    workoutType: getOptionalInteger(rawActivity.workout_type),
+    averageSpeedMps: getOptionalNumber(rawActivity.average_speed),
+    maxSpeedMps: getOptionalNumber(rawActivity.max_speed),
+    perceivedExertion: getOptionalNumber(rawActivity.perceived_exertion),
+    averageWatts: getOptionalNumber(rawActivity.average_watts),
+    maxWatts: getOptionalNumber(rawActivity.max_watts),
+    weightedAverageWatts: getOptionalNumber(rawActivity.weighted_average_watts),
+    deviceWatts: getOptionalBoolean(rawActivity.device_watts),
+    splitsMetric: getObjectArray(rawActivity.splits_metric).map(buildStravaActivitySplit),
+    laps: getObjectArray(rawActivity.laps).map(buildStravaActivityLap),
+    bestEfforts: getObjectArray(rawActivity.best_efforts).map(buildStravaBestEffort),
+    rawDetail,
+  };
+}
+
+function getStreamDataArray(
+  rawStreams: Record<string, unknown>,
+  key: StravaActivityStreamKey,
+): unknown[] | null {
+  const stream = rawStreams[key];
+
+  if (!stream || typeof stream !== "object" || Array.isArray(stream)) {
+    return null;
+  }
+
+  const data = (stream as Record<string, unknown>).data;
+
+  return Array.isArray(data) ? data : null;
+}
+
+function getNumberStream(
+  rawStreams: Record<string, unknown>,
+  key: StravaActivityStreamKey,
+): number[] | null {
+  const data = getStreamDataArray(rawStreams, key);
+
+  if (!data) {
+    return null;
+  }
+
+  const numbers = data.filter(
+    (value): value is number => typeof value === "number" && Number.isFinite(value),
+  );
+
+  return numbers.length === data.length ? numbers : null;
+}
+
+function getBooleanStream(
+  rawStreams: Record<string, unknown>,
+  key: StravaActivityStreamKey,
+): boolean[] | null {
+  const data = getStreamDataArray(rawStreams, key);
+
+  if (!data) {
+    return null;
+  }
+
+  const booleans = data.filter((value): value is boolean => typeof value === "boolean");
+
+  return booleans.length === data.length ? booleans : null;
+}
+
+function buildStravaActivityStreams(
+  rawStreams: Record<string, unknown>,
+): StravaActivityStreams {
+  return {
+    time: getNumberStream(rawStreams, "time"),
+    distance: getNumberStream(rawStreams, "distance"),
+    heartrate: getNumberStream(rawStreams, "heartrate"),
+    watts: getNumberStream(rawStreams, "watts"),
+    velocitySmooth: getNumberStream(rawStreams, "velocity_smooth"),
+    altitude: getNumberStream(rawStreams, "altitude"),
+    gradeSmooth: getNumberStream(rawStreams, "grade_smooth"),
+    cadence: getNumberStream(rawStreams, "cadence"),
+    moving: getBooleanStream(rawStreams, "moving"),
+    rawStreams,
   };
 }
 
@@ -491,6 +783,32 @@ export async function fetchStravaActivityById(input: {
     baseUrl?: string;
   };
 }): Promise<StravaSummaryActivity> {
+  const detailedActivity = await fetchStravaActivityDetailById(input);
+
+  return {
+    id: detailedActivity.id,
+    name: detailedActivity.name,
+    sportType: detailedActivity.sportType,
+    startDate: detailedActivity.startDate,
+    startDateLocal: detailedActivity.startDateLocal,
+    distanceM: detailedActivity.distanceM,
+    movingTimeSec: detailedActivity.movingTimeSec,
+    elapsedTimeSec: detailedActivity.elapsedTimeSec,
+    totalElevationGainM: detailedActivity.totalElevationGainM,
+    averageHeartRate: detailedActivity.averageHeartRate,
+    maxHeartRate: detailedActivity.maxHeartRate,
+    rawSummary: detailedActivity.rawSummary,
+  };
+}
+
+export async function fetchStravaActivityDetailById(input: {
+  accessToken: string;
+  activityId: string | number;
+  includeAllEfforts?: boolean;
+  options?: Pick<StravaClientOptions, "fetchImpl"> & {
+    baseUrl?: string;
+  };
+}): Promise<StravaDetailedActivity> {
   assertServerOnly();
 
   const fetchImpl = input.options?.fetchImpl ?? fetch;
@@ -499,6 +817,10 @@ export async function fetchStravaActivityById(input: {
     getRequiredActivityIdText(input.activityId),
   );
   const url = new URL(`${baseUrl.replace(/\/+$/, "")}/activities/${activityId}`);
+
+  if (input.includeAllEfforts) {
+    url.searchParams.set("include_all_efforts", "true");
+  }
 
   const response = await fetchImpl(url.toString(), {
     method: "GET",
@@ -517,5 +839,58 @@ export async function fetchStravaActivityById(input: {
 
   const responseBody = await parseJsonObjectResponse(response, "activity");
 
-  return buildStravaSummaryActivity(responseBody as RawStravaSummaryActivity);
+  return buildStravaDetailedActivity(responseBody as RawStravaDetailedActivity);
+}
+
+export async function fetchStravaActivityStreams(input: {
+  accessToken: string;
+  activityId: string | number;
+  keys?: StravaActivityStreamKey[];
+  options?: Pick<StravaClientOptions, "fetchImpl"> & {
+    baseUrl?: string;
+  };
+}): Promise<StravaActivityStreams> {
+  assertServerOnly();
+
+  const fetchImpl = input.options?.fetchImpl ?? fetch;
+  const baseUrl = input.options?.baseUrl ?? STRAVA_API_BASE_URL;
+  const activityId = encodeURIComponent(
+    getRequiredActivityIdText(input.activityId),
+  );
+  const url = new URL(
+    `${baseUrl.replace(/\/+$/, "")}/activities/${activityId}/streams`,
+  );
+  const keys = input.keys ?? [
+    "time",
+    "distance",
+    "heartrate",
+    "watts",
+    "velocity_smooth",
+    "altitude",
+    "grade_smooth",
+    "cadence",
+    "moving",
+  ];
+
+  url.searchParams.set("keys", keys.join(","));
+  url.searchParams.set("key_by_type", "true");
+
+  const response = await fetchImpl(url.toString(), {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${input.accessToken}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new StravaApiError({
+      status: response.status,
+      responseBody: await parseSafeErrorBody(response),
+    });
+  }
+
+  const responseBody = await parseJsonObjectResponse(response, "activity streams");
+
+  return buildStravaActivityStreams(responseBody);
 }

@@ -36,11 +36,14 @@ import type {
   TrainingDay,
   WorkoutType,
 } from "@/types/training";
+import type { StravaActivityEvidence } from "../strava/activityEvidence.ts";
 
 type PlanGeneratorOptions = {
   startDate?: string;
   recentHistory?: RecentTrainingWeekInput[];
   recentHistoryWorkouts?: LoggedWorkout[];
+  stravaActivityEvidence?: StravaActivityEvidence[];
+  recentHistoryEvidenceWarnings?: string[];
 };
 
 type PlanMode = "relaxed" | "moderate" | "aggressive" | "very_aggressive";
@@ -254,6 +257,8 @@ export function generateTrainingPlan(
     startDate,
     recentHistory: options.recentHistory,
     recentHistoryWorkouts: options.recentHistoryWorkouts,
+    stravaActivityEvidence: options.stravaActivityEvidence,
+    recentHistoryEvidenceWarnings: options.recentHistoryEvidenceWarnings,
   });
   const derivedMetrics = deriveMetrics({
     input: normalizedInput,
@@ -324,6 +329,8 @@ function normalizePlanInput(input: {
   startDate: Date;
   recentHistory?: RecentTrainingWeekInput[];
   recentHistoryWorkouts?: LoggedWorkout[];
+  stravaActivityEvidence?: StravaActivityEvidence[];
+  recentHistoryEvidenceWarnings?: string[];
 }): NormalizedPlanInput {
   const assumptions: string[] = [];
   const warnings: string[] = [];
@@ -436,6 +443,8 @@ function normalizePlanInput(input: {
       runningDaysPerWeek: selectedRunningDays.length,
       recentHistory: input.recentHistory,
       recentHistoryWorkouts: input.recentHistoryWorkouts,
+      stravaActivityEvidence: input.stravaActivityEvidence,
+      evidenceWarnings: input.recentHistoryEvidenceWarnings,
       assumptions,
       warnings,
     }),
@@ -564,6 +573,8 @@ function buildRecentTrainingHistory(input: {
   runningDaysPerWeek: number;
   recentHistory?: RecentTrainingWeekInput[];
   recentHistoryWorkouts?: LoggedWorkout[];
+  stravaActivityEvidence?: StravaActivityEvidence[];
+  evidenceWarnings?: string[];
   assumptions: string[];
   warnings: string[];
 }): RecentTrainingHistory {
@@ -573,6 +584,8 @@ function buildRecentTrainingHistory(input: {
     selectedRunningDaysPerWeek: input.runningDaysPerWeek,
     recentHistory: input.recentHistory,
     recentHistoryWorkouts: input.recentHistoryWorkouts,
+    stravaActivityEvidence: input.stravaActivityEvidence,
+    evidenceWarnings: input.evidenceWarnings,
   });
 
   input.assumptions.push(...evidence.assumptions);

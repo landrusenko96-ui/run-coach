@@ -1,4 +1,8 @@
-import { fetchExistingStravaImportIds, saveStravaActivity } from "../db/stravaActivities.ts";
+import {
+  fetchExistingStravaImportIds,
+  saveStravaActivity,
+  updateStravaActivityRawSummary,
+} from "../db/stravaActivities.ts";
 import { saveLoggedWorkout, type SaveLoggedWorkoutInput } from "../db/workouts.ts";
 import { getLocalDateText } from "./planStart.ts";
 import {
@@ -7,6 +11,7 @@ import {
   isSupportedStravaRun,
   isValidStravaRunActivity,
 } from "../strava/importRuns.ts";
+import { isEnrichedStravaRawSummary } from "../strava/activityEvidence.ts";
 import type { StravaSummaryActivity } from "../strava/client.ts";
 import type { createSupabaseServerClient } from "../supabase/server.ts";
 import type {
@@ -160,6 +165,17 @@ export async function importMissingStravaHistoryRuns(
     });
 
     if (skipReason) {
+      if (
+        skipReason === "already imported" &&
+        isEnrichedStravaRawSummary(activity.rawSummary)
+      ) {
+        await updateExistingStravaEvidenceAudit({
+          activity,
+          userId: input.userId,
+          supabase: input.supabase,
+        });
+      }
+
       skippedActivities.push({
         strava_activity_id: activity.id,
         name: activity.name,
@@ -201,6 +217,22 @@ export async function importMissingStravaHistoryRuns(
     importedWorkouts,
     skippedActivities,
   };
+}
+
+async function updateExistingStravaEvidenceAudit(input: {
+  activity: StravaSummaryActivity;
+  userId: string;
+  supabase: SupabaseServerClient;
+}): Promise<void> {
+  try {
+    await updateStravaActivityRawSummary(input.supabase, {
+      userId: input.userId,
+      stravaActivityId: input.activity.id,
+      rawSummaryJson: input.activity.rawSummary,
+    });
+  } catch {
+    // Evidence refresh is useful but should never block plan generation.
+  }
 }
 
 function getStravaHistorySkipReason(input: {

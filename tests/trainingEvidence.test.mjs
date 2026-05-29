@@ -125,6 +125,30 @@ function makeWorkout(overrides = {}) {
   };
 }
 
+function makeStravaEvidence(overrides = {}) {
+  return {
+    stravaActivityId: overrides.stravaActivityId ?? "activity-1",
+    hasDetail: overrides.hasDetail ?? true,
+    hasStreams: overrides.hasStreams ?? true,
+    hasHeartRateStream: overrides.hasHeartRateStream ?? false,
+    hasPowerStream: overrides.hasPowerStream ?? false,
+    achievementCount: overrides.achievementCount ?? 0,
+    bestEffortCount: overrides.bestEffortCount ?? 0,
+    prCount: overrides.prCount ?? 0,
+    perceivedExertion: overrides.perceivedExertion ?? null,
+    workoutType: overrides.workoutType ?? null,
+    paceFadePercent: overrides.paceFadePercent ?? null,
+    negativeSplit: overrides.negativeSplit ?? null,
+    splitPaceVariationPercent: overrides.splitPaceVariationPercent ?? null,
+    sustainedHardSectionCount: overrides.sustainedHardSectionCount ?? 0,
+    elevationGainM: overrides.elevationGainM ?? null,
+    altitudeRangeM: overrides.altitudeRangeM ?? null,
+    gradeRangePercent: overrides.gradeRangePercent ?? null,
+    effortSignals: overrides.effortSignals ?? [],
+    classificationHint: overrides.classificationHint ?? null,
+  };
+}
+
 describe("training evidence analyzer", () => {
   it("computes six-week load metrics and recent ramp from weekly summaries", () => {
     const evidence = analyzeTrainingEvidence({
@@ -246,6 +270,134 @@ describe("training evidence analyzer", () => {
     assert.ok(
       evidence.assumptions.some((assumption) =>
         assumption.includes("fastest recent run is not treated as a fitness limit"),
+      ),
+    );
+  });
+
+  it("uses Strava easy evidence to avoid treating a fast summary-only run as a limit", () => {
+    const evidence = analyzeTrainingEvidence({
+      runnerProfile: makeProfile(),
+      raceGoal: makeRaceGoal(),
+      selectedRunningDaysPerWeek: 4,
+      recentHistory: makeWeeks([35, 36, 37, 38, 39, 40]),
+      recentHistoryWorkouts: [
+        makeWorkout({
+          id: "fast",
+          source: "strava",
+          source_activity_id: "activity-fast",
+          avg_pace_sec_per_km: 300,
+          rpe: null,
+          notes: null,
+        }),
+      ],
+      stravaActivityEvidence: [
+        makeStravaEvidence({
+          stravaActivityId: "activity-fast",
+          classificationHint: "easy_non_limit",
+          effortSignals: ["Strava detail/stream evidence available"],
+        }),
+      ],
+    });
+    const fastClassification = evidence.effortClassifications.find(
+      (classification) => classification.loggedWorkoutId === "fast",
+    );
+
+    assert.equal(fastClassification?.quality, "easy_non_limit");
+    assert.equal(evidence.fastestRunUsedAsFitnessAnchor, false);
+    assert.equal(evidence.thresholdEstimateSource, "easy_pace_estimate");
+  });
+
+  it("uses Strava PR/race-like evidence as a cautious near-max anchor", () => {
+    const evidence = analyzeTrainingEvidence({
+      runnerProfile: makeProfile(),
+      raceGoal: makeRaceGoal(),
+      selectedRunningDaysPerWeek: 4,
+      recentHistory: makeWeeks([35, 36, 37, 38, 39, 40]),
+      recentHistoryWorkouts: [
+        makeWorkout({
+          id: "race",
+          source: "strava",
+          source_activity_id: "activity-race",
+          avg_pace_sec_per_km: 300,
+          rpe: null,
+          notes: null,
+        }),
+      ],
+      stravaActivityEvidence: [
+        makeStravaEvidence({
+          stravaActivityId: "activity-race",
+          hasHeartRateStream: true,
+          hasPowerStream: true,
+          prCount: 1,
+          perceivedExertion: 9,
+          classificationHint: "possible_near_max",
+          effortSignals: [
+            "Strava PR/best-effort signal",
+            "heart-rate stream available",
+            "run power evidence available",
+          ],
+        }),
+      ],
+    });
+
+    assert.equal(evidence.thresholdEstimateSource, "near_max_effort");
+    assert.equal(evidence.fastestRunUsedAsFitnessAnchor, true);
+    assert.equal(evidence.fitnessConfidence, "high");
+    assert.equal(evidence.hrDataAvailability, "most");
+    assert.equal(evidence.powerDataAvailability, "most");
+  });
+
+  it("uses Strava HR, power, and elevation evidence as support when logged fields are sparse", () => {
+    const evidence = analyzeTrainingEvidence({
+      runnerProfile: makeProfile(),
+      raceGoal: makeRaceGoal(),
+      selectedRunningDaysPerWeek: 4,
+      recentHistory: makeWeeks([35, 36, 37, 38, 39, 40]),
+      recentHistoryWorkouts: [
+        makeWorkout({
+          id: "strava-1",
+          source: "strava",
+          source_activity_id: "activity-1",
+          avg_pace_sec_per_km: 370,
+          avg_heart_rate: null,
+          max_heart_rate: null,
+          elevation_gain_m: null,
+        }),
+        makeWorkout({
+          id: "strava-2",
+          source: "strava",
+          source_activity_id: "activity-2",
+          avg_pace_sec_per_km: 365,
+          avg_heart_rate: null,
+          max_heart_rate: null,
+          elevation_gain_m: null,
+        }),
+      ],
+      stravaActivityEvidence: [
+        makeStravaEvidence({
+          stravaActivityId: "activity-1",
+          hasHeartRateStream: true,
+          hasPowerStream: true,
+          elevationGainM: 400,
+          classificationHint: "easy_non_limit",
+        }),
+        makeStravaEvidence({
+          stravaActivityId: "activity-2",
+          hasHeartRateStream: true,
+          hasPowerStream: true,
+          elevationGainM: 500,
+          classificationHint: "easy_non_limit",
+        }),
+      ],
+    });
+
+    assert.equal(evidence.hrDataAvailability, "most");
+    assert.equal(evidence.powerDataAvailability, "most");
+    assert.equal(evidence.elevationGainAvgMPerWeek, 150);
+    assert.equal(evidence.fitnessConfidence, "medium");
+    assert.ok(
+      evidence.assumptions.some((assumption) =>
+        assumption.includes("Strava detail/stream evidence was available"),
       ),
     );
   });

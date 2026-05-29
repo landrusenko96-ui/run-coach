@@ -96,3 +96,24 @@ export async function saveStravaActivity(
     throw new Error(error.message);
   }
 }
+
+export async function updateStravaActivityRawSummary(
+  supabase: SupabaseStravaActivityClient,
+  input: {
+    userId: string;
+    stravaActivityId: string;
+    rawSummaryJson: Record<string, unknown>;
+  },
+): Promise<void> {
+  const { error } = await supabase
+    .from("strava_activities")
+    .update({
+      raw_summary_json: input.rawSummaryJson,
+    })
+    .eq("user_id", input.userId)
+    .eq("strava_activity_id", input.stravaActivityId);
+
+  if (error) {
+    throw new Error(error.message);
+  }
+}

@@ -10,6 +10,8 @@ import {
   buildStravaAuthorizationUrl,
   exchangeStravaCodeForToken,
   fetchRecentStravaActivities,
+  fetchStravaActivityDetailById,
+  fetchStravaActivityStreams,
   fetchStravaActivityById,
   getStravaAthleteDisplayName,
   hasRequiredStravaScopes,
@@ -320,6 +322,151 @@ describe("Strava client", () => {
     });
   });
 
+  it("fetches detailed activity evidence with efforts, splits, laps, and power fields", async () => {
+    const mockFetch = createMockFetch(
+      jsonResponse({
+        id: 123456789,
+        name: "Tempo Progression",
+        sport_type: "Run",
+        start_date: "2026-05-19T16:30:00Z",
+        start_date_local: "2026-05-19T12:30:00",
+        distance: 6000,
+        moving_time: 1800,
+        elapsed_time: 1860,
+        total_elevation_gain: 22,
+        average_heartrate: 158,
+        max_heartrate: 181,
+        achievement_count: 2,
+        workout_type: 3,
+        average_speed: 3.33,
+        max_speed: 5.1,
+        perceived_exertion: 8,
+        average_watts: 260,
+        max_watts: 420,
+        weighted_average_watts: 278,
+        device_watts: true,
+        splits_metric: [
+          {
+            distance: 1000,
+            moving_time: 310,
+            elapsed_time: 315,
+            average_speed: 3.23,
+            elevation_difference: 4,
+            split: 1,
+          },
+          {
+            distance: 1000,
+            moving_time: 280,
+            elapsed_time: 282,
+            average_speed: 3.57,
+            elevation_difference: 2,
+            split: 2,
+          },
+        ],
+        laps: [
+          {
+            name: "Lap 1",
+            distance: 2000,
+            moving_time: 600,
+            elapsed_time: 610,
+            average_speed: 3.33,
+            max_speed: 4.4,
+            total_elevation_gain: 8,
+            average_heartrate: 162,
+            max_heartrate: 176,
+            average_watts: 275,
+            average_cadence: 86,
+            lap_index: 1,
+            split: 1,
+          },
+        ],
+        best_efforts: [
+          {
+            name: "5k",
+            distance: 5000,
+            elapsed_time: 1450,
+            moving_time: 1440,
+            start_date: "2026-05-19T16:35:00Z",
+            pr_rank: 1,
+          },
+        ],
+      }),
+    );
+
+    const activity = await fetchStravaActivityDetailById({
+      accessToken: "access-token",
+      activityId: "123456789",
+      includeAllEfforts: true,
+      options: {
+        fetchImpl: mockFetch.fetchImpl,
+      },
+    });
+    const requestedUrl = new URL(mockFetch.calls[0].url);
+
+    assert.equal(
+      requestedUrl.origin + requestedUrl.pathname,
+      `${STRAVA_API_BASE_URL}/activities/123456789`,
+    );
+    assert.equal(requestedUrl.searchParams.get("include_all_efforts"), "true");
+    assert.equal(activity.achievementCount, 2);
+    assert.equal(activity.workoutType, 3);
+    assert.equal(activity.perceivedExertion, 8);
+    assert.equal(activity.averageWatts, 260);
+    assert.equal(activity.maxWatts, 420);
+    assert.equal(activity.weightedAverageWatts, 278);
+    assert.equal(activity.deviceWatts, true);
+    assert.equal(activity.splitsMetric.length, 2);
+    assert.equal(activity.splitsMetric[0].paceSecPerKm, 310);
+    assert.equal(activity.laps.length, 1);
+    assert.equal(activity.laps[0].averageHeartRate, 162);
+    assert.equal(activity.laps[0].averageWatts, 275);
+    assert.equal(activity.bestEfforts.length, 1);
+    assert.equal(activity.bestEfforts[0].prRank, 1);
+  });
+
+  it("fetches activity streams with the export-safe evidence keys", async () => {
+    const mockFetch = createMockFetch(
+      jsonResponse({
+        time: { data: [0, 60, 120] },
+        distance: { data: [0, 250, 500] },
+        heartrate: { data: [130, 145, 158] },
+        watts: { data: [220, 260, 280] },
+        velocity_smooth: { data: [3.8, 4.1, 4.2] },
+        altitude: { data: [100, 105, 110] },
+        grade_smooth: { data: [0, 1.5, -0.5] },
+        cadence: { data: [82, 85, 86] },
+        moving: { data: [true, true, true] },
+      }),
+    );
+
+    const streams = await fetchStravaActivityStreams({
+      accessToken: "access-token",
+      activityId: 123456789,
+      options: {
+        fetchImpl: mockFetch.fetchImpl,
+      },
+    });
+    const requestedUrl = new URL(mockFetch.calls[0].url);
+
+    assert.equal(
+      requestedUrl.origin + requestedUrl.pathname,
+      `${STRAVA_API_BASE_URL}/activities/123456789/streams`,
+    );
+    assert.equal(
+      requestedUrl.searchParams.get("keys"),
+      "time,distance,heartrate,watts,velocity_smooth,altitude,grade_smooth,cadence,moving",
+    );
+    assert.equal(requestedUrl.searchParams.get("key_by_type"), "true");
+    assert.deepEqual(streams.time, [0, 60, 120]);
+    assert.deepEqual(streams.heartrate, [130, 145, 158]);
+    assert.deepEqual(streams.watts, [220, 260, 280]);
+    assert.deepEqual(streams.velocitySmooth, [3.8, 4.1, 4.2]);
+    assert.deepEqual(streams.altitude, [100, 105, 110]);
+    assert.deepEqual(streams.gradeSmooth, [0, 1.5, -0.5]);
+    assert.deepEqual(streams.cadence, [82, 85, 86]);
+    assert.deepEqual(streams.moving, [true, true, true]);
+  });
+
   it("throws safe API errors when fetching one activity fails", async () => {
     for (const status of [401, 404, 429, 500]) {
       const mockFetch = createMockFetch(
@@ -349,6 +496,39 @@ describe("Strava client", () => {
       assert.ok(thrownError instanceof StravaApiError);
       assert.equal(thrownError.status, status);
       assert.equal(thrownError.responseBody, "Strava request failed");
+      assert.doesNotMatch(thrownError.message, /secret-access-token/);
+    }
+  });
+
+  it("throws safe API errors when fetching activity streams fails", async () => {
+    for (const status of [401, 404, 429, 500]) {
+      const mockFetch = createMockFetch(
+        jsonResponse(
+          {
+            message: "Stream request failed",
+          },
+          {
+            status,
+          },
+        ),
+      );
+      let thrownError = null;
+
+      try {
+        await fetchStravaActivityStreams({
+          accessToken: "secret-access-token",
+          activityId: 123456789,
+          options: {
+            fetchImpl: mockFetch.fetchImpl,
+          },
+        });
+      } catch (error) {
+        thrownError = error;
+      }
+
+      assert.ok(thrownError instanceof StravaApiError);
+      assert.equal(thrownError.status, status);
+      assert.equal(thrownError.responseBody, "Stream request failed");
       assert.doesNotMatch(thrownError.message, /secret-access-token/);
     }
   });

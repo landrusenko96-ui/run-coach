@@ -5,6 +5,7 @@ import type {
   RecentTrainingWeekInput,
   RunnerProfile,
 } from "../../types/training.ts";
+import type { StravaActivityEvidence } from "../strava/activityEvidence.ts";
 
 export type EffortQuality =
   | "easy_non_limit"
@@ -28,6 +29,8 @@ export type LongRunDurationCategory =
   | "unknown";
 
 export type HeartRateDataAvailability = "none" | "some" | "most";
+
+export type PowerDataAvailability = "none" | "some" | "most";
 
 export type ElevationTolerance = "unknown" | "low" | "moderate" | "high";
 
@@ -63,8 +66,10 @@ export type TrainingEvidence = {
   longestRunToWeeklyVolumeRatio: number;
   longRunDurationCategory: LongRunDurationCategory;
   hrDataAvailability: HeartRateDataAvailability;
+  powerDataAvailability: PowerDataAvailability;
   elevationGainAvgMPerWeek: number | null;
   elevationTolerance: ElevationTolerance;
+  stravaEvidenceActivityCount: number;
   effortClassifications: WorkoutEffortClassification[];
   hardWorkoutCount6w: number;
   possibleNearMaxCount6w: number;
@@ -84,6 +89,8 @@ type AnalyzeTrainingEvidenceInput = {
   selectedRunningDaysPerWeek: number;
   recentHistory?: RecentTrainingWeekInput[];
   recentHistoryWorkouts?: LoggedWorkout[];
+  stravaActivityEvidence?: StravaActivityEvidence[];
+  evidenceWarnings?: string[];
 };
 
 const distanceKmByRace: Record<RaceDistance, number> = {
@@ -103,13 +110,23 @@ export function analyzeTrainingEvidence(
   const filteredWorkouts = filterUsableRecentRunWorkouts(
     input.recentHistoryWorkouts ?? [],
   );
+  const stravaEvidenceByActivityId = buildStravaEvidenceByActivityId(
+    input.stravaActivityEvidence ?? [],
+  );
   const effortClassifications = filteredWorkouts.map((workout) =>
-    classifyWorkoutEffort(workout, input.runnerProfile),
+    classifyWorkoutEffort({
+      workout,
+      runnerProfile: input.runnerProfile,
+      stravaEvidence: workout.source_activity_id
+        ? stravaEvidenceByActivityId.get(workout.source_activity_id) ?? null
+        : null,
+    }),
   );
   const durabilityMetrics = buildDurabilityMetrics({
     historyMetrics,
     raceDistance: input.raceGoal.distance,
     workouts: filteredWorkouts,
+    stravaEvidenceByActivityId,
   });
   const thresholdEstimate = estimateThresholdPace({
     runnerProfile: input.runnerProfile,
@@ -121,6 +138,7 @@ export function analyzeTrainingEvidence(
     historySource: historyMetrics.source,
     completedWeeks6w: historyMetrics.completedWeeks6w,
     hrDataAvailability: durabilityMetrics.hrDataAvailability,
+    powerDataAvailability: durabilityMetrics.powerDataAvailability,
     thresholdEstimateSource: thresholdEstimate.source,
   });
   const hardWorkoutCount6w = effortClassifications.filter(
@@ -151,6 +169,8 @@ export function analyzeTrainingEvidence(
     fitnessConfidence,
     fastestWorkout,
     fastestRunUsedAsFitnessAnchor,
+    stravaEvidenceActivityCount: input.stravaActivityEvidence?.length ?? 0,
+    evidenceWarnings: input.evidenceWarnings ?? [],
     assumptions,
     warnings,
   });
@@ -158,6 +178,7 @@ export function analyzeTrainingEvidence(
   return {
     ...historyMetrics,
     ...durabilityMetrics,
+    stravaEvidenceActivityCount: input.stravaActivityEvidence?.length ?? 0,
     effortClassifications,
     hardWorkoutCount6w,
     possibleNearMaxCount6w,
@@ -321,17 +342,36 @@ function buildDurabilityMetrics(input: {
   historyMetrics: ReturnType<typeof buildHistoryMetricsFromWeeks> | ReturnType<typeof buildFallbackHistoryMetrics>;
   raceDistance: RaceDistance;
   workouts: LoggedWorkout[];
+  stravaEvidenceByActivityId: Map<string, StravaActivityEvidence>;
 }) {
   const goalDistanceKm = distanceKmByRace[input.raceDistance];
   const workoutsWithHr = input.workouts.filter(
-    (workout) => workout.avg_heart_rate !== null || workout.max_heart_rate !== null,
+    (workout) =>
+      workout.avg_heart_rate !== null ||
+      workout.max_heart_rate !== null ||
+      getMatchingStravaEvidence(workout, input.stravaEvidenceByActivityId)
+        ?.hasHeartRateStream,
+  ).length;
+  const workoutsWithPower = input.workouts.filter(
+    (workout) =>
+      getMatchingStravaEvidence(workout, input.stravaEvidenceByActivityId)
+        ?.hasPowerStream,
   ).length;
   const hrDataAvailability = getHeartRateDataAvailability(
     workoutsWithHr,
     input.workouts.length,
   );
+  const powerDataAvailability = getPowerDataAvailability(
+    workoutsWithPower,
+    input.workouts.length,
+  );
   const elevationGainTotalM = input.workouts.reduce(
-    (total, workout) => total + (workout.elevation_gain_m ?? 0),
+    (total, workout) =>
+      total +
+      (workout.elevation_gain_m ??
+        getMatchingStravaEvidence(workout, input.stravaEvidenceByActivityId)
+          ?.elevationGainM ??
+        0),
     0,
   );
   const elevationGainAvgMPerWeek =
@@ -351,6 +391,7 @@ function buildDurabilityMetrics(input: {
       input.historyMetrics.longestRunDurationMin6w,
     ),
     hrDataAvailability,
+    powerDataAvailability,
     elevationGainAvgMPerWeek,
     elevationTolerance: getElevationTolerance(elevationGainAvgMPerWeek),
   } satisfies Pick<
@@ -359,6 +400,7 @@ function buildDurabilityMetrics(input: {
     | "longestRunToWeeklyVolumeRatio"
     | "longRunDurationCategory"
     | "hrDataAvailability"
+    | "powerDataAvailability"
     | "elevationGainAvgMPerWeek"
     | "elevationTolerance"
   >;
@@ -375,11 +417,13 @@ function filterUsableRecentRunWorkouts(workouts: LoggedWorkout[]): LoggedWorkout
   );
 }
 
-function classifyWorkoutEffort(
-  workout: LoggedWorkout,
-  runnerProfile: RunnerProfile,
-): WorkoutEffortClassification {
-  const evidence: string[] = [];
+function classifyWorkoutEffort(input: {
+  workout: LoggedWorkout;
+  runnerProfile: RunnerProfile;
+  stravaEvidence: StravaActivityEvidence | null;
+}): WorkoutEffortClassification {
+  const { workout, runnerProfile, stravaEvidence } = input;
+  const evidence: string[] = [...(stravaEvidence?.effortSignals ?? [])];
   const notes = workout.notes?.toLowerCase() ?? "";
   const avgHeartRateRatio =
     runnerProfile.max_heart_rate && workout.avg_heart_rate
@@ -419,6 +463,11 @@ function classifyWorkoutEffort(
     return buildEffortClassification(workout, "possible_near_max", evidence);
   }
 
+  if (stravaEvidence?.classificationHint === "possible_near_max") {
+    evidence.push("Strava detail/stream evidence supports near-max effort");
+    return buildEffortClassification(workout, "possible_near_max", evidence);
+  }
+
   if (
     workout.rpe !== null && workout.rpe >= 7 ||
     avgHeartRateRatio !== null && avgHeartRateRatio >= 0.85 ||
@@ -431,16 +480,34 @@ function classifyWorkoutEffort(
     return buildEffortClassification(workout, "hard_workout", evidence);
   }
 
+  if (stravaEvidence?.classificationHint === "hard_workout") {
+    evidence.push("Strava detail/stream evidence supports hard workout");
+    return buildEffortClassification(workout, "hard_workout", evidence);
+  }
+
   if (
     workout.rpe !== null && workout.rpe >= 5 ||
-    avgHeartRateRatio !== null && avgHeartRateRatio >= 0.75 ||
-    paceFasterThanEasyRatio !== null && paceFasterThanEasyRatio <= 0.95
+    avgHeartRateRatio !== null && avgHeartRateRatio >= 0.75
   ) {
-    if (paceFasterThanEasyRatio !== null && paceFasterThanEasyRatio <= 0.95) {
-      evidence.push("faster than saved easy pace");
-    }
-
     return buildEffortClassification(workout, "controlled", evidence);
+  }
+
+  if (stravaEvidence?.classificationHint === "controlled") {
+    evidence.push("Strava detail/stream evidence supports controlled workout");
+    return buildEffortClassification(workout, "controlled", evidence);
+  }
+
+  if (
+    paceFasterThanEasyRatio !== null &&
+    paceFasterThanEasyRatio <= 0.95 &&
+    stravaEvidence?.classificationHint !== "easy_non_limit"
+  ) {
+    evidence.push("faster than saved easy pace");
+    return buildEffortClassification(workout, "controlled", evidence);
+  }
+
+  if (stravaEvidence?.classificationHint === "easy_non_limit") {
+    evidence.push("Strava detail/stream evidence does not support a max anchor");
   }
 
   return buildEffortClassification(workout, "easy_non_limit", evidence);
@@ -538,18 +605,21 @@ function getFitnessConfidence(input: {
   historySource: TrainingHistorySource;
   completedWeeks6w: number;
   hrDataAvailability: HeartRateDataAvailability;
+  powerDataAvailability: PowerDataAvailability;
   thresholdEstimateSource: ThresholdEstimateSource;
 }): TrainingEvidenceConfidence {
   const hasUsefulHistory =
     input.completedWeeks6w >= 5 ||
     input.historySource === "self_reported_profile";
+  const hasPhysiologyEvidence =
+    input.hrDataAvailability !== "none" || input.powerDataAvailability !== "none";
 
   if (input.thresholdEstimateSource === "saved_threshold") {
     return hasUsefulHistory ? "high" : "medium";
   }
 
   if (input.thresholdEstimateSource === "near_max_effort") {
-    return hasUsefulHistory && input.hrDataAvailability !== "none" ? "high" : "medium";
+    return hasUsefulHistory && hasPhysiologyEvidence ? "high" : "medium";
   }
 
   if (input.thresholdEstimateSource === "hard_workout") {
@@ -560,7 +630,7 @@ function getFitnessConfidence(input: {
     input.thresholdEstimateSource === "easy_pace_estimate" &&
     input.runnerProfile.easy_pace_sec_per_km !== null &&
     hasUsefulHistory &&
-    input.hrDataAvailability !== "none"
+    hasPhysiologyEvidence
   ) {
     return "medium";
   }
@@ -598,9 +668,19 @@ function addEvidenceMessages(input: {
   fitnessConfidence: TrainingEvidenceConfidence;
   fastestWorkout: LoggedWorkout | null;
   fastestRunUsedAsFitnessAnchor: boolean;
+  stravaEvidenceActivityCount: number;
+  evidenceWarnings: string[];
   assumptions: string[];
   warnings: string[];
 }): void {
+  if (input.stravaEvidenceActivityCount > 0) {
+    input.assumptions.push(
+      `Strava detail/stream evidence was available for ${input.stravaEvidenceActivityCount} recent run${input.stravaEvidenceActivityCount === 1 ? "" : "s"} and used as supporting evidence.`,
+    );
+  }
+
+  input.warnings.push(...input.evidenceWarnings);
+
   if (
     input.thresholdEstimateSource === "easy_pace_estimate" &&
     input.runnerProfile.threshold_pace_sec_per_km === null
@@ -681,6 +761,15 @@ function addEvidenceMessages(input: {
   }
 
   if (
+    input.durabilityMetrics.powerDataAvailability !== "none" &&
+    input.historyMetrics.source === "assembled_six_week_history"
+  ) {
+    input.assumptions.push(
+      "Recent Strava run-power evidence is used as supporting context for effort confidence, not as a standalone performance limit.",
+    );
+  }
+
+  if (
     input.raceGoal.distance === "marathon" &&
     input.durabilityMetrics.longestRunToGoalDistanceRatio < 0.35
   ) {
@@ -729,6 +818,41 @@ function getHeartRateDataAvailability(
   }
 
   return "some";
+}
+
+function getPowerDataAvailability(
+  workoutsWithPower: number,
+  totalWorkouts: number,
+): PowerDataAvailability {
+  if (totalWorkouts === 0 || workoutsWithPower === 0) {
+    return "none";
+  }
+
+  if (workoutsWithPower / totalWorkouts >= 0.67) {
+    return "most";
+  }
+
+  return "some";
+}
+
+function buildStravaEvidenceByActivityId(
+  evidenceItems: StravaActivityEvidence[],
+): Map<string, StravaActivityEvidence> {
+  return new Map(
+    evidenceItems.map((evidence) => [
+      evidence.stravaActivityId,
+      evidence,
+    ]),
+  );
+}
+
+function getMatchingStravaEvidence(
+  workout: LoggedWorkout,
+  evidenceByActivityId: Map<string, StravaActivityEvidence>,
+): StravaActivityEvidence | null {
+  return workout.source_activity_id
+    ? evidenceByActivityId.get(workout.source_activity_id) ?? null
+    : null;
 }
 
 function getLongRunDurationCategory(

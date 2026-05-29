@@ -22,6 +22,10 @@ import {
   shouldRefreshStravaToken,
   type StravaSummaryActivity,
 } from "@/lib/strava/client";
+import {
+  enrichStravaActivitiesForPlanHistory,
+  type StravaActivityEvidence,
+} from "@/lib/strava/activityEvidence";
 import { AuthRequiredError, requireServerUser } from "@/lib/supabase/auth";
 import { createServiceRoleClient } from "@/lib/supabase/serviceRole";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -256,6 +260,8 @@ export async function POST(request: Request) {
       historyMode: generateRequest.historyMode,
       appLoggedWorkouts,
     });
+    let stravaActivityEvidence: StravaActivityEvidence[] = [];
+    let stravaEvidenceWarnings: string[] = [];
     let historySummary = buildPlanGenerationHistorySummary({
       profile,
       appLoggedWorkouts,
@@ -407,6 +413,17 @@ export async function POST(request: Request) {
         );
       }
 
+      const stravaHistoryEvidence = await enrichStravaActivitiesForPlanHistory({
+        activities,
+        accessToken,
+        windowStartDate: historyWindow.startDate,
+        windowEndDate: historyWindow.endDate,
+      });
+
+      activities = stravaHistoryEvidence.activities;
+      stravaActivityEvidence = stravaHistoryEvidence.evidence;
+      stravaEvidenceWarnings = stravaHistoryEvidence.warnings;
+
       const stravaHistoryImport = await importMissingStravaHistoryRuns({
         userId: user.id,
         profile,
@@ -453,6 +470,8 @@ export async function POST(request: Request) {
       startDate: generateRequest.startDate,
       recentHistory: historySummary.weeks,
       recentHistoryWorkouts: historyWorkoutsForGeneration,
+      stravaActivityEvidence,
+      recentHistoryEvidenceWarnings: stravaEvidenceWarnings,
     });
     const customPlanName = normalizePlanName(generateRequest.planName);
     const savedPlan = await saveTrainingPlan(
