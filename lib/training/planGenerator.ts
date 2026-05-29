@@ -83,10 +83,14 @@ type AvailabilityProfile = {
   availableTrainingDays: TrainingDay[];
   selectedRunningDays: TrainingDay[];
   preferredLongRunDay: TrainingDay | null;
+  preferredRestDay: TrainingDay | null;
+  preferredWorkoutDays: TrainingDay[];
   longRunDay: TrainingDay;
   unavailableDays: TrainingDay[];
   maximumWeekdaySessionDurationMin: number | null;
   maximumWeekendSessionDurationMin: number | null;
+  crossTrainingAvailable: boolean;
+  doubleRunWillingness: boolean;
 };
 
 type AthleteProfile = {
@@ -106,8 +110,15 @@ type EnvironmentProfile = {
   hillsAvailable: boolean;
   treadmillAvailable: boolean;
   trailAccess: boolean;
+  raceCourseProfile: RaceGoal["race_course_profile"];
+  raceCourseNotes: string | null;
+  expectedWeatherNotes: string | null;
   raceCourseProfileKnown: boolean;
+  raceCourseLooksFlat: boolean;
+  raceCourseLooksRolling: boolean;
   raceCourseLooksHilly: boolean;
+  weatherCaution: boolean;
+  effortTargetBias: boolean;
 };
 
 type RecentTrainingHistory = TrainingEvidence;
@@ -330,6 +341,8 @@ function normalizePlanInput(input: {
     availableTrainingDays,
     runningDaysPerWeek: effectiveRunningDaysPerWeek,
     preferredLongRunDay: input.runnerProfile.preferred_long_run_day,
+    preferredRestDay: input.runnerProfile.preferred_rest_day,
+    assumptions,
   });
   const longRunDay = getLongRunDay(
     input.runnerProfile,
@@ -376,12 +389,16 @@ function normalizePlanInput(input: {
       availableTrainingDays,
       selectedRunningDays,
       preferredLongRunDay: input.runnerProfile.preferred_long_run_day,
+      preferredRestDay: input.runnerProfile.preferred_rest_day,
+      preferredWorkoutDays: sortTrainingDays(input.runnerProfile.preferred_workout_days),
       longRunDay,
       unavailableDays: dayOrder.filter((day) => !selectedRunningDays.includes(day)),
       maximumWeekdaySessionDurationMin:
         input.runnerProfile.maximum_weekday_session_duration_min,
       maximumWeekendSessionDurationMin:
         input.runnerProfile.maximum_weekend_session_duration_min,
+      crossTrainingAvailable: input.runnerProfile.cross_training_available,
+      doubleRunWillingness: input.runnerProfile.double_run_willingness,
     },
     athlete,
     environment: {
@@ -390,13 +407,28 @@ function normalizePlanInput(input: {
       hillsAvailable: terrainAvailable.includes("hills"),
       treadmillAvailable: terrainAvailable.includes("treadmill"),
       trailAccess: terrainAvailable.includes("trails"),
+      raceCourseProfile: input.raceGoal.race_course_profile,
+      raceCourseNotes: input.raceGoal.course_elevation_notes,
+      expectedWeatherNotes: input.raceGoal.expected_weather_notes,
       raceCourseProfileKnown:
         Boolean(input.raceGoal.race_course_profile) ||
         Boolean(input.raceGoal.course_elevation_notes?.trim()),
+      raceCourseLooksFlat:
+        input.raceGoal.race_course_profile === "flat" ||
+        hasFlatSignal(input.raceGoal.course_elevation_notes),
+      raceCourseLooksRolling: input.raceGoal.race_course_profile === "rolling",
       raceCourseLooksHilly:
         input.raceGoal.race_course_profile === "hilly" ||
         input.raceGoal.race_course_profile === "mountainous" ||
+        input.raceGoal.race_course_profile === "rolling" ||
         hasHillSignal(input.raceGoal.course_elevation_notes),
+      weatherCaution: hasWeatherCautionSignal(input.raceGoal.expected_weather_notes),
+      effortTargetBias:
+        terrainAvailable.includes("trails") ||
+        input.raceGoal.race_course_profile === "hilly" ||
+        input.raceGoal.race_course_profile === "mountainous" ||
+        input.raceGoal.race_course_profile === "rolling" ||
+        hasWeatherCautionSignal(input.raceGoal.expected_weather_notes),
     },
     history: buildRecentTrainingHistory({
       runnerProfile: input.runnerProfile,
@@ -590,6 +622,9 @@ function deriveMetrics(input: {
     injurySignal: input.input.athlete.injurySignal,
     runningExperienceLevel: input.input.athlete.runningExperienceLevel,
     age: input.input.athlete.age,
+    heightCm: input.input.athlete.heightCm,
+    weightKg: input.input.athlete.weightKg,
+    doubleRunWillingness: input.input.availability.doubleRunWillingness,
   });
   const weeklyDurationCapacityKm = getWeeklyDurationCapacityKm(input.input, easySecPerKm);
 
@@ -603,7 +638,12 @@ function deriveMetrics(input: {
     );
     startLoadKm = Math.min(startLoadKm, Math.max(8, Math.round(peakLoadKm * 0.82)));
   }
-  const cutbackIntervalWeeks = getCutbackIntervalWeeks(input.input.goal.planMode);
+  const cutbackIntervalWeeks = getCutbackIntervalWeeks({
+    planMode: input.input.goal.planMode,
+    age: input.input.athlete.age,
+    injurySignal: input.input.athlete.injurySignal,
+    runningExperienceLevel: input.input.athlete.runningExperienceLevel,
+  });
   const taperWeeks = getTaperWeeks({
     raceDistance: input.input.goal.raceType,
     totalWeeks: input.totalWeeks,
@@ -618,6 +658,9 @@ function deriveMetrics(input: {
     injurySignal: input.input.athlete.injurySignal,
     runningExperienceLevel: input.input.athlete.runningExperienceLevel,
     age: input.input.athlete.age,
+    heightCm: input.input.athlete.heightCm,
+    weightKg: input.input.athlete.weightKg,
+    avgKm6w: input.input.history.avgKm6w,
   });
   const peakLongRunKm = getPeakLongRunKm({
     raceDistance: input.input.goal.raceType,
@@ -798,6 +841,11 @@ function getStartLoadKm(input: NormalizedPlanInput): number {
     input.athlete.injurySignal === "current_or_serious" ? 0.85 : 1;
   const beginnerMultiplier =
     input.athlete.runningExperienceLevel === "beginner" ? 0.92 : 1;
+  const bodyLoadMultiplier = getBodyLoadToleranceMultiplier({
+    athlete: input.athlete,
+    avgKm6w: input.history.avgKm6w,
+    planMode: input.goal.planMode,
+  });
 
   return Math.max(
     input.goal.raceType === "marathon" ? 16 : 10,
@@ -807,9 +855,56 @@ function getStartLoadKm(input: NormalizedPlanInput): number {
         rampMultiplier *
         modeMultiplier *
         injuryMultiplier *
-        beginnerMultiplier,
+        beginnerMultiplier *
+        bodyLoadMultiplier,
     ),
   );
+}
+
+function getBodyLoadToleranceMultiplier(input: {
+  athlete: {
+    heightCm: number | null;
+    weightKg: number | null;
+    runningExperienceLevel: AthleteProfile["runningExperienceLevel"];
+  };
+  avgKm6w: number;
+  planMode: PlanMode;
+}): number {
+  const bmi = getBodyMassIndex(input.athlete.heightCm, input.athlete.weightKg);
+
+  if (bmi === null) {
+    return 1;
+  }
+
+  const lowBaseOrBeginner =
+    input.avgKm6w < 30 || input.athlete.runningExperienceLevel === "beginner";
+
+  if (bmi >= 30 && lowBaseOrBeginner) {
+    return 0.93;
+  }
+
+  if (bmi >= 27 && input.avgKm6w < 25) {
+    return 0.96;
+  }
+
+  if (bmi < 18.5 && isAggressivePlanMode(input.planMode)) {
+    return 0.95;
+  }
+
+  return 1;
+}
+
+function getBodyMassIndex(
+  heightCm: number | null,
+  weightKg: number | null,
+): number | null {
+  if (!heightCm || !weightKg || heightCm <= 0 || weightKg <= 0) {
+    return null;
+  }
+
+  const heightM = heightCm / 100;
+
+  return weightKg / (heightM * heightM);
 }
 
 function getPeakLoadKm(input: {
@@ -820,6 +915,9 @@ function getPeakLoadKm(input: {
   injurySignal: AthleteProfile["injurySignal"];
   runningExperienceLevel: AthleteProfile["runningExperienceLevel"];
   age: number | null;
+  heightCm: number | null;
+  weightKg: number | null;
+  doubleRunWillingness: boolean;
 }): number {
   const [low, high] = getPeakLoadRange(input.raceDistance, input.avgKm6w, input.planMode);
   const modePosition =
@@ -831,7 +929,15 @@ function getPeakLoadKm(input: {
           ? 0.9
           : 0.6;
   const rawPeak = low + (high - low) * modePosition;
-  const sessionCapacityCap = input.runDaysPerWeek * getRealisticAverageSessionKm(input.avgKm6w);
+  const sessionCapacityCap =
+    input.runDaysPerWeek *
+    getRealisticAverageSessionKm({
+      avgKm6w: input.avgKm6w,
+      runDaysPerWeek: input.runDaysPerWeek,
+      runningExperienceLevel: input.runningExperienceLevel,
+      doubleRunWillingness: input.doubleRunWillingness,
+      planMode: input.planMode,
+    });
   const ageLoadMultiplier = input.age !== null && input.age >= 55 ? 0.92 : input.age !== null && input.age >= 45 ? 0.96 : 1;
   const injuryLoadMultiplier = input.injurySignal === "current_or_serious" ? 0.85 : 1;
   const experienceLoadMultiplier =
@@ -840,6 +946,15 @@ function getPeakLoadKm(input: {
       : input.runningExperienceLevel === "advanced"
         ? 1.03
         : 1;
+  const bodyLoadMultiplier = getBodyLoadToleranceMultiplier({
+    athlete: {
+      heightCm: input.heightCm,
+      weightKg: input.weightKg,
+      runningExperienceLevel: input.runningExperienceLevel,
+    },
+    avgKm6w: input.avgKm6w,
+    planMode: input.planMode,
+  });
 
   return Math.max(
     Math.round(input.avgKm6w),
@@ -847,7 +962,8 @@ function getPeakLoadKm(input: {
       Math.min(rawPeak, sessionCapacityCap) *
         ageLoadMultiplier *
         injuryLoadMultiplier *
-        experienceLoadMultiplier,
+        experienceLoadMultiplier *
+        bodyLoadMultiplier,
     ),
   );
 }
@@ -900,32 +1016,60 @@ function getPeakLoadRange(
   return planMode === "relaxed" ? [70, 90] : planMode === "moderate" ? [80, 100] : [95, 115];
 }
 
-function getRealisticAverageSessionKm(avgKm6w: number): number {
-  if (avgKm6w < 20) {
-    return 10;
+function getRealisticAverageSessionKm(input: {
+  avgKm6w: number;
+  runDaysPerWeek?: number;
+  runningExperienceLevel?: AthleteProfile["runningExperienceLevel"];
+  doubleRunWillingness?: boolean;
+  planMode?: PlanMode;
+}): number {
+  let sessionKm: number;
+
+  if (input.avgKm6w < 20) {
+    sessionKm = 10;
+  } else if (input.avgKm6w < 45) {
+    sessionKm = 14;
+  } else if (input.avgKm6w < 70) {
+    sessionKm = 17;
+  } else {
+    sessionKm = 20;
   }
 
-  if (avgKm6w < 45) {
-    return 14;
-  }
+  const doubleRunCapacitySignal =
+    Boolean(input.doubleRunWillingness) &&
+    input.runningExperienceLevel === "advanced" &&
+    (input.runDaysPerWeek ?? 0) >= 5 &&
+    input.avgKm6w >= 60 &&
+    isAggressivePlanMode(input.planMode ?? "moderate");
 
-  if (avgKm6w < 70) {
-    return 17;
-  }
-
-  return 20;
+  return doubleRunCapacitySignal ? sessionKm * 1.06 : sessionKm;
 }
 
-function getCutbackIntervalWeeks(planMode: PlanMode): number {
-  if (planMode === "relaxed") {
-    return 3;
+function getCutbackIntervalWeeks(input: {
+  planMode: PlanMode;
+  age: number | null;
+  injurySignal: AthleteProfile["injurySignal"];
+  runningExperienceLevel: AthleteProfile["runningExperienceLevel"];
+}): number {
+  let intervalWeeks: number;
+
+  if (input.planMode === "relaxed") {
+    intervalWeeks = 3;
+  } else if (isAggressivePlanMode(input.planMode)) {
+    intervalWeeks = 5;
+  } else {
+    intervalWeeks = 4;
   }
 
-  if (isAggressivePlanMode(planMode)) {
-    return 5;
+  if (
+    input.injurySignal === "current_or_serious" ||
+    input.runningExperienceLevel === "beginner" ||
+    (input.age !== null && input.age >= 55)
+  ) {
+    intervalWeeks -= 1;
   }
 
-  return 4;
+  return Math.max(2, intervalWeeks);
 }
 
 function getTaperWeeks(input: {
@@ -966,6 +1110,9 @@ function getWeeklyIncreaseCap(input: {
   injurySignal: AthleteProfile["injurySignal"];
   runningExperienceLevel: AthleteProfile["runningExperienceLevel"];
   age: number | null;
+  heightCm: number | null;
+  weightKg: number | null;
+  avgKm6w: number;
 }): number {
   const baseCaps: Record<VolumeCategory, number> = {
     low_base: isAggressivePlanMode(input.planMode) ? 0.05 : 0.04,
@@ -992,6 +1139,20 @@ function getWeeklyIncreaseCap(input: {
     cap = Math.min(cap, 0.06);
   } else if (input.age !== null && input.age >= 45) {
     cap = Math.min(cap, 0.08);
+  }
+
+  if (
+    getBodyLoadToleranceMultiplier({
+      athlete: {
+        heightCm: input.heightCm,
+        weightKg: input.weightKg,
+        runningExperienceLevel: input.runningExperienceLevel,
+      },
+      avgKm6w: input.avgKm6w,
+      planMode: input.planMode,
+    }) < 1
+  ) {
+    cap = Math.min(cap, 0.05);
   }
 
   return cap;
@@ -1160,7 +1321,7 @@ function getSessionDurationCapMin(
 }
 
 function getUncappedSessionCapacityKm(avgKm6w: number): number {
-  return getRealisticAverageSessionKm(avgKm6w);
+  return getRealisticAverageSessionKm({ avgKm6w });
 }
 
 function getVolumeCategory(
@@ -1285,6 +1446,17 @@ function addDerivedMetricMessages(input: {
     );
   }
 
+  if (
+    input.input.environment.raceCourseLooksFlat &&
+    !input.input.environment.flatRoutesAvailable &&
+    !input.input.environment.treadmillAvailable &&
+    !input.input.environment.terrainAvailable.includes("track")
+  ) {
+    input.input.warnings.push(
+      "The race course looks flat, but saved terrain does not include flat routes, track, or treadmill access. Race-specific sessions keep effort guidance conservative.",
+    );
+  }
+
   if (input.input.environment.raceCourseLooksHilly && !input.input.environment.hillsAvailable) {
     input.input.warnings.push(
       "The race course looks hilly, but the profile does not list hill access. The plan keeps terrain notes conservative until hill exposure is available.",
@@ -1298,6 +1470,40 @@ function addDerivedMetricMessages(input: {
   ) {
     input.input.warnings.push(
       "The race course looks hilly, but recent elevation exposure is low or unknown.",
+    );
+  }
+
+  if (input.input.environment.weatherCaution) {
+    input.input.warnings.push(
+      "Expected weather notes mention heat, humidity, wind, cold, rain, or exposure, so workout instructions emphasize effort control when conditions affect pace.",
+    );
+  }
+
+  if (input.input.athlete.age !== null && input.input.athlete.age >= 55) {
+    input.input.assumptions.push(
+      "Age is used as a recovery signal, so progression and high-intensity exposure are kept more conservative.",
+    );
+  } else if (input.input.athlete.age !== null && input.input.athlete.age >= 45) {
+    input.input.assumptions.push(
+      "Age is used as a mild recovery signal when selecting progression and hard-session exposure.",
+    );
+  }
+
+  if (
+    getBodyLoadToleranceMultiplier({
+      athlete: input.input.athlete,
+      avgKm6w: input.input.history.avgKm6w,
+      planMode: input.input.goal.planMode,
+    }) < 1
+  ) {
+    input.input.warnings.push(
+      "Height and weight are used only as a load-tolerance signal here, so the plan slightly reduces progression because body data and current base suggest extra impact caution.",
+    );
+  }
+
+  if (input.input.availability.doubleRunWillingness) {
+    input.input.assumptions.push(
+      "Double-run willingness is treated only as a small capacity signal for supported advanced plans; this schema still schedules at most one workout per date.",
     );
   }
 }
@@ -1581,7 +1787,11 @@ function buildWeekDrafts(input: {
       : runDays;
 
   if (effectiveRunDays.length === 0) {
-    assignOptionalStrengthDraft(drafts, input.weekPlan);
+    assignOptionalSupportDraft({
+      drafts,
+      input: input.input,
+      weekPlan: input.weekPlan,
+    });
     return drafts;
   }
 
@@ -1644,7 +1854,11 @@ function buildWeekDrafts(input: {
     runDays: effectiveRunDays,
     longRunDay,
   });
-  assignOptionalStrengthDraft(drafts, input.weekPlan);
+  assignOptionalSupportDraft({
+    drafts,
+    input: input.input,
+    weekPlan: input.weekPlan,
+  });
 
   return drafts;
 }
@@ -1738,6 +1952,8 @@ function assignQualityDrafts(input: {
     ),
     longRunDay: input.longRunDay,
     role: getRoleForSubtype(primaryQualitySubtype),
+    preferredWorkoutDays: input.input.availability.preferredWorkoutDays,
+    assumptions: input.input.assumptions,
   });
 
   if (qualityDay) {
@@ -1758,6 +1974,12 @@ function assignQualityDrafts(input: {
     (input.weekPlan.phase === "specific" || input.weekPlan.phase === "peak") &&
     input.metrics.volumeCategory !== "low_base" &&
     input.input.athlete.runningExperienceLevel !== "beginner" &&
+    (input.input.athlete.age === null || input.input.athlete.age < 50) &&
+    getBodyLoadToleranceMultiplier({
+      athlete: input.input.athlete,
+      avgKm6w: input.input.history.avgKm6w,
+      planMode: input.input.goal.planMode,
+    }) >= 1 &&
     input.metrics.fitnessConfidence !== "low";
 
   if (!canAddSecondControlledStimulus) {
@@ -1774,6 +1996,7 @@ function assignQualityDrafts(input: {
         daysBetween(runDay.date, input.longRunDay.date) >= 2
       );
     }),
+    preferredWorkoutDays: input.input.availability.preferredWorkoutDays,
   });
 
   if (secondQualityDay) {
@@ -1800,6 +2023,8 @@ function getPrimaryQualitySubtype(input: {
       input.input.history.elevationTolerance === "high") &&
     (input.phase === "base" || input.phase === "build") &&
     input.weekNumber % 4 === 0 &&
+    input.runningExperienceLevel !== "beginner" &&
+    (input.input.athlete.age === null || input.input.athlete.age < 55) &&
     input.input.athlete.injurySignal !== "current_or_serious"
   ) {
     return "hill_repeats";
@@ -1810,6 +2035,7 @@ function getPrimaryQualitySubtype(input: {
     input.volumeCategory === "low_base" ||
     input.fitnessConfidence === "low" ||
     input.input.athlete.injurySignal === "current_or_serious" ||
+    (input.input.athlete.age !== null && input.input.athlete.age >= 55) ||
     input.input.history.recentRamp > 1.35
   ) {
     if (input.phase === "race_prep") {
@@ -1840,7 +2066,13 @@ function getPrimaryQualitySubtype(input: {
       return "hm_pace_blocks";
     }
 
-    return input.weekNumber % 3 === 0 ? "vo2_intervals" : "cruise_intervals";
+    if (input.weekNumber % 3 === 0) {
+      return input.input.athlete.age !== null && input.input.athlete.age >= 45
+        ? "cruise_intervals"
+        : "vo2_intervals";
+    }
+
+    return "cruise_intervals";
   }
 
   if (input.phase === "specific" || input.phase === "peak") {
@@ -1863,30 +2095,61 @@ function pickQualityDay(input: {
   candidates: PlannedDay[];
   longRunDay: PlannedDay;
   role: WeekWorkoutDraft["role"];
+  preferredWorkoutDays: TrainingDay[];
+  assumptions: string[];
 }): PlannedDay | null {
   const minimumGap = input.role === "interval" ? 3 : 2;
   const sortedCandidates = [...input.candidates].sort(
     (first, second) => first.date.getTime() - second.date.getTime(),
   );
+  const safeCandidates = sortedCandidates.filter((candidate) => {
+    const daysUntilLongRun = daysBetween(candidate.date, input.longRunDay.date);
+    const daysAfterLongRun = daysBetween(input.longRunDay.date, candidate.date);
 
-  return (
-    sortedCandidates.find((candidate) => {
-      const daysUntilLongRun = daysBetween(candidate.date, input.longRunDay.date);
-      const daysAfterLongRun = daysBetween(input.longRunDay.date, candidate.date);
-
-      return daysUntilLongRun >= minimumGap || daysAfterLongRun >= 2;
-    }) ?? null
+    return daysUntilLongRun >= minimumGap || daysAfterLongRun >= 2;
+  });
+  const preferredSafeCandidate = safeCandidates.find((candidate) =>
+    input.preferredWorkoutDays.includes(candidate.dayLabel),
   );
+
+  if (preferredSafeCandidate) {
+    addUniqueAssumption(
+      input.assumptions,
+      `Preferred workout day (${formatDayLabel(preferredSafeCandidate.dayLabel)}) is used for quality work when spacing rules allow it.`,
+    );
+    return preferredSafeCandidate;
+  }
+
+  if (
+    input.preferredWorkoutDays.length > 0 &&
+    sortedCandidates.some((candidate) =>
+      input.preferredWorkoutDays.includes(candidate.dayLabel),
+    ) &&
+    safeCandidates.length > 0
+  ) {
+    addUniqueAssumption(
+      input.assumptions,
+      "Saved preferred workout days conflicted with hard-day spacing in at least one week, so the safer quality day was used.",
+    );
+  }
+
+  return safeCandidates[0] ?? null;
 }
 
 function pickSecondQualityDay(input: {
   candidates: PlannedDay[];
+  preferredWorkoutDays: TrainingDay[];
 }): PlannedDay | null {
   if (input.candidates.length === 0) {
     return null;
   }
 
-  return input.candidates[input.candidates.length - 1];
+  return (
+    [...input.candidates]
+      .reverse()
+      .find((candidate) => input.preferredWorkoutDays.includes(candidate.dayLabel)) ??
+    input.candidates[input.candidates.length - 1]
+  );
 }
 
 function applyWorkoutSubtype(
@@ -2008,21 +2271,66 @@ function assignStrideDraft(input: {
   applyWorkoutSubtype(getDraftForDay(input.drafts, strideCandidate), strideSubtype);
 }
 
-function assignOptionalStrengthDraft(
-  drafts: WeekWorkoutDraft[],
-  weekPlan: WeekPlan,
-): void {
-  if (weekPlan.isTaper || weekPlan.weekNumber % 4 !== 0) {
+function assignOptionalSupportDraft(input: {
+  drafts: WeekWorkoutDraft[];
+  input: NormalizedPlanInput;
+  weekPlan: WeekPlan;
+}): void {
+  if (
+    input.weekPlan.isTaper ||
+    input.weekPlan.isRaceWeek ||
+    input.weekPlan.weekNumber % 4 !== 0
+  ) {
     return;
   }
 
-  const restDrafts = drafts.filter((draft) => draft.workoutType === "rest");
+  const restDrafts = input.drafts.filter((draft) => draft.workoutType === "rest");
+  const suitableRestDrafts = restDrafts.filter((draft) =>
+    isSuitableOptionalSupportDay(draft, input.drafts),
+  );
 
-  if (restDrafts.length < 2) {
+  if (suitableRestDrafts.length === 0) {
     return;
   }
 
-  applyWorkoutSubtype(restDrafts[Math.floor(restDrafts.length / 2)], "strength_optional");
+  const preferredRestDraft =
+    input.input.availability.preferredRestDay !== null
+      ? suitableRestDrafts.find(
+          (draft) => draft.day.dayLabel === input.input.availability.preferredRestDay,
+        )
+      : null;
+  const supportDraft =
+    preferredRestDraft ?? suitableRestDrafts[Math.floor(suitableRestDrafts.length / 2)];
+
+  if (input.input.availability.crossTrainingAvailable) {
+    applyWorkoutSubtype(supportDraft, "cross_training_optional");
+    addUniqueAssumption(
+      input.input.assumptions,
+      "Cross-training availability is used only for optional low-impact support on suitable rest days.",
+    );
+    return;
+  }
+
+  applyWorkoutSubtype(supportDraft, "strength_optional");
+}
+
+function isSuitableOptionalSupportDay(
+  candidateDraft: WeekWorkoutDraft,
+  weekDrafts: WeekWorkoutDraft[],
+): boolean {
+  return !weekDrafts.some((draft) => {
+    if (
+      draft.stress !== "hard" &&
+      draft.role !== "long_easy" &&
+      draft.role !== "long_steady" &&
+      draft.role !== "long_race_specific" &&
+      draft.role !== "race_day"
+    ) {
+      return false;
+    }
+
+    return Math.abs(daysBetween(candidateDraft.day.date, draft.day.date)) <= 1;
+  });
 }
 
 function softenUnsafeHardWorkoutSpacing(drafts: WeekWorkoutDraft[]): void {
@@ -2108,6 +2416,8 @@ function buildPrescriptionFromDraft(input: {
     flatRoutesAvailable: input.input.environment.flatRoutesAvailable,
     trailAccess: input.input.environment.trailAccess,
     raceCourseLooksHilly: input.input.environment.raceCourseLooksHilly,
+    effortTargetBias: input.input.environment.effortTargetBias,
+    weatherCaution: input.input.environment.weatherCaution,
     fitnessConfidence: input.metrics.fitnessConfidence,
     feasibilityRating: input.metrics.feasibilityRating,
     paces: {
@@ -2150,7 +2460,11 @@ function getDraftDistanceKm(input: {
   input: NormalizedPlanInput;
   metrics: DerivedMetrics;
 }): number | null {
-  if (input.draft.workoutType === "rest" || input.draft.workoutType === "strength_optional") {
+  if (
+    input.draft.workoutType === "rest" ||
+    input.draft.workoutType === "strength_optional" ||
+    input.draft.workoutType === "cross_training"
+  ) {
     return null;
   }
 
@@ -2239,6 +2553,7 @@ function getDistanceWeight(role: WeekWorkoutDraft["role"]): number {
     race_day: 0,
     rest: 0,
     strength: 0,
+    cross_training: 0,
   };
 
   return weights[role];
@@ -2299,7 +2614,11 @@ function getWorkoutTerrain(input: {
   weekNumber: number;
   environment: EnvironmentProfile;
 }): TerrainAvailable | null {
-  if (input.draft.workoutType === "rest" || input.draft.workoutType === "strength_optional") {
+  if (
+    input.draft.workoutType === "rest" ||
+    input.draft.workoutType === "strength_optional" ||
+    input.draft.workoutType === "cross_training"
+  ) {
     return null;
   }
 
@@ -2337,6 +2656,16 @@ function getWorkoutTerrain(input: {
   }
 
   if (input.draft.role === "threshold" || input.draft.role === "race_pace") {
+    if (input.environment.raceCourseLooksFlat) {
+      return pickFirstAvailable(input.environment.terrainAvailable, [
+        "track",
+        "flat",
+        "treadmill",
+        "hills",
+        "trails",
+      ]);
+    }
+
     return pickFirstAvailable(input.environment.terrainAvailable, [
       "flat",
       "treadmill",
@@ -2585,8 +2914,20 @@ function selectRunningDaysForPlan(input: {
   availableTrainingDays: TrainingDay[];
   runningDaysPerWeek: RunningDaysPerWeek;
   preferredLongRunDay: TrainingDay | null;
+  preferredRestDay: TrainingDay | null;
+  assumptions: string[];
 }): TrainingDay[] {
   if (input.availableTrainingDays.length <= input.runningDaysPerWeek) {
+    if (
+      input.preferredRestDay &&
+      input.availableTrainingDays.includes(input.preferredRestDay)
+    ) {
+      addUniqueAssumption(
+        input.assumptions,
+        `Preferred rest day (${formatDayLabel(input.preferredRestDay)}) is also needed as a running day because available training days are limited.`,
+      );
+    }
+
     return sortTrainingDays(input.availableTrainingDays);
   }
 
@@ -2602,13 +2943,35 @@ function selectRunningDaysForPlan(input: {
     ? combinations.filter((combination) => combination.includes(anchorDay))
     : combinations;
 
-  return validCombinations.reduce((bestCombination, combination) => {
-    if (scoreRunningDaySpread(combination) < scoreRunningDaySpread(bestCombination)) {
+  const selectedCombination = validCombinations.reduce((bestCombination, combination) => {
+    if (
+      scoreRunningDayCombination(combination, input.preferredRestDay) <
+      scoreRunningDayCombination(bestCombination, input.preferredRestDay)
+    ) {
       return combination;
     }
 
     return bestCombination;
   }, validCombinations[0]);
+
+  if (
+    input.preferredRestDay &&
+    input.availableTrainingDays.includes(input.preferredRestDay)
+  ) {
+    if (selectedCombination.includes(input.preferredRestDay)) {
+      addUniqueAssumption(
+        input.assumptions,
+        `Preferred rest day (${formatDayLabel(input.preferredRestDay)}) could not be kept free without weakening the running-day spread or long-run anchor.`,
+      );
+    } else {
+      addUniqueAssumption(
+        input.assumptions,
+        `Preferred rest day (${formatDayLabel(input.preferredRestDay)}) is kept free of planned running when feasible.`,
+      );
+    }
+  }
+
+  return selectedCombination;
 }
 
 function getAnchorRunDay(
@@ -2668,6 +3031,16 @@ function scoreRunningDaySpread(trainingDays: TrainingDay[]): number {
   });
 
   return Math.max(...gaps) - Math.min(...gaps);
+}
+
+function scoreRunningDayCombination(
+  trainingDays: TrainingDay[],
+  preferredRestDay: TrainingDay | null,
+): number {
+  const restDayPenalty =
+    preferredRestDay && trainingDays.includes(preferredRestDay) ? 4 : 0;
+
+  return scoreRunningDaySpread(trainingDays) + restDayPenalty;
 }
 
 function getTerrainAvailable(
@@ -2821,6 +3194,46 @@ function hasHillSignal(value: string | null): boolean {
   );
 }
 
+function hasFlatSignal(value: string | null): boolean {
+  if (!value) {
+    return false;
+  }
+
+  const normalizedValue = value.toLowerCase();
+
+  return (
+    normalizedValue.includes("flat") ||
+    normalizedValue.includes("fast") ||
+    normalizedValue.includes("pancake") ||
+    normalizedValue.includes("track")
+  );
+}
+
+function hasWeatherCautionSignal(value: string | null): boolean {
+  if (!value) {
+    return false;
+  }
+
+  const normalizedValue = value.toLowerCase();
+
+  return (
+    normalizedValue.includes("heat") ||
+    normalizedValue.includes("hot") ||
+    normalizedValue.includes("humid") ||
+    normalizedValue.includes("humidity") ||
+    normalizedValue.includes("wind") ||
+    normalizedValue.includes("windy") ||
+    normalizedValue.includes("gust") ||
+    normalizedValue.includes("cold") ||
+    normalizedValue.includes("ice") ||
+    normalizedValue.includes("snow") ||
+    normalizedValue.includes("rain") ||
+    normalizedValue.includes("storm") ||
+    normalizedValue.includes("sun") ||
+    normalizedValue.includes("exposed")
+  );
+}
+
 function isValidDateText(dateText: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dateText)) {
     return false;
@@ -2905,6 +3318,12 @@ function roundDistance(distanceKm: number): number {
 function addUniqueWarning(warnings: string[], warning: string): void {
   if (!warnings.includes(warning)) {
     warnings.push(warning);
+  }
+}
+
+function addUniqueAssumption(assumptions: string[], assumption: string): void {
+  if (!assumptions.includes(assumption)) {
+    assumptions.push(assumption);
   }
 }
 

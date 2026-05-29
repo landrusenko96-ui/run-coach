@@ -997,6 +997,298 @@ describe("generateTrainingPlan", () => {
     );
   });
 
+  it("avoids the preferred rest day when enough other training days are available", () => {
+    const generatedPlan = generateTrainingPlan(
+      makeProfile({
+        available_training_days: [
+          "monday",
+          "tuesday",
+          "wednesday",
+          "thursday",
+          "friday",
+          "saturday",
+        ],
+        running_days_per_week: 5,
+        preferred_rest_day: "wednesday",
+      }),
+      baseRaceGoal,
+      { startDate: "2030-05-06" },
+    );
+    const nonRaceRuns = getAllNonRaceRunningWorkouts(
+      generatedPlan,
+      baseRaceGoal.race_date,
+    );
+
+    assert.equal(
+      nonRaceRuns.some((workout) => workout.day_label === "wednesday"),
+      false,
+    );
+    assert.ok(
+      generatedPlan.trainingPlan.assumptions.some((assumption) =>
+        assumption.includes("Preferred rest day (Wednesday) is kept free"),
+      ),
+    );
+  });
+
+  it("uses a preferred workout day for quality work when spacing is safe", () => {
+    const generatedPlan = generateTrainingPlan(
+      makeProfile({
+        available_training_days: ["tuesday", "thursday", "saturday"],
+        running_days_per_week: 3,
+        preferred_workout_days: ["tuesday"],
+      }),
+      baseRaceGoal,
+      { startDate: "2030-05-06" },
+    );
+    const week2Tuesday = getWeekWorkouts(generatedPlan, 2).find(
+      (workout) => workout.day_label === "tuesday",
+    );
+
+    assert.ok(week2Tuesday?.title.includes("Steady"));
+    assert.ok(
+      generatedPlan.trainingPlan.assumptions.some((assumption) =>
+        assumption.includes("Preferred workout day (Tuesday) is used"),
+      ),
+    );
+  });
+
+  it("ignores an unsafe preferred workout day in favor of hard-day spacing", () => {
+    const generatedPlan = generateTrainingPlan(
+      makeProfile({
+        available_training_days: ["tuesday", "friday", "saturday"],
+        running_days_per_week: 3,
+        preferred_workout_days: ["friday"],
+      }),
+      baseRaceGoal,
+      { startDate: "2030-05-06" },
+    );
+    const week2Tuesday = getWeekWorkouts(generatedPlan, 2).find(
+      (workout) => workout.day_label === "tuesday",
+    );
+    const week2Friday = getWeekWorkouts(generatedPlan, 2).find(
+      (workout) => workout.day_label === "friday",
+    );
+
+    assert.ok(week2Tuesday?.title.includes("Steady"));
+    assert.equal(week2Friday?.title.includes("Steady"), false);
+    assert.ok(
+      generatedPlan.trainingPlan.assumptions.some((assumption) =>
+        assumption.includes("preferred workout days conflicted"),
+      ),
+    );
+  });
+
+  it("uses age as a recovery signal for lower peak stress", () => {
+    const sharedProfile = {
+      current_weekly_mileage_km: 42,
+      longest_recent_run_km: 18,
+      available_training_days: [
+        "monday",
+        "tuesday",
+        "wednesday",
+        "friday",
+        "saturday",
+      ],
+      running_days_per_week: 5,
+      training_aggressiveness: "aggressive",
+      running_experience_level: "intermediate",
+    };
+    const olderPlan = generateTrainingPlan(
+      makeProfile({
+        ...sharedProfile,
+        birth_year: 1970,
+      }),
+      baseRaceGoal,
+      { startDate: "2030-05-06" },
+    );
+    const youngerPlan = generateTrainingPlan(
+      makeProfile({
+        ...sharedProfile,
+        birth_year: 1995,
+      }),
+      baseRaceGoal,
+      { startDate: "2030-05-06" },
+    );
+
+    assert.ok(
+      getMaxNonRaceWeekDistance(olderPlan) < getMaxNonRaceWeekDistance(youngerPlan),
+    );
+    assert.ok(
+      olderPlan.trainingPlan.assumptions.some((assumption) =>
+        assumption.includes("Age is used as a recovery signal"),
+      ),
+    );
+  });
+
+  it("uses body data only as a low-base load-tolerance modifier", () => {
+    const sharedProfile = {
+      current_weekly_mileage_km: 22,
+      longest_recent_run_km: 8,
+      available_training_days: [
+        "monday",
+        "tuesday",
+        "wednesday",
+        "friday",
+        "saturday",
+      ],
+      running_days_per_week: 5,
+      training_aggressiveness: "aggressive",
+      running_experience_level: "beginner",
+    };
+    const bodyCautionPlan = generateTrainingPlan(
+      makeProfile({
+        ...sharedProfile,
+        height_cm: 170,
+        weight_kg: 95,
+      }),
+      baseRaceGoal,
+      { startDate: "2030-05-06" },
+    );
+    const noBodyDataPlan = generateTrainingPlan(
+      makeProfile(sharedProfile),
+      baseRaceGoal,
+      { startDate: "2030-05-06" },
+    );
+
+    assert.ok(
+      getMaxNonRaceWeekDistance(bodyCautionPlan) <
+        getMaxNonRaceWeekDistance(noBodyDataPlan),
+    );
+    assert.ok(
+      bodyCautionPlan.trainingPlan.warnings.some((warning) =>
+        warning.includes("Height and weight are used only as a load-tolerance signal"),
+      ),
+    );
+  });
+
+  it("creates optional cross-training support without a run structured workout", () => {
+    const generatedPlan = generateTrainingPlan(
+      makeProfile({
+        available_training_days: [
+          "monday",
+          "tuesday",
+          "wednesday",
+          "friday",
+          "saturday",
+        ],
+        running_days_per_week: 5,
+        cross_training_available: true,
+      }),
+      baseRaceGoal,
+      { startDate: "2030-05-06" },
+    );
+    const crossTrainingRows = generatedPlan.plannedWorkouts.filter(
+      (workout) => workout.workout_type === "cross_training",
+    );
+
+    assert.ok(crossTrainingRows.length > 0);
+    assert.ok(
+      crossTrainingRows.every(
+        (workout) =>
+          workout.distance_km === null &&
+          workout.structured_workout === null &&
+          workout.title === "Optional cross-training",
+      ),
+    );
+  });
+
+  it("treats double-run willingness as capacity context without scheduling doubles", () => {
+    const sharedProfile = {
+      current_weekly_mileage_km: 60,
+      longest_recent_run_km: 24,
+      available_training_days: [
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+      ],
+      running_days_per_week: 6,
+      training_aggressiveness: "aggressive",
+      running_experience_level: "advanced",
+    };
+    const willingPlan = generateTrainingPlan(
+      makeProfile({
+        ...sharedProfile,
+        double_run_willingness: true,
+      }),
+      baseRaceGoal,
+      { startDate: "2030-05-06" },
+    );
+    const notWillingPlan = generateTrainingPlan(
+      makeProfile(sharedProfile),
+      baseRaceGoal,
+      { startDate: "2030-05-06" },
+    );
+    const dates = willingPlan.plannedWorkouts.map((workout) => workout.workout_date);
+
+    assert.equal(new Set(dates).size, dates.length);
+    assert.ok(
+      willingPlan.trainingPlan.peak_summary.volume_km >=
+        notWillingPlan.trainingPlan.peak_summary.volume_km,
+    );
+    assert.ok(
+      willingPlan.trainingPlan.assumptions.some((assumption) =>
+        assumption.includes("Double-run willingness is treated only as a small capacity signal"),
+      ),
+    );
+  });
+
+  it("biases flat race-specific work toward track or flat terrain when available", () => {
+    const generatedPlan = generateTrainingPlan(
+      makeProfile({
+        current_weekly_mileage_km: 50,
+        longest_recent_run_km: 22,
+        available_training_days: [
+          "monday",
+          "tuesday",
+          "wednesday",
+          "friday",
+          "saturday",
+        ],
+        running_days_per_week: 5,
+        terrain_available: ["hills", "track", "flat"],
+        training_aggressiveness: "aggressive",
+        running_experience_level: "intermediate",
+      }),
+      makeRaceGoal({
+        race_course_profile: "flat",
+        course_elevation_notes: "Fast flat course.",
+      }),
+      { startDate: "2030-05-06" },
+    );
+    const raceSpecificWorkout = generatedPlan.plannedWorkouts.find(
+      (workout) =>
+        workout.workout_type === "marathon_pace" ||
+        workout.title.includes("race-pace"),
+    );
+
+    assert.ok(raceSpecificWorkout);
+    assert.ok(["track", "flat", "treadmill"].includes(raceSpecificWorkout.terrain));
+  });
+
+  it("adds weather caution warnings and effort instructions", () => {
+    const generatedPlan = generateTrainingPlan(
+      makeProfile(),
+      makeRaceGoal({
+        expected_weather_notes: "Likely hot, humid, and windy.",
+      }),
+      { startDate: "2030-05-06" },
+    );
+
+    assert.ok(
+      generatedPlan.trainingPlan.warnings.some((warning) =>
+        warning.includes("Expected weather notes mention"),
+      ),
+    );
+    assert.ok(
+      generatedPlan.plannedWorkouts.some((workout) =>
+        workout.instructions.includes("Adjust effort for expected weather"),
+      ),
+    );
+  });
+
   it("keeps generated structured workouts export-safe with complete leaf steps", () => {
     const generatedPlan = generateTrainingPlan(
       makeProfile({

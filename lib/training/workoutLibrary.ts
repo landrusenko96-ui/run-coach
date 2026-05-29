@@ -9,6 +9,7 @@ import type {
 export type PlanWorkoutSubtype =
   | "rest"
   | "strength_optional"
+  | "cross_training_optional"
   | "calibration"
   | "easy_base"
   | "easy_strides"
@@ -44,7 +45,8 @@ export type WorkoutLibraryRole =
   | "long_race_specific"
   | "race_day"
   | "rest"
-  | "strength";
+  | "strength"
+  | "cross_training";
 
 export type WorkoutLibraryStress = "none" | "easy" | "moderate" | "hard";
 
@@ -72,6 +74,8 @@ export type WorkoutLibraryContext = {
   flatRoutesAvailable: boolean;
   trailAccess: boolean;
   raceCourseLooksHilly: boolean;
+  effortTargetBias: boolean;
+  weatherCaution: boolean;
   fitnessConfidence: "low" | "medium" | "high";
   feasibilityRating:
     | "finish_only"
@@ -163,6 +167,7 @@ export function getWorkoutTypeForSubtype(
   const mapping: Record<PlanWorkoutSubtype, WorkoutType> = {
     rest: "rest",
     strength_optional: "strength_optional",
+    cross_training_optional: "cross_training",
     calibration: "calibration",
     easy_base: "easy",
     easy_strides: "easy",
@@ -194,6 +199,7 @@ export function getRoleForSubtype(
   const mapping: Record<PlanWorkoutSubtype, WorkoutLibraryRole> = {
     rest: "rest",
     strength_optional: "strength",
+    cross_training_optional: "cross_training",
     calibration: "calibration",
     easy_base: "easy",
     easy_strides: "easy",
@@ -225,6 +231,7 @@ export function getStressForSubtype(
   const mapping: Record<PlanWorkoutSubtype, WorkoutLibraryStress> = {
     rest: "none",
     strength_optional: "none",
+    cross_training_optional: "none",
     calibration: "moderate",
     easy_base: "easy",
     easy_strides: "easy",
@@ -254,6 +261,7 @@ export function getTitleForSubtype(subtype: PlanWorkoutSubtype): string {
   const titles: Record<PlanWorkoutSubtype, string> = {
     rest: "Rest day",
     strength_optional: "Optional strength",
+    cross_training_optional: "Optional cross-training",
     calibration: "Calibration run",
     easy_base: "Easy run",
     easy_strides: "Easy run with strides",
@@ -299,6 +307,10 @@ export function resolveWorkoutPrescription(
 
   if (workoutType === "rest") {
     return buildNonRunPrescription(input, workoutType, null);
+  }
+
+  if (workoutType === "cross_training") {
+    return buildNonRunPrescription(input, workoutType, 35);
   }
 
   if (workoutType === "strength_optional") {
@@ -362,26 +374,19 @@ function buildNonRunPrescription(
   workoutType: WorkoutType,
   durationMin: number | null,
 ): ResolvedWorkoutPrescription {
+  const nonRunText = getNonRunText(input);
+
   return {
     workoutType,
     title: getTitleForSubtype(input.subtype),
-    description:
-      input.subtype === "strength_optional"
-        ? "Optional light strength work that should not affect the next run."
-        : "No running planned so the body can absorb training.",
+    description: nonRunText.description,
     distanceKm: null,
     durationMin,
     targetPaceMinSecPerKm: null,
     targetPaceMaxSecPerKm: null,
     targetHrZone: null,
-    purpose:
-      input.subtype === "strength_optional"
-        ? `Support basic running durability. Phase: ${formatPhaseLabel(input.phase)}.`
-        : `Protect recovery and lower injury risk. Phase: ${formatPhaseLabel(input.phase)}.`,
-    instructions:
-      input.subtype === "strength_optional"
-        ? "Keep this light: squats, lunges, calf raises, glute bridges, and planks. Stop before fatigue affects running."
-        : "Take the day off running. Gentle walking or mobility is fine if it feels good.",
+    purpose: `${nonRunText.purpose} Phase: ${formatPhaseLabel(input.phase)}.`,
+    instructions: nonRunText.instructions,
     structuredWorkout: null,
     durationWasCapped: false,
     variables: {
@@ -393,6 +398,36 @@ function buildNonRunPrescription(
       repeatCount: 0,
       ...getWeeklyIntensityCaps({ weeklyVolumeKm: input.weeklyVolumeKm }),
     },
+  };
+}
+
+function getNonRunText(input: WorkoutLibraryContext): {
+  description: string;
+  purpose: string;
+  instructions: string;
+} {
+  if (input.subtype === "strength_optional") {
+    return {
+      description: "Optional light strength work that should not affect the next run.",
+      purpose: "Support basic running durability.",
+      instructions:
+        "Keep this light: squats, lunges, calf raises, glute bridges, and planks. Stop before fatigue affects running.",
+    };
+  }
+
+  if (input.subtype === "cross_training_optional") {
+    return {
+      description: "Optional low-impact aerobic cross-training on a non-running day.",
+      purpose: "Support aerobic fitness without adding run impact.",
+      instructions:
+        "Keep this easy and low impact, such as cycling, elliptical, swimming, or brisk walking. Stop if it affects the next run.",
+    };
+  }
+
+  return {
+    description: "No running planned so the body can absorb training.",
+    purpose: "Protect recovery and lower injury risk.",
+    instructions: "Take the day off running. Gentle walking or mobility is fine if it feels good.",
   };
 }
 
@@ -1115,6 +1150,7 @@ function getDescription(input: WorkoutLibraryContext): string {
   const descriptions: Record<PlanWorkoutSubtype, string> = {
     rest: "No running planned so the body can absorb training.",
     strength_optional: "Optional light strength work that should not affect the next run.",
+    cross_training_optional: "Optional low-impact aerobic work that supports running without adding run impact.",
     calibration: "A controlled first run used to verify that early targets feel realistic.",
     easy_base: `Comfortable aerobic running for the ${phaseLabel} phase.`,
     easy_strides: `Comfortable aerobic running with short relaxed strides for the ${phaseLabel} phase.`,
@@ -1144,6 +1180,7 @@ function getPurpose(input: WorkoutLibraryContext): string {
   const purposes: Record<PlanWorkoutSubtype, string> = {
     rest: "Protect recovery and lower injury risk.",
     strength_optional: "Support basic running durability.",
+    cross_training_optional: "Support aerobic fitness without adding another run.",
     calibration: "Check current fitness and calibrate early plan feel.",
     easy_base: "Build aerobic volume while preserving recovery.",
     easy_strides: "Build aerobic volume and maintain relaxed running economy.",
@@ -1177,9 +1214,12 @@ function getInstructions(
     ? ` Suggested terrain: ${formatTerrainLabel(input.terrain)}.`
     : "";
   const effortNote =
-    !input.flatRoutesAvailable || input.trailAccess
+    !input.flatRoutesAvailable || input.trailAccess || input.effortTargetBias
       ? " Use effort and breathing as the primary guide if terrain makes exact pace unrealistic."
       : "";
+  const weatherNote = input.weatherCaution
+    ? " Adjust effort for expected weather rather than forcing the faster end of the pace range."
+    : "";
   const bridgeNote =
     input.feasibilityRating === "low_confidence" ||
     input.feasibilityRating === "not_credible"
@@ -1191,7 +1231,7 @@ function getInstructions(
       : "";
   const variableNote = getVariableInstruction(input.subtype, variables);
 
-  return `${variableNote}${bridgeNote}${effortNote}${fuelingNote}${terrainNote}`;
+  return `${variableNote}${bridgeNote}${effortNote}${weatherNote}${fuelingNote}${terrainNote}`;
 }
 
 function getVariableInstruction(
@@ -1204,6 +1244,10 @@ function getVariableInstruction(
 
   if (subtype === "strength_optional") {
     return "Keep this light and stop before fatigue affects running.";
+  }
+
+  if (subtype === "cross_training_optional") {
+    return "Keep this easy and low impact. This is optional support, not extra intensity.";
   }
 
   if (repeatSubtypes.has(subtype) || subtype === "long_mp_blocks") {
@@ -1233,6 +1277,7 @@ function getTargetHeartRateZone(subtype: PlanWorkoutSubtype): string | null {
   const zones: Record<PlanWorkoutSubtype, string | null> = {
     rest: null,
     strength_optional: null,
+    cross_training_optional: "Zone 1 to Zone 2",
     calibration: "Zone 2 to low Zone 3",
     easy_base: "Zone 2",
     easy_strides: "Zone 2 with relaxed fast strides",

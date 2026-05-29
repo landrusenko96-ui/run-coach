@@ -24,6 +24,8 @@ const baseContext = {
   flatRoutesAvailable: true,
   trailAccess: false,
   raceCourseLooksHilly: false,
+  effortTargetBias: false,
+  weatherCaution: false,
   fitnessConfidence: "high",
   feasibilityRating: "ambitious",
   paces: {
@@ -78,8 +80,11 @@ describe("workout library", () => {
     assert.equal(getWorkoutTypeForSubtype("fartlek"), "easy");
     assert.equal(getWorkoutTypeForSubtype("hill_repeats"), "interval");
     assert.equal(getWorkoutTypeForSubtype("long_mp_blocks"), "long_run");
+    assert.equal(getWorkoutTypeForSubtype("cross_training_optional"), "cross_training");
     assert.equal(getRoleForSubtype("hm_pace_blocks"), "race_pace");
+    assert.equal(getRoleForSubtype("cross_training_optional"), "cross_training");
     assert.equal(getStressForSubtype("fartlek"), "moderate");
+    assert.equal(getStressForSubtype("cross_training_optional"), "none");
   });
 
   it("computes spec intensity caps from weekly volume", () => {
