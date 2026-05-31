@@ -5,6 +5,7 @@ import type {
   WorkoutStep,
   WorkoutType,
 } from "../../types/training.ts";
+import type { AdvancedWorkoutTargets, WorkoutTargetKind } from "./physiology.ts";
 
 export type PlanWorkoutSubtype =
   | "rest"
@@ -91,6 +92,7 @@ export type WorkoutLibraryContext = {
     bridgeRacePaceSecPerKm: number;
     goalRacePaceSecPerKm: number | null;
   };
+  advancedTargets: AdvancedWorkoutTargets;
 };
 
 export type ResolvedWorkoutPrescription = {
@@ -335,7 +337,7 @@ export function resolveWorkoutPrescription(
   const description = getDescription(input);
   const purpose = getPurpose(input);
   const instructions = getInstructions(input, variables);
-  const targetHrZone = getTargetHeartRateZone(input.subtype);
+  const targetHrZone = getTargetHeartRateZone(input);
   const structuredWorkout = buildLibraryStructuredWorkout({
     input,
     workoutType,
@@ -1229,9 +1231,31 @@ function getInstructions(
     variables.sessionDurationMin !== null && variables.sessionDurationMin >= 105
       ? " Practice fueling because this run is long enough to require it."
       : "";
+  const advancedTargetNote = getAdvancedTargetInstruction(input);
   const variableNote = getVariableInstruction(input.subtype, variables);
 
-  return `${variableNote}${bridgeNote}${effortNote}${weatherNote}${fuelingNote}${terrainNote}`;
+  return `${variableNote}${bridgeNote}${effortNote}${weatherNote}${advancedTargetNote}${fuelingNote}${terrainNote}`;
+}
+
+function getAdvancedTargetInstruction(input: WorkoutLibraryContext): string {
+  const targetKind = getAdvancedTargetKind(input);
+  const heartRateTarget = input.advancedTargets.heartRate[targetKind];
+  const powerTarget = input.advancedTargets.power[targetKind];
+
+  if (!heartRateTarget && !powerTarget) {
+    return "";
+  }
+
+  const targetParts = [
+    heartRateTarget ? `HR ${heartRateTarget}` : null,
+    powerTarget ? `power ${powerTarget}` : null,
+  ].filter(Boolean);
+  const biasText =
+    input.effortTargetBias || input.weatherCaution
+      ? " Use these before exact pace if conditions make pace unreliable."
+      : "";
+
+  return ` Optional physiology target: ${targetParts.join("; ")}.${biasText}`;
 }
 
 function getVariableInstruction(
@@ -1273,7 +1297,15 @@ function getVariableInstruction(
   return "Keep the effort controlled and do not race the workout.";
 }
 
-function getTargetHeartRateZone(subtype: PlanWorkoutSubtype): string | null {
+function getTargetHeartRateZone(input: WorkoutLibraryContext): string | null {
+  const advancedTarget =
+    input.advancedTargets.heartRate[getAdvancedTargetKind(input)];
+
+  if (advancedTarget) {
+    return advancedTarget;
+  }
+
+  const subtype = input.subtype;
   const zones: Record<PlanWorkoutSubtype, string | null> = {
     rest: null,
     strength_optional: null,
@@ -1301,6 +1333,42 @@ function getTargetHeartRateZone(subtype: PlanWorkoutSubtype): string | null {
   };
 
   return zones[subtype];
+}
+
+function getAdvancedTargetKind(input: WorkoutLibraryContext): WorkoutTargetKind {
+  const role = getRoleForSubtype(input.subtype);
+
+  if (role === "recovery") {
+    return "recovery";
+  }
+
+  if (
+    role === "threshold" ||
+    role === "long_steady" ||
+    role === "steady"
+  ) {
+    return role === "threshold" ? "threshold" : "steady";
+  }
+
+  if (role === "interval") {
+    return "interval";
+  }
+
+  if (
+    role === "race_pace" ||
+    role === "long_race_specific" ||
+    role === "race_day"
+  ) {
+    return "race_pace";
+  }
+
+  if (role === "medium_long") {
+    return input.phase === "specific" || input.phase === "peak"
+      ? "steady"
+      : "easy";
+  }
+
+  return "easy";
 }
 
 function buildStep(input: {

@@ -579,7 +579,7 @@ function PlanGenerationHistorySummaryCard({
       </h2>
       <p className="mt-1 text-sm text-slate-600">{summary.message}</p>
 
-      <dl className="mt-4 grid gap-3 text-sm md:grid-cols-4">
+      <dl className="mt-4 grid gap-3 text-sm md:grid-cols-5">
         <div className="rounded-md border border-slate-200 p-3">
           <dt className="font-medium text-slate-700">Window</dt>
           <dd className="mt-1 text-slate-600">
@@ -601,6 +601,12 @@ function PlanGenerationHistorySummaryCard({
           <dt className="font-medium text-slate-700">Strava imported</dt>
           <dd className="mt-1 text-slate-600">
             {summary.strava_workouts_imported.length}
+          </dd>
+        </div>
+        <div className="rounded-md border border-slate-200 p-3">
+          <dt className="font-medium text-slate-700">Strava merged</dt>
+          <dd className="mt-1 text-slate-600">
+            {summary.strava_workouts_merged.length}
           </dd>
         </div>
       </dl>
@@ -635,6 +641,22 @@ function PlanGenerationHistorySummaryCard({
             {summary.strava_workouts_skipped.slice(0, 20).map((activity) => (
               <li key={activity.strava_activity_id}>
                 {activity.date}: {activity.name} ({activity.reason})
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+
+      {summary.strava_workouts_merged.length > 0 ? (
+        <details className="mt-4 rounded-md border border-slate-200 p-3 text-sm text-slate-700">
+          <summary className="cursor-pointer font-medium text-slate-900">
+            Strava merged evidence ({summary.strava_workouts_merged.length})
+          </summary>
+          <ul className="mt-3 list-disc space-y-1 pl-5">
+            {summary.strava_workouts_merged.slice(0, 20).map((workout) => (
+              <li key={`${workout.id}-${workout.merged_strava_activity_id}`}>
+                {workout.workout_date}: {workout.name}
+                {workout.merge_reason ? ` (${workout.merge_reason})` : ""}
               </li>
             ))}
           </ul>

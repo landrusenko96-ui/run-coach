@@ -21,6 +21,10 @@ import {
   summarizeWeeklyIntensity,
   type WeeklyIntensitySummary,
 } from "./loadRisk.ts";
+import {
+  buildAdvancedWorkoutTargets,
+  type AdvancedWorkoutTargets,
+} from "./physiology.ts";
 import type {
   GeneratedPlannedWorkout,
   GeneratedTrainingPlan,
@@ -111,6 +115,8 @@ type AthleteProfile = {
   weightKg: number | null;
   easyPaceSecPerKm: number | null;
   thresholdPaceSecPerKm: number | null;
+  vo2max: number | null;
+  advancedTargets: AdvancedWorkoutTargets;
   runningExperienceLevel: RunnerProfile["running_experience_level"];
   injurySignal: "none" | "note" | "current_or_serious";
 };
@@ -422,7 +428,12 @@ function normalizePlanInput(input: {
     assumptions,
   );
   const terrainAvailable = getTerrainAvailable(input.runnerProfile, assumptions);
-  const athlete = buildAthleteProfile(input.runnerProfile, input.startDate, warnings);
+  const athlete = buildAthleteProfile(
+    input.runnerProfile,
+    input.startDate,
+    assumptions,
+    warnings,
+  );
   let normalizedPlanMode = planMode;
 
   if (
@@ -581,6 +592,7 @@ function getGoalFlexibility(raceGoal: RaceGoal): GoalFlexibility {
 function buildAthleteProfile(
   runnerProfile: RunnerProfile,
   startDate: Date,
+  assumptions: string[],
   warnings: string[],
 ): AthleteProfile {
   const age = runnerProfile.birth_year
@@ -607,6 +619,9 @@ function buildAthleteProfile(
     );
   }
 
+  const advancedTargets = buildAdvancedWorkoutTargets(runnerProfile);
+  assumptions.push(...advancedTargets.assumptions);
+
   return {
     age,
     sex: runnerProfile.sex,
@@ -614,6 +629,8 @@ function buildAthleteProfile(
     weightKg: runnerProfile.weight_kg,
     easyPaceSecPerKm: runnerProfile.easy_pace_sec_per_km,
     thresholdPaceSecPerKm: runnerProfile.threshold_pace_sec_per_km,
+    vo2max: runnerProfile.vo2max,
+    advancedTargets,
     runningExperienceLevel: runnerProfile.running_experience_level,
     injurySignal,
   };
@@ -3359,6 +3376,7 @@ function buildPrescriptionFromDraft(input: {
       bridgeRacePaceSecPerKm: input.metrics.bridgeRacePaceSecPerKm,
       goalRacePaceSecPerKm: input.metrics.goalRacePaceSecPerKm,
     },
+    advancedTargets: input.input.athlete.advancedTargets,
   });
 
   if (resolvedPrescription.durationWasCapped) {

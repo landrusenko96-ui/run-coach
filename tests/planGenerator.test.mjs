@@ -21,6 +21,19 @@ const baseProfile = {
   threshold_pace_sec_per_km: 315,
   max_heart_rate: null,
   resting_heart_rate: null,
+  lactate_threshold_heart_rate: null,
+  aerobic_threshold_heart_rate: null,
+  user_hr_zones: null,
+  aerobic_threshold_pace_sec_per_km: null,
+  threshold_power_watts: null,
+  critical_power_watts: null,
+  easy_power_min_watts: null,
+  easy_power_max_watts: null,
+  user_power_zones: null,
+  vo2max: null,
+  vo2max_source: null,
+  zones_source_priority: null,
+  physiology_updated_at: null,
   available_training_days: ["monday", "wednesday", "saturday"],
   running_days_per_week: 3,
   preferred_long_run_day: "saturday",
@@ -1022,6 +1035,74 @@ describe("generateTrainingPlan", () => {
         assumption.includes("low confidence"),
       ),
     );
+  });
+
+  it("keeps VO2max as context instead of making unsupported aggressive goals credible", () => {
+    const suggestion = evaluatePlanGoalAdjustment(
+      makeProfile({
+        threshold_pace_sec_per_km: null,
+        easy_pace_sec_per_km: 420,
+        max_heart_rate: null,
+        vo2max: 75,
+        vo2max_source: "garmin",
+        current_weekly_mileage_km: 20,
+        longest_recent_run_km: 8,
+        running_days_per_week: 3,
+        available_training_days: ["monday", "wednesday", "saturday"],
+      }),
+      makeRaceGoal({
+        target_finish_time_sec: 7200,
+        target_priority: "aggressive",
+        race_priority: "A",
+        goal_flexibility: "fixed",
+      }),
+      {
+        startDate: "2030-05-06",
+        recentHistory: makeRecentHistory([16, 17, 18, 19, 20, 21], "mixed"),
+      },
+    );
+
+    assert.ok(suggestion);
+    assert.notEqual(suggestion.fitnessConfidence, "high");
+    assert.ok(suggestion.suggestedTargetFinishTimeSec > 7200);
+  });
+
+  it("adds power target guidance only when power inputs are saved", () => {
+    const withoutPower = generateTrainingPlan(
+      makeProfile({
+        threshold_power_watts: null,
+        critical_power_watts: null,
+        easy_power_min_watts: null,
+        easy_power_max_watts: null,
+        user_power_zones: null,
+      }),
+      baseRaceGoal,
+      {
+        startDate: "2030-05-06",
+        recentHistory: makeRecentHistory([35, 36, 37, 38, 39, 40], "mixed"),
+      },
+    );
+    const withPower = generateTrainingPlan(
+      makeProfile({
+        threshold_power_watts: 260,
+      }),
+      baseRaceGoal,
+      {
+        startDate: "2030-05-06",
+        recentHistory: makeRecentHistory([35, 36, 37, 38, 39, 40], "mixed"),
+      },
+    );
+    const withoutPowerInstructions = withoutPower.plannedWorkouts
+      .map((workout) => workout.instructions ?? "")
+      .join(" ");
+    const withPowerWorkout = withPower.plannedWorkouts.find((workout) =>
+      workout.instructions?.includes("power"),
+    );
+
+    assert.doesNotMatch(withoutPowerInstructions, /Optional physiology target: .*power/);
+    assert.ok(withPowerWorkout);
+    assert.match(withPowerWorkout.instructions ?? "", /power/);
+    assert.equal(withPowerWorkout.structured_workout?.version, 1);
   });
 
   it("suggests a fastest supportable goal when the requested target is not credible", () => {

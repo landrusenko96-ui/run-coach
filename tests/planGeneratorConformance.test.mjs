@@ -20,6 +20,19 @@ const baseProfile = {
   threshold_pace_sec_per_km: 315,
   max_heart_rate: 190,
   resting_heart_rate: null,
+  lactate_threshold_heart_rate: null,
+  aerobic_threshold_heart_rate: null,
+  user_hr_zones: null,
+  aerobic_threshold_pace_sec_per_km: null,
+  threshold_power_watts: null,
+  critical_power_watts: null,
+  easy_power_min_watts: null,
+  easy_power_max_watts: null,
+  user_power_zones: null,
+  vo2max: null,
+  vo2max_source: null,
+  zones_source_priority: null,
+  physiology_updated_at: null,
   available_training_days: ["monday", "wednesday", "saturday"],
   running_days_per_week: 3,
   preferred_long_run_day: "saturday",
@@ -148,6 +161,14 @@ function makeLoggedWorkout(overrides = {}) {
 function makeStravaEvidence(overrides = {}) {
   return {
     stravaActivityId: overrides.stravaActivityId ?? "activity-1",
+    activityDate: overrides.activityDate ?? "2030-03-01",
+    distanceKm: overrides.distanceKm ?? 8,
+    durationSec: overrides.durationSec ?? 2880,
+    avgPaceSecPerKm: overrides.avgPaceSecPerKm ?? 360,
+    averageHeartRate: overrides.averageHeartRate ?? null,
+    maxHeartRate: overrides.maxHeartRate ?? null,
+    averagePowerWatts: overrides.averagePowerWatts ?? null,
+    weightedAveragePowerWatts: overrides.weightedAveragePowerWatts ?? null,
     hasDetail: overrides.hasDetail ?? true,
     hasStreams: overrides.hasStreams ?? true,
     hasHeartRateStream: overrides.hasHeartRateStream ?? false,
@@ -856,6 +877,12 @@ function hasOpenLeafDuration(steps) {
   });
 }
 
+function getLeafSteps(steps) {
+  return steps.flatMap((step) =>
+    step.repeat ? getLeafSteps(step.repeat.steps) : [step],
+  );
+}
+
 describe("plan generator spec conformance matrix", () => {
   it("covers the required scenario dimensions", () => {
     assertMatrixCoverage(conformanceScenarios);
@@ -914,6 +941,56 @@ describe("plan generator spec conformance matrix", () => {
       /fastest recent run is not treated as a fitness limit/i,
     );
     assert.notEqual(generatedPlan.trainingPlan.fitness_confidence, "high");
+  });
+
+  it("adds manual physiology targets while keeping structured exports pace-safe", () => {
+    const generatedPlan = generateTrainingPlan(
+      makeProfile({
+        threshold_pace_sec_per_km: null,
+        lactate_threshold_heart_rate: 172,
+        threshold_power_watts: 260,
+        current_weekly_mileage_km: 42,
+        longest_recent_run_km: 17,
+        available_training_days: trainingDaysByCount[4],
+        running_days_per_week: 4,
+      }),
+      makeRaceGoal({
+        distance: "half_marathon",
+        race_date: "2030-09-09",
+      }),
+      {
+        startDate: "2030-05-06",
+        recentHistory: makeRecentHistory([36, 38, 40, 41, 42, 43]),
+      },
+    );
+    const runWorkouts = generatedPlan.plannedWorkouts.filter(
+      (workout) => workout.structured_workout !== null,
+    );
+    const physiologyWorkout = runWorkouts.find(
+      (workout) =>
+        workout.target_hr_zone !== null &&
+        workout.instructions?.includes("power"),
+    );
+
+    assert.ok(physiologyWorkout);
+    assert.match(
+      generatedPlan.trainingPlan.assumptions.join(" "),
+      /heart-rate guidance|power guidance/i,
+    );
+
+    for (const workout of runWorkouts) {
+      assert.equal(workout.structured_workout.version, 1);
+      assert.ok(
+        getLeafSteps(workout.structured_workout.steps).every(
+          (step) => step.targetType !== "heart_rate",
+        ),
+      );
+      assert.ok(
+        getLeafSteps(workout.structured_workout.steps).some(
+          (step) => step.targetType === "pace",
+        ),
+      );
+    }
   });
 
   it("returns a suggested replacement goal for clearly not-credible targets", () => {

@@ -1,5 +1,57 @@
 # Decisions
 
+## 2026-05-31 — Merge Full-Window Strava Evidence Before Manual Fallback
+
+Decision:
+For plan generation auto history, fetch Strava evidence for the full 42-day
+window whenever a Strava connection is available, then merge it with app logs
+before using manual six-week fallback weeks.
+
+Reason:
+App logs can technically cover all six weeks while still missing richer Strava
+signals such as HR streams, power, pace fade, HR drift, elevation, splits, and
+PR evidence. The generator should use that evidence without creating duplicate
+history logs or replacing app/planned-workout identity.
+
+Status:
+No new schema migration is required. Duplicate Strava evidence is audited
+through existing `strava_activities.raw_summary_json.history_merge` metadata
+and additive history-summary response fields. The saved plan/workout contract
+and `generateTrainingPlan(profile, raceGoal, options)` stay unchanged.
+
+Implementation rule:
+When app and Strava records match, preserve the app log ID, planned-workout
+link, notes, and RPE. Use Strava detail/stream evidence only to enrich the
+canonical in-memory history set used for generation.
+
+## 2026-05-30 — Keep Advanced Physiology Additive And Export-Safe
+
+Decision:
+Add optional profile physiology fields for manual HR zones, threshold HR,
+aerobic-threshold HR/pace, power zones, threshold/critical/easy power, and
+VO2max without changing the public plan-generator API, generator version, DB-safe
+workout types, or structured workout version.
+
+Reason:
+Milestone 13 Step 1 needs richer physiology inputs to improve effort
+classification and workout target guidance, but the existing plan/export loop is
+working. The safe approach is an additive `profiles` migration plus generator
+logic that treats HR and power as supporting guidance while preserving pace
+targets for Intervals.icu and Garmin compatibility.
+
+Status:
+A local migration adds nullable physiology columns and validation constraints to
+`profiles`. It has not been applied remotely in the same turn it was created.
+The generator now derives optional HR/power guidance and uses saved physiology
+signals for effort classification. VO2max is saved as context but does not
+override pace/history evidence or make aggressive goals credible by itself.
+
+Implementation rule:
+Keep `generateTrainingPlan(profile, raceGoal, options)`,
+`StructuredWorkout.version = 1`, and persisted workout enum values unchanged.
+Do not import Garmin zones in this milestone unless a safe read path is added
+later; manual profile entry remains the supported zone input path.
+
 ## 2026-05-29 — Treat Initial Plan Generator As Complete For Current Product State
 
 Decision:

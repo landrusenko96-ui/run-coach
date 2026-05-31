@@ -11,7 +11,10 @@ import {
   isSupportedStravaRun,
   isValidStravaRunActivity,
 } from "../strava/importRuns.ts";
-import { isEnrichedStravaRawSummary } from "../strava/activityEvidence.ts";
+import {
+  isEnrichedStravaRawSummary,
+  type StravaActivityEvidence,
+} from "../strava/activityEvidence.ts";
 import type { StravaSummaryActivity } from "../strava/client.ts";
 import type { createSupabaseServerClient } from "../supabase/server.ts";
 import type {
@@ -32,9 +35,12 @@ type BuildHistorySummaryInput = {
   profile: Profile;
   appLoggedWorkouts: LoggedWorkout[];
   importedStravaWorkouts?: LoggedWorkout[];
+  canonicalWorkouts?: LoggedWorkout[];
+  mergedStravaWorkouts?: PlanGenerationHistoryWorkout[];
   skippedStravaActivities?: PlanGenerationHistorySkippedActivity[];
   windowEndDate?: string;
   forceManual?: boolean;
+  fillManualGaps?: boolean;
 };
 
 export type ImportMissingStravaHistoryInput = {
@@ -54,6 +60,31 @@ export type ImportMissingStravaHistoryResult = {
 };
 
 export type HistoryEvidenceMode = "auto" | "manual";
+
+type StravaHistoryCandidate = {
+  stravaActivityId: string;
+  activityDate: string;
+  distanceKm: number | null;
+  durationSec: number | null;
+  startDateLocal: string | null;
+};
+
+type AppWorkoutDuplicateMatch = {
+  workout: LoggedWorkout;
+  reason: string;
+};
+
+export type CanonicalPlanGenerationHistoryInput = {
+  historyMode: HistoryEvidenceMode;
+  appLoggedWorkouts: LoggedWorkout[];
+  importedStravaWorkouts?: LoggedWorkout[];
+  stravaActivityEvidence?: StravaActivityEvidence[];
+};
+
+export type CanonicalPlanGenerationHistoryResult = {
+  workouts: LoggedWorkout[];
+  mergedStravaWorkouts: PlanGenerationHistoryWorkout[];
+};
 
 const historyWindowDays = 42;
 
@@ -80,18 +111,31 @@ export function buildPlanGenerationHistorySummary(
     window.startDate,
     window.endDate,
   );
-  const allLoggedWorkouts = [...appWorkouts, ...importedWorkouts];
+  const allLoggedWorkouts = filterRunLogsInWindow(
+    input.canonicalWorkouts ?? [...appWorkouts, ...importedWorkouts],
+    window.startDate,
+    window.endDate,
+  );
   const manualWeeks = getManualHistoryWeeks(input.profile);
+  const loggedWeeks = buildWeeksFromLoggedWorkouts(allLoggedWorkouts, window);
   const weeks = input.forceManual
     ? manualWeeks
-    : buildWeeksFromLoggedWorkouts(allLoggedWorkouts, window);
-  const coverage = hasCompleteSixWeekCoverage(weeks)
+    : input.fillManualGaps
+      ? fillMissingHistoryWeeksWithManual(loggedWeeks, manualWeeks)
+      : loggedWeeks;
+  const manualWeeksUsed = input.forceManual
+    ? manualWeeks
+    : input.fillManualGaps
+      ? weeks.filter((week) => week.source === "manual")
+      : [];
+  const isComplete = hasCompleteSixWeekCoverage(weeks);
+  const coverage = isComplete
     ? input.forceManual
       ? "manual"
       : "complete"
     : "partial";
   const needsManualHistory = Boolean(
-    input.forceManual && !hasCompleteSixWeekCoverage(weeks),
+    (input.forceManual || input.fillManualGaps) && !isComplete,
   );
 
   return {
@@ -105,16 +149,19 @@ export function buildPlanGenerationHistorySummary(
     strava_workouts_imported: importedWorkouts.map((workout) =>
       mapLoggedWorkoutToHistoryWorkout(workout, "strava"),
     ),
+    strava_workouts_merged: input.mergedStravaWorkouts ?? [],
     strava_workouts_skipped: input.skippedStravaActivities ?? [],
-    manual_weeks_used: input.forceManual ? manualWeeks : [],
+    manual_weeks_used: manualWeeksUsed,
     needs_strava_connection: false,
     needs_manual_history: needsManualHistory,
     message: buildHistorySummaryMessage({
       coverage,
       appCount: appWorkouts.length,
       importedCount: importedWorkouts.length,
-      manualCount: input.forceManual ? manualWeeks.length : 0,
+      mergedCount: input.mergedStravaWorkouts?.length ?? 0,
+      manualCount: manualWeeksUsed.length,
       needsManualHistory,
+      forceManual: input.forceManual === true,
     }),
   };
 }
@@ -125,27 +172,106 @@ export function hasCompleteSixWeekCoverage(
   return weeks.length === 6 && weeks.every((week) => week.run_count > 0);
 }
 
+export function shouldFetchStravaHistoryForPlanGeneration(input: {
+  historyMode: HistoryEvidenceMode;
+  hasCompleteAppCoverage: boolean;
+}): boolean {
+  return input.historyMode === "auto";
+}
+
 export function getPlanGenerationEvidenceWorkouts(input: {
   historyMode: HistoryEvidenceMode;
   appLoggedWorkouts: LoggedWorkout[];
   importedStravaWorkouts?: LoggedWorkout[];
+  canonicalWorkouts?: LoggedWorkout[];
 }): LoggedWorkout[] {
   if (input.historyMode === "manual") {
     return [];
   }
 
-  return [
-    ...input.appLoggedWorkouts,
-    ...(input.importedStravaWorkouts ?? []),
-  ];
+  return input.canonicalWorkouts
+    ? input.canonicalWorkouts
+    : [
+        ...input.appLoggedWorkouts,
+        ...(input.importedStravaWorkouts ?? []),
+      ];
+}
+
+export function buildCanonicalPlanGenerationHistory(
+  input: CanonicalPlanGenerationHistoryInput,
+): CanonicalPlanGenerationHistoryResult {
+  if (input.historyMode === "manual") {
+    return {
+      workouts: [],
+      mergedStravaWorkouts: [],
+    };
+  }
+
+  const evidenceItems = input.stravaActivityEvidence ?? [];
+  const unusedEvidenceIds = new Set(
+    evidenceItems.map((evidence) => evidence.stravaActivityId),
+  );
+  const canonicalWorkouts: LoggedWorkout[] = [];
+  const mergedStravaWorkouts: PlanGenerationHistoryWorkout[] = [];
+
+  for (const appWorkout of input.appLoggedWorkouts) {
+    const match = findMatchingStravaEvidenceForAppWorkout({
+      workout: appWorkout,
+      evidenceItems,
+      unusedEvidenceIds,
+    });
+
+    if (!match) {
+      canonicalWorkouts.push(appWorkout);
+      continue;
+    }
+
+    const mergedWorkout = mergeLoggedWorkoutWithStravaEvidence({
+      workout: appWorkout,
+      evidence: match.evidence,
+    });
+
+    canonicalWorkouts.push(mergedWorkout);
+    unusedEvidenceIds.delete(match.evidence.stravaActivityId);
+    mergedStravaWorkouts.push(
+      mapLoggedWorkoutToHistoryWorkout(mergedWorkout, "app", {
+        evidenceSource: "merged",
+        mergedStravaActivityId: match.evidence.stravaActivityId,
+        mergeReason: match.reason,
+      }),
+    );
+  }
+
+  const usedActivityIds = new Set(
+    canonicalWorkouts
+      .map((workout) => workout.source_activity_id)
+      .filter((activityId): activityId is string => Boolean(activityId)),
+  );
+
+  for (const importedWorkout of input.importedStravaWorkouts ?? []) {
+    if (
+      importedWorkout.source_activity_id &&
+      usedActivityIds.has(importedWorkout.source_activity_id)
+    ) {
+      continue;
+    }
+
+    canonicalWorkouts.push(importedWorkout);
+
+    if (importedWorkout.source_activity_id) {
+      usedActivityIds.add(importedWorkout.source_activity_id);
+    }
+  }
+
+  return {
+    workouts: canonicalWorkouts,
+    mergedStravaWorkouts,
+  };
 }
 
 export async function importMissingStravaHistoryRuns(
   input: ImportMissingStravaHistoryInput,
 ): Promise<ImportMissingStravaHistoryResult> {
-  const appLoggedDateSet = new Set(
-    input.appLoggedWorkouts.map((workout) => workout.workout_date),
-  );
   const existingStravaIds = await fetchExistingStravaImportIds(input.supabase, {
     userId: input.userId,
     stravaActivityIds: input.stravaActivities.map((activity) => activity.id),
@@ -160,7 +286,6 @@ export async function importMissingStravaHistoryRuns(
       activityDate,
       windowStartDate: input.windowStartDate,
       windowEndDate: input.windowEndDate,
-      appLoggedDateSet,
       existingStravaIds,
     });
 
@@ -182,6 +307,30 @@ export async function importMissingStravaHistoryRuns(
         date: activityDate,
         reason: skipReason,
       });
+      continue;
+    }
+
+    const matchingAppWorkout = findMatchingAppWorkoutForStravaActivity({
+      activity,
+      appLoggedWorkouts: input.appLoggedWorkouts,
+    });
+
+    if (matchingAppWorkout) {
+      await saveMergedStravaEvidenceAudit({
+        activity,
+        userId: input.userId,
+        loggedWorkout: matchingAppWorkout.workout,
+        mergeReason: matchingAppWorkout.reason,
+        supabase: input.supabase,
+      });
+
+      skippedActivities.push({
+        strava_activity_id: activity.id,
+        name: activity.name,
+        date: activityDate,
+        reason: "merged with app history log",
+      });
+      existingStravaIds.add(activity.id);
       continue;
     }
 
@@ -210,13 +359,41 @@ export async function importMissingStravaHistoryRuns(
 
     importedWorkouts.push(loggedWorkout);
     existingStravaIds.add(activity.id);
-    appLoggedDateSet.add(activityDate);
   }
 
   return {
     importedWorkouts,
     skippedActivities,
   };
+}
+
+async function saveMergedStravaEvidenceAudit(input: {
+  activity: StravaSummaryActivity;
+  userId: string;
+  loggedWorkout: LoggedWorkout;
+  mergeReason: string;
+  supabase: SupabaseServerClient;
+}): Promise<void> {
+  try {
+    const auditInput = buildStravaActivityAuditInput({
+      userId: input.userId,
+      activity: input.activity,
+      loggedWorkout: input.loggedWorkout,
+      plannedWorkout: null,
+    });
+
+    await saveStravaActivity(input.supabase, {
+      ...auditInput,
+      planned_workout_id: input.loggedWorkout.planned_workout_id,
+      raw_summary_json: addHistoryMergeAuditMetadata(input.activity.rawSummary, {
+        loggedWorkoutId: input.loggedWorkout.id,
+        plannedWorkoutId: input.loggedWorkout.planned_workout_id,
+        reason: input.mergeReason,
+      }),
+    });
+  } catch {
+    // Audit enrichment is useful but should never block plan generation.
+  }
 }
 
 async function updateExistingStravaEvidenceAudit(input: {
@@ -235,12 +412,220 @@ async function updateExistingStravaEvidenceAudit(input: {
   }
 }
 
+export function findMatchingAppWorkoutForStravaActivity(input: {
+  activity: StravaSummaryActivity;
+  appLoggedWorkouts: LoggedWorkout[];
+}): AppWorkoutDuplicateMatch | null {
+  return findMatchingAppWorkoutForStravaCandidate({
+    candidate: buildStravaCandidateFromActivity(input.activity),
+    appLoggedWorkouts: input.appLoggedWorkouts,
+  });
+}
+
+function findMatchingStravaEvidenceForAppWorkout(input: {
+  workout: LoggedWorkout;
+  evidenceItems: StravaActivityEvidence[];
+  unusedEvidenceIds: Set<string>;
+}): { evidence: StravaActivityEvidence; reason: string } | null {
+  let bestMatch: {
+    evidence: StravaActivityEvidence;
+    reason: string;
+    score: number;
+  } | null = null;
+
+  for (const evidence of input.evidenceItems) {
+    if (!input.unusedEvidenceIds.has(evidence.stravaActivityId)) {
+      continue;
+    }
+
+    const match = getWorkoutStravaDuplicateMatch({
+      workout: input.workout,
+      candidate: buildStravaCandidateFromEvidence(evidence),
+    });
+
+    if (!match) {
+      continue;
+    }
+
+    if (!bestMatch || match.score > bestMatch.score) {
+      bestMatch = {
+        evidence,
+        reason: match.reason,
+        score: match.score,
+      };
+    }
+  }
+
+  return bestMatch
+    ? {
+        evidence: bestMatch.evidence,
+        reason: bestMatch.reason,
+      }
+    : null;
+}
+
+function findMatchingAppWorkoutForStravaCandidate(input: {
+  candidate: StravaHistoryCandidate;
+  appLoggedWorkouts: LoggedWorkout[];
+}): AppWorkoutDuplicateMatch | null {
+  let bestMatch: {
+    workout: LoggedWorkout;
+    reason: string;
+    score: number;
+  } | null = null;
+
+  for (const workout of input.appLoggedWorkouts) {
+    const match = getWorkoutStravaDuplicateMatch({
+      workout,
+      candidate: input.candidate,
+    });
+
+    if (!match) {
+      continue;
+    }
+
+    if (!bestMatch || match.score > bestMatch.score) {
+      bestMatch = {
+        workout,
+        reason: match.reason,
+        score: match.score,
+      };
+    }
+  }
+
+  return bestMatch
+    ? {
+        workout: bestMatch.workout,
+        reason: bestMatch.reason,
+      }
+    : null;
+}
+
+function getWorkoutStravaDuplicateMatch(input: {
+  workout: LoggedWorkout;
+  candidate: StravaHistoryCandidate;
+}): { score: number; reason: string } | null {
+  if (
+    input.workout.source_activity_id &&
+    input.workout.source_activity_id === input.candidate.stravaActivityId
+  ) {
+    return {
+      score: 100,
+      reason: "same Strava activity ID",
+    };
+  }
+
+  if (input.workout.workout_date !== input.candidate.activityDate) {
+    return null;
+  }
+
+  const distanceIsSimilar = hasSimilarDistance(
+    input.workout.distance_km,
+    input.candidate.distanceKm,
+  );
+  const durationIsSimilar = hasSimilarDuration(
+    input.workout.duration_sec,
+    input.candidate.durationSec,
+  );
+
+  if (input.workout.planned_workout_id && (distanceIsSimilar || durationIsSimilar)) {
+    return {
+      score: 80,
+      reason: "same date, planned workout link, and similar distance or duration",
+    };
+  }
+
+  if (distanceIsSimilar && durationIsSimilar) {
+    return {
+      score: 70,
+      reason: "same date and similar distance and duration",
+    };
+  }
+
+  if (distanceIsSimilar) {
+    return {
+      score: 50,
+      reason: "same date and similar distance",
+    };
+  }
+
+  if (durationIsSimilar) {
+    return {
+      score: 40,
+      reason: "same date and similar duration",
+    };
+  }
+
+  return null;
+}
+
+function buildStravaCandidateFromActivity(
+  activity: StravaSummaryActivity,
+): StravaHistoryCandidate {
+  return {
+    stravaActivityId: activity.id,
+    activityDate: getStravaActivityDate(activity),
+    distanceKm:
+      activity.distanceM !== null ? roundNullableNumber(activity.distanceM / 1000) : null,
+    durationSec:
+      activity.movingTimeSec !== null ? Math.round(activity.movingTimeSec) : null,
+    startDateLocal: activity.startDateLocal ?? null,
+  };
+}
+
+function buildStravaCandidateFromEvidence(
+  evidence: StravaActivityEvidence,
+): StravaHistoryCandidate {
+  return {
+    stravaActivityId: evidence.stravaActivityId,
+    activityDate: evidence.activityDate,
+    distanceKm: evidence.distanceKm,
+    durationSec: evidence.durationSec,
+    startDateLocal: null,
+  };
+}
+
+function mergeLoggedWorkoutWithStravaEvidence(input: {
+  workout: LoggedWorkout;
+  evidence: StravaActivityEvidence;
+}): LoggedWorkout {
+  const distanceKm =
+    hasPositiveNumber(input.workout.distance_km)
+      ? input.workout.distance_km
+      : input.evidence.distanceKm;
+  const durationSec =
+    hasPositiveNumber(input.workout.duration_sec)
+      ? input.workout.duration_sec
+      : input.evidence.durationSec;
+  const avgPaceSecPerKm =
+    input.workout.avg_pace_sec_per_km ??
+    input.evidence.avgPaceSecPerKm ??
+    calculateAveragePaceSecPerKm(distanceKm, durationSec);
+
+  return {
+    ...input.workout,
+    source_activity_id:
+      input.workout.source_activity_id ?? input.evidence.stravaActivityId,
+    distance_km: distanceKm,
+    duration_sec: durationSec,
+    avg_pace_sec_per_km: avgPaceSecPerKm,
+    avg_heart_rate:
+      input.workout.avg_heart_rate ??
+      getReasonableHeartRate(input.evidence.averageHeartRate),
+    max_heart_rate:
+      input.workout.max_heart_rate ??
+      getReasonableHeartRate(input.evidence.maxHeartRate),
+    elevation_gain_m:
+      input.workout.elevation_gain_m ??
+      roundNullableNumber(input.evidence.elevationGainM, 2),
+  };
+}
+
 function getStravaHistorySkipReason(input: {
   activity: StravaSummaryActivity;
   activityDate: string;
   windowStartDate: string;
   windowEndDate: string;
-  appLoggedDateSet: Set<string>;
   existingStravaIds: Set<string>;
 }): string | null {
   if (!isSupportedStravaRun(input.activity)) {
@@ -260,10 +645,6 @@ function getStravaHistorySkipReason(input: {
 
   if (input.existingStravaIds.has(input.activity.id)) {
     return "already imported";
-  }
-
-  if (input.appLoggedDateSet.has(input.activityDate)) {
-    return "app history already has a logged run on this date";
   }
 
   return null;
@@ -412,7 +793,9 @@ function getWeekSource(
   weekWorkouts: LoggedWorkout[],
 ): RecentTrainingWeekInput["source"] {
   const hasApp = weekWorkouts.some((workout) => workout.source !== "strava");
-  const hasStrava = weekWorkouts.some((workout) => workout.source === "strava");
+  const hasStrava = weekWorkouts.some(
+    (workout) => workout.source === "strava" || Boolean(workout.source_activity_id),
+  );
 
   if (hasApp && hasStrava) {
     return "mixed";
@@ -428,6 +811,11 @@ function getWeekSource(
 function mapLoggedWorkoutToHistoryWorkout(
   workout: LoggedWorkout,
   source: PlanGenerationHistoryWorkout["source"],
+  metadata?: {
+    evidenceSource?: NonNullable<PlanGenerationHistoryWorkout["evidence_source"]>;
+    mergedStravaActivityId?: string | null;
+    mergeReason?: string | null;
+  },
 ): PlanGenerationHistoryWorkout {
   return {
     id: workout.id,
@@ -437,6 +825,9 @@ function mapLoggedWorkoutToHistoryWorkout(
     distance_km: workout.distance_km,
     duration_sec: workout.duration_sec,
     source_activity_id: workout.source_activity_id,
+    evidence_source: metadata?.evidenceSource,
+    merged_strava_activity_id: metadata?.mergedStravaActivityId,
+    merge_reason: metadata?.mergeReason,
   };
 }
 
@@ -444,19 +835,55 @@ function buildHistorySummaryMessage(input: {
   coverage: PlanGenerationHistorySummary["coverage"];
   appCount: number;
   importedCount: number;
+  mergedCount: number;
   manualCount: number;
   needsManualHistory: boolean;
+  forceManual: boolean;
 }): string {
   if (input.needsManualHistory) {
-    return "Manual six-week history is incomplete. Fill all six weeks before generating from manual history.";
+    return input.forceManual
+      ? "Manual six-week history is incomplete. Fill all six weeks before generating from manual history."
+      : "Six-week history is still incomplete after app, Strava, and manual fallback coverage.";
   }
 
   if (input.coverage === "manual") {
     return `Using ${input.manualCount} manually entered training-history weeks.`;
   }
 
+  const sourceParts: string[] = [];
+
+  if (input.appCount > 0) {
+    sourceParts.push(
+      `${input.appCount} app logged run${input.appCount === 1 ? "" : "s"}`,
+    );
+  }
+
   if (input.importedCount > 0) {
-    return `Using ${input.appCount} app logged run${input.appCount === 1 ? "" : "s"} and imported ${input.importedCount} missing Strava run${input.importedCount === 1 ? "" : "s"} for six-week history.`;
+    sourceParts.push(
+      `${input.importedCount} imported Strava run${
+        input.importedCount === 1 ? "" : "s"
+      }`,
+    );
+  }
+
+  if (input.mergedCount > 0) {
+    sourceParts.push(
+      `${input.mergedCount} Strava-enriched app run${
+        input.mergedCount === 1 ? "" : "s"
+      }`,
+    );
+  }
+
+  if (input.manualCount > 0) {
+    sourceParts.push(
+      `${input.manualCount} manual fallback week${
+        input.manualCount === 1 ? "" : "s"
+      }`,
+    );
+  }
+
+  if (sourceParts.length > 0 && input.coverage === "complete") {
+    return `Using ${joinList(sourceParts)} for six-week history.`;
   }
 
   if (input.coverage === "complete") {
@@ -484,8 +911,108 @@ function roundNullableNumber(value: number | null, decimals = 2): number | null 
   return Math.round(value * multiplier) / multiplier;
 }
 
+function hasPositiveNumber(value: number | null): value is number {
+  return value !== null && Number.isFinite(value) && value > 0;
+}
+
+function hasSimilarDistance(
+  appDistanceKm: number | null,
+  stravaDistanceKm: number | null,
+): boolean {
+  if (!hasPositiveNumber(appDistanceKm) || !hasPositiveNumber(stravaDistanceKm)) {
+    return false;
+  }
+
+  const toleranceKm = Math.max(0.2, Math.max(appDistanceKm, stravaDistanceKm) * 0.03);
+
+  return Math.abs(appDistanceKm - stravaDistanceKm) <= toleranceKm;
+}
+
+function hasSimilarDuration(
+  appDurationSec: number | null,
+  stravaDurationSec: number | null,
+): boolean {
+  if (!hasPositiveNumber(appDurationSec) || !hasPositiveNumber(stravaDurationSec)) {
+    return false;
+  }
+
+  const toleranceSec = Math.max(
+    180,
+    Math.max(appDurationSec, stravaDurationSec) * 0.05,
+  );
+
+  return Math.abs(appDurationSec - stravaDurationSec) <= toleranceSec;
+}
+
+function calculateAveragePaceSecPerKm(
+  distanceKm: number | null,
+  durationSec: number | null,
+): number | null {
+  if (!hasPositiveNumber(distanceKm) || !hasPositiveNumber(durationSec)) {
+    return null;
+  }
+
+  return Math.round(durationSec / distanceKm);
+}
+
 function roundDistance(distanceKm: number): number {
   return Math.round(distanceKm * 10) / 10;
+}
+
+function fillMissingHistoryWeeksWithManual(
+  loggedWeeks: RecentTrainingWeekInput[],
+  manualWeeks: RecentTrainingWeekInput[],
+): RecentTrainingWeekInput[] {
+  return loggedWeeks.map((loggedWeek, index) => {
+    if (loggedWeek.run_count > 0) {
+      return loggedWeek;
+    }
+
+    const manualWeek = manualWeeks[index];
+
+    if (!manualWeek || manualWeek.run_count <= 0) {
+      return loggedWeek;
+    }
+
+    return {
+      ...manualWeek,
+      week_start_date: loggedWeek.week_start_date,
+      week_end_date: loggedWeek.week_end_date,
+      source: "manual",
+    };
+  });
+}
+
+function addHistoryMergeAuditMetadata(
+  rawSummary: Record<string, unknown>,
+  input: {
+    loggedWorkoutId: string;
+    plannedWorkoutId: string | null;
+    reason: string;
+  },
+): Record<string, unknown> {
+  return {
+    ...rawSummary,
+    history_merge: {
+      source: "app_log",
+      logged_workout_id: input.loggedWorkoutId,
+      planned_workout_id: input.plannedWorkoutId,
+      reason: input.reason,
+      merged_at: new Date().toISOString(),
+    },
+  };
+}
+
+function joinList(parts: string[]): string {
+  if (parts.length <= 1) {
+    return parts[0] ?? "";
+  }
+
+  if (parts.length === 2) {
+    return `${parts[0]} and ${parts[1]}`;
+  }
+
+  return `${parts.slice(0, -1).join(", ")}, and ${parts[parts.length - 1]}`;
 }
 
 function addDaysToDateText(dateText: string, daysToAdd: number): string {

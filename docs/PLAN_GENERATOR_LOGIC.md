@@ -1,7 +1,7 @@
 # Plan Generator Logic Reference
 
 This document describes the current Run.B*tch.app initial plan generator as of
-Milestone 12L. It is written for external review and third-party analysis. It
+Milestone 13 Step 1. It is written for external review and third-party analysis. It
 describes the deterministic rule engine, its data flow, assumptions, safety
 rules, known limits, and app contracts.
 
@@ -24,6 +24,8 @@ Core generation files:
   analyzer.
 - `/lib/training/workoutLibrary.ts`: internal workout subtype library,
   variable-based prescription resolver, structured workout builder.
+- `/lib/training/physiology.ts`: optional advanced physiology inputs, HR/power
+  target derivation, and physiology-based effort classification helpers.
 - `/lib/training/loadRisk.ts`: intensity-bucket mapping, weekly intensity
   summaries, cap flags, and whole-plan intensity summaries.
 - `/lib/training/planGenerationHistory.ts`: 42-day history-window assembly from
@@ -42,6 +44,8 @@ Primary tests:
   matrix and regression harness.
 - `/tests/workoutLibrary.test.mjs`: subtype mapping, prescription variables,
   and structured workout safety.
+- `/tests/planGeneratorConformance.test.mjs`: also verifies physiology target
+  additions keep structured exports pace-safe.
 - `/tests/loadRisk.test.mjs`: intensity bucket and summary helpers.
 - `/tests/trainingEvidence.test.mjs`: evidence analyzer behavior.
 - `/tests/stravaActivityEvidence.test.mjs`: Strava detail/stream evidence.
@@ -68,6 +72,8 @@ The generated output keeps the current app contracts:
 - persisted `workout_type` values remain DB-safe.
 - structured workouts use `StructuredWorkout.version = 1`.
 - generated run workouts have pace targets where possible.
+- optional HR and power targets supplement row metadata and instructions while
+  pace remains the export-safe primary structured target.
 - rest, strength, and cross-training rows do not create run structured workout
   documents.
 - Garmin, Intervals.icu, manual logging, scoring, deletion, and adjustment
@@ -106,20 +112,24 @@ The route:
   replacing it;
 - builds a 42-day history window;
 - queries app `logged_workouts` first;
-- if all six weeks have at least one logged run, uses app history;
-- if coverage is incomplete and Strava is connected, fetches eligible Strava
-  runs from the last 42 days;
+- in auto mode, checks Strava after replacement confirmation even when app logs
+  already cover all six weeks;
+- if Strava is connected, fetches eligible Strava runs from the last 42 days;
 - fetches Strava detail and stream evidence for eligible six-week run
   activities where available;
-- imports missing valid Strava runs as unlinked history logs
+- merges app logs and Strava evidence into one canonical six-week evidence set;
+- imports non-duplicate valid Strava runs as unlinked history logs
   (`training_plan_id = null`, `planned_workout_id = null`);
 - stores Strava audit rows and enriched raw/evidence JSON without overwriting
   linked workout IDs;
-- skips duplicates, non-runs, invalid runs, same-day app-covered runs, and
-  activities outside the window;
+- skips duplicates, non-runs, invalid runs, and activities outside the window;
+- preserves app log identity, planned-workout linkage, notes, and RPE when a
+  Strava activity matches an existing app log, while attaching Strava
+  detail/stream evidence for generation;
 - if Strava is not connected and history is incomplete, asks for Strava or
   manual history;
-- supports manual six-week history fallback stored on the profile;
+- uses manual six-week history stored on the profile only for weeks still
+  uncovered after app and Strava evidence are merged;
 - evaluates whether the requested goal is not credible before saving;
 - if the goal is not credible, returns a suggested replacement and waits for
   confirmation;
@@ -199,6 +209,11 @@ Fields:
 - height and weight;
 - easy pace;
 - threshold pace;
+- lactate-threshold HR;
+- aerobic-threshold HR and pace;
+- manual/lab/Garmin/other HR zones;
+- threshold power, critical power, easy power range, and power zones;
+- VO2max and source;
 - running experience level;
 - injury signal.
 
@@ -216,6 +231,18 @@ Rules:
   workout eligibility;
 - current pain or serious recent injury blocks aggressive/very aggressive mode
   and changes the generated mode to relaxed.
+- explicit saved HR zones are preferred over threshold HR, HR reserve, and
+  max-HR percentage fallbacks for HR targets and effort classification;
+- lactate-threshold HR can derive recovery/easy/steady/threshold/interval/race
+  HR target ranges;
+- aerobic-threshold HR helps easy and steady target ranges and can identify
+  controlled aerobic-threshold efforts when stronger HR data is unavailable;
+- saved resting HR plus max HR enables HR-reserve targets when no stronger zone
+  inputs exist;
+- saved power zones or threshold/critical power derive optional power target
+  guidance;
+- VO2max is stored as context for later readiness work, but by itself it does
+  not make an aggressive goal credible or override pace/history evidence.
 
 ### Environment Profile
 
@@ -249,13 +276,23 @@ The evidence layer prefers detailed recent history but supports fallbacks.
 History source priority:
 
 1. app logged workouts from the last 42 days;
-2. Strava history imports for missing six-week coverage;
-3. manual six-week history stored on the profile;
-4. self-reported profile fields;
-5. conservative fallback estimates.
+2. Strava history evidence from the full 42-day window when connected;
+3. canonical app + Strava merge with duplicate-safe imports only for missing
+   activities;
+4. manual six-week history stored on the profile for still-uncovered weeks;
+5. self-reported profile fields;
+6. conservative fallback estimates.
 
 The analyzer uses exactly six weekly summaries when available. A week counts as
 covered when it has at least one run.
+
+App/Strava duplicates are matched by exact Strava activity ID, same date plus
+similar distance or duration, or a same-date linked app log that matches the
+Strava run. Matching uses a distance tolerance of `max(0.2 km, 3%)` and a
+duration tolerance of `max(180 sec, 5%)`. When a duplicate is found, app identity
+and planned-workout linkage win; Strava detail, streams, HR/power, pace fade,
+HR drift, elevation, achievements, splits, and PR signals enrich the in-memory
+history evidence and audit JSON.
 
 Computed load metrics:
 
@@ -299,6 +336,8 @@ The Strava adapter extracts:
 - whether detail and streams are available;
 - HR stream availability;
 - power availability;
+- activity date, distance, duration, average pace, HR, and power values when
+  available;
 - achievement count;
 - best-effort count;
 - PR count;
@@ -342,7 +381,9 @@ Logged workouts are classified into:
 Inputs used:
 
 - RPE;
-- average HR and max HR relative to saved max HR;
+- average HR and max HR using this priority: explicit HR zones, lactate-threshold
+  HR, HR reserve, max HR, then aerobic-threshold HR;
+- Strava run-power values against saved power zones or threshold/critical power;
 - pace relative to saved easy pace;
 - workout notes;
 - Strava evidence hints and effort signals.
@@ -353,10 +394,10 @@ Rules:
   effort evidence, or explicit Strava race/time-trial support;
 - possible near-max requires very high RPE, HR, near-max notes, or Strava
   near-max support;
-- hard workout uses RPE >= 7, high HR, hard-workout notes, or Strava hard
-  workout support;
-- controlled uses moderate RPE/HR, controlled Strava evidence, or faster-than
-  easy pace without easy-non-limit support;
+- hard workout uses RPE >= 7, high physiology-derived effort, hard-workout
+  notes, or Strava hard workout support;
+- controlled uses moderate RPE/physiology effort, controlled Strava evidence,
+  or faster-than easy pace without easy-non-limit support;
 - easy non-limit is the fallback when no hard evidence exists.
 
 ## Durability Evidence
@@ -824,6 +865,18 @@ Paces:
   - bridge pace in early phases;
   - goal pace in specific/peak/taper phases when feasibility supports it.
 
+Advanced physiology targets:
+
+- HR targets are optional and derived from explicit HR zones, lactate-threshold
+  HR, aerobic-threshold HR, HR reserve, or max HR in that order;
+- power targets are optional and derived from explicit power zones, threshold or
+  critical power, or a saved easy power range;
+- generated `target_hr_zone` uses the advanced HR target when one exists;
+- instructions add a short optional physiology target note when HR or power
+  guidance exists;
+- HR/power targets do not remove pace targets from generated run rows;
+- structured workouts remain version 1 and pace-based for export safety.
+
 ## Intensity Distribution And Risk
 
 Intensity buckets:
@@ -886,6 +939,7 @@ Effort/HR wording:
 
 - trail-heavy, hilly, no-flat, or weather-risk situations strengthen effort/HR
   guidance in instructions;
+- saved physiology targets add optional HR/power guidance to instructions;
 - pace targets remain present where possible for Garmin/Intervals export
   compatibility;
 - weather affects instructions and warnings, not detailed physiological
@@ -901,7 +955,7 @@ Export-safety rules:
 - conservative step counts;
 - complete time or distance durations for leaf steps;
 - pace targets where possible;
-- HR zones may be included as text/target support;
+- HR zones and power targets may be included as row metadata or text support;
 - no RPE-only primary target for publishable run workouts;
 - rest, strength, and cross-training do not create run structured workouts.
 
@@ -976,8 +1030,10 @@ Weekly summaries include:
 - Race-history text is weak supporting context only and is not treated as
   current proof of fitness.
 - Strava data is useful evidence but not definitive proof of maximal ability.
-- Power evidence is currently a confidence/support signal, not a full
-  power-zone model.
+- Power evidence and saved power zones are supporting signals and optional
+  workout guidance, not a replacement for pace-based export targets.
+- Garmin zone import is not implemented in this milestone; manual profile input
+  is the supported path for HR and power zones.
 - Weather notes are caution signals, not forecast simulation.
 - The generator should be conservative with injury, fatigue, high ramp, poor
   durability, low frequency, and weak confidence.
@@ -1014,6 +1070,7 @@ row. It asserts:
 - hilly-course warnings and hill exposure rules;
 - flat-course terrain bias;
 - fastest Strava run not used as a max anchor without evidence;
+- manual physiology targets do not break pace-safe structured workout exports;
 - suggested goal behavior for not-credible targets.
 
 ## Current Conformance Estimate
@@ -1037,7 +1094,7 @@ Approximate rubric:
 Tolerated remaining gaps:
 
 - full aerobic-efficiency trend modeling;
-- true power-zone modeling;
+- automatic Garmin/Strava zone import;
 - detailed weather modeling;
 - persisted fueling/nutrition strategy;
 - true double-run scheduling;

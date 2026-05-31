@@ -21,6 +21,14 @@ export type StravaActivityEffortHint =
 
 export type StravaActivityEvidence = {
   stravaActivityId: string;
+  activityDate: string;
+  distanceKm: number | null;
+  durationSec: number | null;
+  avgPaceSecPerKm: number | null;
+  averageHeartRate: number | null;
+  maxHeartRate: number | null;
+  averagePowerWatts: number | null;
+  weightedAveragePowerWatts: number | null;
   hasDetail: boolean;
   hasStreams: boolean;
   hasHeartRateStream: boolean;
@@ -178,6 +186,8 @@ export function buildStravaActivityEvidence(input: {
   const achievementCount = detail?.achievementCount ?? null;
   const bestEffortCount = detail?.bestEfforts.length ?? 0;
   const perceivedExertion = detail?.perceivedExertion ?? null;
+  const averagePowerWatts = detail?.averageWatts ?? getAverageStreamValue(streams?.watts ?? null);
+  const weightedAveragePowerWatts = detail?.weightedAverageWatts ?? averagePowerWatts;
   const hasHeartRateStream = Boolean(streams?.heartrate?.length);
   const hasPowerStream = Boolean(
     streams?.watts?.length ||
@@ -208,6 +218,17 @@ export function buildStravaActivityEvidence(input: {
 
   return {
     stravaActivityId: input.summary.id,
+    activityDate: getStravaActivityDate(input.summary),
+    distanceKm:
+      input.summary.distanceM !== null
+        ? roundToHundredth(input.summary.distanceM / 1000)
+        : null,
+    durationSec: input.summary.movingTimeSec,
+    avgPaceSecPerKm: averagePaceSecPerKm,
+    averageHeartRate: input.summary.averageHeartRate,
+    maxHeartRate: input.summary.maxHeartRate,
+    averagePowerWatts,
+    weightedAveragePowerWatts,
     hasDetail: detail !== null,
     hasStreams: streams !== null,
     hasHeartRateStream,
@@ -330,6 +351,16 @@ function getAveragePaceSecPerKm(
   }
 
   return Math.round(movingTimeSec / (distanceM / 1000));
+}
+
+function getAverageStreamValue(values: number[] | null): number | null {
+  if (!values || values.length === 0) {
+    return null;
+  }
+
+  const validValues = values.filter((value) => Number.isFinite(value) && value > 0);
+
+  return validValues.length > 0 ? Math.round(mean(validValues)) : null;
 }
 
 function getPaceTrend(input: {
@@ -750,6 +781,10 @@ function mean(values: number[]): number {
 
 function roundToTenth(value: number): number {
   return Math.round(value * 10) / 10;
+}
+
+function roundToHundredth(value: number): number {
+  return Math.round(value * 100) / 100;
 }
 
 function dedupeStrings(values: string[]): string[] {

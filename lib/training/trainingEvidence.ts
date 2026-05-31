@@ -6,6 +6,7 @@ import type {
   RunnerProfile,
 } from "../../types/training.ts";
 import type { StravaActivityEvidence } from "../strava/activityEvidence.ts";
+import { classifyEffortFromPhysiology } from "./physiology.ts";
 
 export type EffortQuality =
   | "race_time_trial"
@@ -486,36 +487,28 @@ function classifyWorkoutEffort(input: {
   const { workout, runnerProfile, stravaEvidence } = input;
   const evidence: string[] = [...(stravaEvidence?.effortSignals ?? [])];
   const notes = workout.notes?.toLowerCase() ?? "";
-  const avgHeartRateRatio =
-    runnerProfile.max_heart_rate && workout.avg_heart_rate
-      ? workout.avg_heart_rate / runnerProfile.max_heart_rate
-      : null;
-  const maxHeartRateRatio =
-    runnerProfile.max_heart_rate && workout.max_heart_rate
-      ? workout.max_heart_rate / runnerProfile.max_heart_rate
-      : null;
+  const physiologyClassification = classifyEffortFromPhysiology({
+    runnerProfile,
+    avgHeartRate: workout.avg_heart_rate ?? stravaEvidence?.averageHeartRate ?? null,
+    maxHeartRate: workout.max_heart_rate ?? stravaEvidence?.maxHeartRate ?? null,
+    stravaEvidence,
+  });
   const paceFasterThanEasyRatio =
     runnerProfile.easy_pace_sec_per_km && workout.avg_pace_sec_per_km
       ? workout.avg_pace_sec_per_km / runnerProfile.easy_pace_sec_per_km
       : null;
 
+  evidence.push(...physiologyClassification.evidence);
+
   if (workout.rpe !== null) {
     evidence.push(`RPE ${workout.rpe}`);
-  }
-
-  if (avgHeartRateRatio !== null) {
-    evidence.push(`average HR ${Math.round(avgHeartRateRatio * 100)}% of max`);
-  }
-
-  if (maxHeartRateRatio !== null) {
-    evidence.push(`max HR ${Math.round(maxHeartRateRatio * 100)}% of max`);
   }
 
   if (
     (
       workout.rpe !== null && workout.rpe >= 8 ||
-      avgHeartRateRatio !== null && avgHeartRateRatio >= 0.88 ||
-      maxHeartRateRatio !== null && maxHeartRateRatio >= 0.94 ||
+      physiologyClassification.level === "near_max" ||
+      physiologyClassification.level === "hard" ||
       stravaEvidence?.classificationHint === "race_time_trial"
     ) &&
     hasRaceTimeTrialNote(notes)
@@ -531,8 +524,7 @@ function classifyWorkoutEffort(input: {
 
   if (
     workout.rpe !== null && workout.rpe >= 9 ||
-    avgHeartRateRatio !== null && avgHeartRateRatio >= 0.92 ||
-    maxHeartRateRatio !== null && maxHeartRateRatio >= 0.96 ||
+    physiologyClassification.level === "near_max" ||
     hasNearMaxNote(notes)
   ) {
     if (hasNearMaxNote(notes)) {
@@ -549,7 +541,7 @@ function classifyWorkoutEffort(input: {
 
   if (
     workout.rpe !== null && workout.rpe >= 7 ||
-    avgHeartRateRatio !== null && avgHeartRateRatio >= 0.85 ||
+    physiologyClassification.level === "hard" ||
     hasHardWorkoutNote(notes)
   ) {
     if (hasHardWorkoutNote(notes)) {
@@ -566,7 +558,7 @@ function classifyWorkoutEffort(input: {
 
   if (
     workout.rpe !== null && workout.rpe >= 5 ||
-    avgHeartRateRatio !== null && avgHeartRateRatio >= 0.75
+    physiologyClassification.level === "controlled"
   ) {
     return buildEffortClassification(workout, "controlled", evidence);
   }

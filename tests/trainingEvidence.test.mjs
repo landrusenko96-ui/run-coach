@@ -17,6 +17,19 @@ const baseProfile = {
   threshold_pace_sec_per_km: null,
   max_heart_rate: 190,
   resting_heart_rate: null,
+  lactate_threshold_heart_rate: null,
+  aerobic_threshold_heart_rate: null,
+  user_hr_zones: null,
+  aerobic_threshold_pace_sec_per_km: null,
+  threshold_power_watts: null,
+  critical_power_watts: null,
+  easy_power_min_watts: null,
+  easy_power_max_watts: null,
+  user_power_zones: null,
+  vo2max: null,
+  vo2max_source: null,
+  zones_source_priority: null,
+  physiology_updated_at: null,
   available_training_days: ["monday", "wednesday", "saturday"],
   running_days_per_week: 3,
   preferred_long_run_day: "saturday",
@@ -128,6 +141,14 @@ function makeWorkout(overrides = {}) {
 function makeStravaEvidence(overrides = {}) {
   return {
     stravaActivityId: overrides.stravaActivityId ?? "activity-1",
+    activityDate: overrides.activityDate ?? "2030-03-01",
+    distanceKm: overrides.distanceKm ?? 8,
+    durationSec: overrides.durationSec ?? 2880,
+    avgPaceSecPerKm: overrides.avgPaceSecPerKm ?? 360,
+    averageHeartRate: overrides.averageHeartRate ?? null,
+    maxHeartRate: overrides.maxHeartRate ?? null,
+    averagePowerWatts: overrides.averagePowerWatts ?? null,
+    weightedAveragePowerWatts: overrides.weightedAveragePowerWatts ?? null,
     hasDetail: overrides.hasDetail ?? true,
     hasStreams: overrides.hasStreams ?? true,
     hasHeartRateStream: overrides.hasHeartRateStream ?? false,
@@ -254,6 +275,122 @@ describe("training evidence analyzer", () => {
     assert.equal(evidence.raceTimeTrialCount6w, 1);
     assert.equal(evidence.thresholdEstimateSource, "race_time_trial");
     assert.equal(evidence.fastestRunUsedAsFitnessAnchor, true);
+  });
+
+  it("uses saved heart-rate zones before max-HR fallback", () => {
+    const evidence = analyzeTrainingEvidence({
+      runnerProfile: makeProfile({
+        max_heart_rate: 200,
+        user_hr_zones: [
+          { zone: 1, name: "Zone 1", lower_bpm: 100, upper_bpm: 120, source: "manual", updated_at: null },
+          { zone: 2, name: "Zone 2", lower_bpm: 121, upper_bpm: 140, source: "manual", updated_at: null },
+          { zone: 3, name: "Zone 3", lower_bpm: 141, upper_bpm: 150, source: "manual", updated_at: null },
+          { zone: 4, name: "Zone 4", lower_bpm: 151, upper_bpm: 165, source: "manual", updated_at: null },
+          { zone: 5, name: "Zone 5", lower_bpm: 166, upper_bpm: 190, source: "manual", updated_at: null },
+        ],
+      }),
+      raceGoal: makeRaceGoal(),
+      selectedRunningDaysPerWeek: 4,
+      recentHistory: makeWeeks([35, 36, 37, 38, 39, 40]),
+      recentHistoryWorkouts: [
+        makeWorkout({ id: "zone-hard", avg_heart_rate: 155, avg_pace_sec_per_km: 350 }),
+      ],
+    });
+    const classification = evidence.effortClassifications.find(
+      (item) => item.loggedWorkoutId === "zone-hard",
+    );
+
+    assert.equal(classification?.quality, "hard_workout");
+    assert.ok(
+      classification?.evidence.some((item) => item.includes("personal HR zone 4")),
+    );
+  });
+
+  it("uses lactate-threshold HR and HR reserve for effort classification", () => {
+    const lthrEvidence = analyzeTrainingEvidence({
+      runnerProfile: makeProfile({
+        max_heart_rate: null,
+        lactate_threshold_heart_rate: 170,
+      }),
+      raceGoal: makeRaceGoal(),
+      selectedRunningDaysPerWeek: 4,
+      recentHistory: makeWeeks([35, 36, 37, 38, 39, 40]),
+      recentHistoryWorkouts: [
+        makeWorkout({ id: "lthr-hard", avg_heart_rate: 165, avg_pace_sec_per_km: 350 }),
+      ],
+    });
+    const reserveEvidence = analyzeTrainingEvidence({
+      runnerProfile: makeProfile({
+        max_heart_rate: 190,
+        resting_heart_rate: 50,
+      }),
+      raceGoal: makeRaceGoal(),
+      selectedRunningDaysPerWeek: 4,
+      recentHistory: makeWeeks([35, 36, 37, 38, 39, 40]),
+      recentHistoryWorkouts: [
+        makeWorkout({ id: "reserve-hard", avg_heart_rate: 166, avg_pace_sec_per_km: 350 }),
+      ],
+    });
+
+    assert.equal(lthrEvidence.effortClassifications[0].quality, "hard_workout");
+    assert.ok(
+      lthrEvidence.effortClassifications[0].evidence.some((item) =>
+        item.includes("LT HR"),
+      ),
+    );
+    assert.equal(reserveEvidence.effortClassifications[0].quality, "hard_workout");
+    assert.ok(
+      reserveEvidence.effortClassifications[0].evidence.some((item) =>
+        item.includes("HR reserve"),
+      ),
+    );
+  });
+
+  it("uses aerobic-threshold HR and Strava power as supporting effort signals", () => {
+    const aerobicEvidence = analyzeTrainingEvidence({
+      runnerProfile: makeProfile({
+        max_heart_rate: null,
+        aerobic_threshold_heart_rate: 145,
+      }),
+      raceGoal: makeRaceGoal(),
+      selectedRunningDaysPerWeek: 4,
+      recentHistory: makeWeeks([35, 36, 37, 38, 39, 40]),
+      recentHistoryWorkouts: [
+        makeWorkout({ id: "aet-controlled", avg_heart_rate: 146 }),
+      ],
+    });
+    const powerEvidence = analyzeTrainingEvidence({
+      runnerProfile: makeProfile({
+        max_heart_rate: null,
+        threshold_power_watts: 250,
+      }),
+      raceGoal: makeRaceGoal(),
+      selectedRunningDaysPerWeek: 4,
+      recentHistory: makeWeeks([35, 36, 37, 38, 39, 40]),
+      recentHistoryWorkouts: [
+        makeWorkout({
+          id: "power-hard",
+          source: "strava",
+          source_activity_id: "activity-power",
+        }),
+      ],
+      stravaActivityEvidence: [
+        makeStravaEvidence({
+          stravaActivityId: "activity-power",
+          hasPowerStream: true,
+          averagePowerWatts: 230,
+          weightedAveragePowerWatts: 230,
+        }),
+      ],
+    });
+
+    assert.equal(aerobicEvidence.effortClassifications[0].quality, "controlled");
+    assert.equal(powerEvidence.effortClassifications[0].quality, "hard_workout");
+    assert.ok(
+      powerEvidence.effortClassifications[0].evidence.some((item) =>
+        item.includes("threshold power"),
+      ),
+    );
   });
 
   it("does not use the fastest recent run as a max anchor without effort evidence", () => {
@@ -404,6 +541,43 @@ describe("training evidence analyzer", () => {
         assumption.includes("Strava detail/stream evidence was available"),
       ),
     );
+  });
+
+  it("uses Strava stream evidence attached to a merged app log", () => {
+    const evidence = analyzeTrainingEvidence({
+      runnerProfile: makeProfile(),
+      raceGoal: makeRaceGoal(),
+      selectedRunningDaysPerWeek: 4,
+      recentHistory: makeWeeks([35, 36, 37, 38, 39, 40]),
+      recentHistoryWorkouts: [
+        makeWorkout({
+          id: "merged-app-log",
+          source: "manual",
+          source_activity_id: "activity-merged",
+          avg_pace_sec_per_km: 370,
+          avg_heart_rate: null,
+          max_heart_rate: null,
+          elevation_gain_m: null,
+        }),
+      ],
+      stravaActivityEvidence: [
+        makeStravaEvidence({
+          stravaActivityId: "activity-merged",
+          hasHeartRateStream: true,
+          hasPowerStream: true,
+          paceFadePercent: 8,
+          heartRateDriftPercent: 7,
+          elevationGainM: 600,
+          classificationHint: "easy_non_limit",
+        }),
+      ],
+    });
+
+    assert.equal(evidence.hrDataAvailability, "most");
+    assert.equal(evidence.powerDataAvailability, "most");
+    assert.equal(evidence.elevationGainAvgMPerWeek, 100);
+    assert.equal(evidence.paceFadeAvgPercent, 8);
+    assert.equal(evidence.heartRateDriftAvgPercent, 7);
   });
 
   it("uses Strava pace fade, negative splits, and HR drift as durability evidence", () => {

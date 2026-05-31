@@ -30,11 +30,13 @@ import { AuthRequiredError, requireServerUser } from "@/lib/supabase/auth";
 import { createServiceRoleClient } from "@/lib/supabase/serviceRole";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import {
+  buildCanonicalPlanGenerationHistory,
   buildPlanGenerationHistorySummary,
   getPlanGenerationEvidenceWorkouts,
   getSixWeekHistoryWindow,
   hasCompleteSixWeekCoverage,
   importMissingStravaHistoryRuns,
+  shouldFetchStravaHistoryForPlanGeneration,
 } from "@/lib/training/planGenerationHistory";
 import {
   evaluatePlanGoalAdjustment,
@@ -42,7 +44,9 @@ import {
 } from "@/lib/training/planGenerator";
 import type {
   GenerateTrainingPlanApiResponse,
+  LoggedWorkout,
   PlanGoalAdjustmentSuggestion,
+  PlanGenerationHistorySkippedActivity,
   PlanGenerationHistorySummary,
   PlannedWorkout,
   TrainingPlan,
@@ -274,6 +278,8 @@ export async function POST(request: Request) {
       historyMode: generateRequest.historyMode,
       appLoggedWorkouts,
     });
+    let importedStravaWorkouts: LoggedWorkout[] = [];
+    let skippedStravaActivities: PlanGenerationHistorySkippedActivity[] = [];
     let stravaActivityEvidence: StravaActivityEvidence[] = [];
     let stravaEvidenceWarnings: string[] = [];
     let historySummary = buildPlanGenerationHistorySummary({
@@ -301,6 +307,40 @@ export async function POST(request: Request) {
       );
     }
 
+    const rebuildAutoHistorySummary = (input?: {
+      needsStravaConnection?: boolean;
+      needsManualHistory?: boolean;
+      message?: string;
+    }): void => {
+      const canonicalHistory = buildCanonicalPlanGenerationHistory({
+        historyMode: generateRequest.historyMode,
+        appLoggedWorkouts,
+        importedStravaWorkouts,
+        stravaActivityEvidence,
+      });
+
+      historySummary = buildPlanGenerationHistorySummary({
+        profile,
+        appLoggedWorkouts,
+        importedStravaWorkouts,
+        canonicalWorkouts: canonicalHistory.workouts,
+        mergedStravaWorkouts: canonicalHistory.mergedStravaWorkouts,
+        skippedStravaActivities,
+        windowEndDate: historyWindow.endDate,
+        fillManualGaps: true,
+      });
+      historyWorkoutsForGeneration = getPlanGenerationEvidenceWorkouts({
+        historyMode: generateRequest.historyMode,
+        appLoggedWorkouts,
+        importedStravaWorkouts,
+        canonicalWorkouts: canonicalHistory.workouts,
+      });
+
+      if (input) {
+        historySummary = withHistoryNeeds(historySummary, input);
+      }
+    };
+
     const existingActivePlan = await fetchActiveTrainingPlan(profile.id, dbOptions);
 
     if (existingActivePlan && !generateRequest.replaceActivePlan) {
@@ -317,156 +357,192 @@ export async function POST(request: Request) {
     }
 
     if (
-      generateRequest.historyMode === "auto" &&
-      !hasCompleteSixWeekCoverage(historySummary.weeks)
+      shouldFetchStravaHistoryForPlanGeneration({
+        historyMode: generateRequest.historyMode,
+        hasCompleteAppCoverage: hasCompleteSixWeekCoverage(historySummary.weeks),
+      })
     ) {
-      let serviceRoleSupabase: ReturnType<typeof createServiceRoleClient>;
+      let serviceRoleSupabase: ReturnType<typeof createServiceRoleClient> | null =
+        null;
 
       try {
         serviceRoleSupabase = createServiceRoleClient();
       } catch (error) {
-        historySummary = withHistoryNeeds(historySummary, {
-          needsManualHistory: true,
-          message:
-            "Six-week app history is incomplete and secure Strava import access is not configured. Fill manual six-week history to generate now.",
-        });
+        rebuildAutoHistorySummary();
 
-        return jsonResponse(
-          buildFailureResult({
-            message: isSupabaseServiceRoleConfigError(error)
-              ? getSupabaseServiceRoleConfigMessage(error)
-              : historySummary.message,
+        if (!hasCompleteSixWeekCoverage(historySummary.weeks)) {
+          historySummary = withHistoryNeeds(historySummary, {
             needsManualHistory: true,
-            historySummary,
-          }),
-          isSupabaseServiceRoleConfigError(error) ? 503 : 500,
-        );
-      }
-
-      const connection = await fetchPrivateStravaConnectionForUser(
-        serviceRoleSupabase,
-        user.id,
-      );
-
-      if (!connection) {
-        historySummary = withHistoryNeeds(historySummary, {
-          needsStravaConnection: true,
-          needsManualHistory: true,
-          message:
-            "Six-week app history is incomplete. Connect Strava to import missing runs, or fill manual six-week history.",
-        });
-
-        return jsonResponse(
-          buildFailureResult({
-            message: historySummary.message,
-            needsStravaConnection: true,
-            needsManualHistory: true,
-            historySummary,
-          }),
-          400,
-        );
-      }
-
-      let accessToken = connection.accessToken;
-
-      try {
-        if (shouldRefreshStravaToken(connection.tokenExpiresAt)) {
-          const refreshedToken = await refreshStravaAccessToken(
-            connection.refreshToken,
-          );
-
-          await updateStravaConnectionTokens(serviceRoleSupabase, {
-            userId: user.id,
-            accessToken: refreshedToken.accessToken,
-            refreshToken: refreshedToken.refreshToken,
-            tokenExpiresAt: refreshedToken.tokenExpiresAt,
+            message:
+              "Six-week history is incomplete and secure Strava import access is not configured. Fill manual six-week history to generate now.",
           });
 
-          accessToken = refreshedToken.accessToken;
+          return jsonResponse(
+            buildFailureResult({
+              message: isSupabaseServiceRoleConfigError(error)
+                ? getSupabaseServiceRoleConfigMessage(error)
+                : historySummary.message,
+              needsManualHistory: true,
+              historySummary,
+            }),
+            isSupabaseServiceRoleConfigError(error) ? 503 : 500,
+          );
         }
-      } catch {
-        historySummary = withHistoryNeeds(historySummary, {
-          needsStravaConnection: true,
-          needsManualHistory: true,
-          message:
-            "Could not refresh the Strava connection. Reconnect Strava, or fill manual six-week history.",
-        });
 
-        return jsonResponse(
-          buildFailureResult({
-            message: historySummary.message,
-            needsStravaConnection: true,
-            needsManualHistory: true,
-            historySummary,
-          }),
-          502,
+        stravaEvidenceWarnings.push(
+          "Secure Strava history access is not configured; generation used app/manual history only.",
         );
       }
 
-      let activities: StravaSummaryActivity[];
-
-      try {
-        activities = await fetchRecentStravaActivities({
-          accessToken,
-          afterEpochSeconds: getAfterEpochSeconds(historyWindow.startDate),
-        });
-      } catch {
-        historySummary = withHistoryNeeds(historySummary, {
-          needsManualHistory: true,
-          message:
-            "Could not fetch six-week Strava history. Fill manual six-week history to generate now.",
-        });
-
-        return jsonResponse(
-          buildFailureResult({
-            message: historySummary.message,
-            needsManualHistory: true,
-            historySummary,
-          }),
-          502,
+      if (serviceRoleSupabase) {
+        const connection = await fetchPrivateStravaConnectionForUser(
+          serviceRoleSupabase,
+          user.id,
         );
+
+        if (!connection) {
+          rebuildAutoHistorySummary();
+
+          if (!hasCompleteSixWeekCoverage(historySummary.weeks)) {
+            historySummary = withHistoryNeeds(historySummary, {
+              needsStravaConnection: true,
+              needsManualHistory: true,
+              message:
+                "Six-week history is incomplete. Connect Strava to import missing runs, or fill manual six-week history.",
+            });
+
+            return jsonResponse(
+              buildFailureResult({
+                message: historySummary.message,
+                needsStravaConnection: true,
+                needsManualHistory: true,
+                historySummary,
+              }),
+              400,
+            );
+          }
+
+          stravaEvidenceWarnings.push(
+            "No Strava connection was available; generation used app/manual history only.",
+          );
+        } else {
+          let accessToken = connection.accessToken;
+
+          try {
+            if (shouldRefreshStravaToken(connection.tokenExpiresAt)) {
+              const refreshedToken = await refreshStravaAccessToken(
+                connection.refreshToken,
+              );
+
+              await updateStravaConnectionTokens(serviceRoleSupabase, {
+                userId: user.id,
+                accessToken: refreshedToken.accessToken,
+                refreshToken: refreshedToken.refreshToken,
+                tokenExpiresAt: refreshedToken.tokenExpiresAt,
+              });
+
+              accessToken = refreshedToken.accessToken;
+            }
+          } catch {
+            rebuildAutoHistorySummary();
+
+            if (!hasCompleteSixWeekCoverage(historySummary.weeks)) {
+              historySummary = withHistoryNeeds(historySummary, {
+                needsStravaConnection: true,
+                needsManualHistory: true,
+                message:
+                  "Could not refresh the Strava connection. Reconnect Strava, or fill manual six-week history.",
+              });
+
+              return jsonResponse(
+                buildFailureResult({
+                  message: historySummary.message,
+                  needsStravaConnection: true,
+                  needsManualHistory: true,
+                  historySummary,
+                }),
+                502,
+              );
+            }
+
+            stravaEvidenceWarnings.push(
+              "Could not refresh Strava history access; generation used app/manual history only.",
+            );
+            accessToken = "";
+          }
+
+          if (accessToken) {
+            let activities: StravaSummaryActivity[];
+
+            try {
+              activities = await fetchRecentStravaActivities({
+                accessToken,
+                afterEpochSeconds: getAfterEpochSeconds(historyWindow.startDate),
+              });
+            } catch {
+              rebuildAutoHistorySummary();
+
+              if (!hasCompleteSixWeekCoverage(historySummary.weeks)) {
+                historySummary = withHistoryNeeds(historySummary, {
+                  needsManualHistory: true,
+                  message:
+                    "Could not fetch six-week Strava history. Fill manual six-week history to generate now.",
+                });
+
+                return jsonResponse(
+                  buildFailureResult({
+                    message: historySummary.message,
+                    needsManualHistory: true,
+                    historySummary,
+                  }),
+                  502,
+                );
+              }
+
+              stravaEvidenceWarnings.push(
+                "Could not fetch Strava history; generation used app/manual history only.",
+              );
+              activities = [];
+            }
+
+            if (activities.length > 0) {
+              const stravaHistoryEvidence =
+                await enrichStravaActivitiesForPlanHistory({
+                  activities,
+                  accessToken,
+                  windowStartDate: historyWindow.startDate,
+                  windowEndDate: historyWindow.endDate,
+                });
+
+              activities = stravaHistoryEvidence.activities;
+              stravaActivityEvidence = stravaHistoryEvidence.evidence;
+              stravaEvidenceWarnings = stravaHistoryEvidence.warnings;
+
+              const stravaHistoryImport = await importMissingStravaHistoryRuns({
+                userId: user.id,
+                profile,
+                raceGoal,
+                appLoggedWorkouts,
+                stravaActivities: activities,
+                windowStartDate: historyWindow.startDate,
+                windowEndDate: historyWindow.endDate,
+                supabase: serviceRoleSupabase,
+              });
+
+              importedStravaWorkouts = stravaHistoryImport.importedWorkouts;
+              skippedStravaActivities = stravaHistoryImport.skippedActivities;
+            }
+          }
+        }
       }
 
-      const stravaHistoryEvidence = await enrichStravaActivitiesForPlanHistory({
-        activities,
-        accessToken,
-        windowStartDate: historyWindow.startDate,
-        windowEndDate: historyWindow.endDate,
-      });
-
-      activities = stravaHistoryEvidence.activities;
-      stravaActivityEvidence = stravaHistoryEvidence.evidence;
-      stravaEvidenceWarnings = stravaHistoryEvidence.warnings;
-
-      const stravaHistoryImport = await importMissingStravaHistoryRuns({
-        userId: user.id,
-        profile,
-        raceGoal,
-        appLoggedWorkouts,
-        stravaActivities: activities,
-        windowStartDate: historyWindow.startDate,
-        windowEndDate: historyWindow.endDate,
-        supabase: serviceRoleSupabase,
-      });
-
-      historySummary = buildPlanGenerationHistorySummary({
-        profile,
-        appLoggedWorkouts,
-        importedStravaWorkouts: stravaHistoryImport.importedWorkouts,
-        skippedStravaActivities: stravaHistoryImport.skippedActivities,
-        windowEndDate: historyWindow.endDate,
-      });
-      historyWorkoutsForGeneration = getPlanGenerationEvidenceWorkouts({
-        historyMode: generateRequest.historyMode,
-        appLoggedWorkouts,
-        importedStravaWorkouts: stravaHistoryImport.importedWorkouts,
-      });
+      rebuildAutoHistorySummary();
 
       if (!hasCompleteSixWeekCoverage(historySummary.weeks)) {
         historySummary = withHistoryNeeds(historySummary, {
           needsManualHistory: true,
           message:
-            "Six-week history is still incomplete after Strava import. Fill manual six-week history to confirm the missing weeks.",
+            "Six-week history is still incomplete after app, Strava, and manual fallback coverage. Fill manual six-week history to confirm the missing weeks.",
         });
 
         return jsonResponse(
@@ -475,7 +551,7 @@ export async function POST(request: Request) {
             needsManualHistory: true,
             historySummary,
           }),
-        400,
+          400,
         );
       }
     }

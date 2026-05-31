@@ -51,6 +51,26 @@ export type RaceCourseProfile =
   | "mountainous"
   | "unknown";
 
+export type PhysiologyZoneSource = "manual" | "garmin" | "lab" | "other";
+
+export type UserHeartRateZone = {
+  zone: number | null;
+  name: string;
+  lower_bpm: number;
+  upper_bpm: number;
+  source: PhysiologyZoneSource;
+  updated_at: string | null;
+};
+
+export type UserPowerZone = {
+  zone: number | null;
+  name: string;
+  lower_watts: number;
+  upper_watts: number;
+  source: PhysiologyZoneSource;
+  updated_at: string | null;
+};
+
 export type RecentTrainingWeekInput = {
   week_start_date: string;
   week_end_date: string;
@@ -70,6 +90,9 @@ export type PlanGenerationHistoryWorkout = {
   distance_km: number | null;
   duration_sec: number | null;
   source_activity_id: string | null;
+  evidence_source?: "app" | "strava" | "merged" | "manual";
+  merged_strava_activity_id?: string | null;
+  merge_reason?: string | null;
 };
 
 export type PlanGenerationHistorySkippedActivity = {
@@ -86,6 +109,7 @@ export type PlanGenerationHistorySummary = {
   weeks: RecentTrainingWeekInput[];
   app_workouts_used: PlanGenerationHistoryWorkout[];
   strava_workouts_imported: PlanGenerationHistoryWorkout[];
+  strava_workouts_merged: PlanGenerationHistoryWorkout[];
   strava_workouts_skipped: PlanGenerationHistorySkippedActivity[];
   manual_weeks_used: RecentTrainingWeekInput[];
   needs_strava_connection: boolean;
@@ -364,6 +388,19 @@ export type Profile = {
   threshold_pace_sec_per_km: number | null;
   max_heart_rate: number | null;
   resting_heart_rate: number | null;
+  lactate_threshold_heart_rate: number | null;
+  aerobic_threshold_heart_rate: number | null;
+  user_hr_zones: UserHeartRateZone[] | null;
+  aerobic_threshold_pace_sec_per_km: number | null;
+  threshold_power_watts: number | null;
+  critical_power_watts: number | null;
+  easy_power_min_watts: number | null;
+  easy_power_max_watts: number | null;
+  user_power_zones: UserPowerZone[] | null;
+  vo2max: number | null;
+  vo2max_source: PhysiologyZoneSource | "estimate" | null;
+  zones_source_priority: PhysiologyZoneSource[] | null;
+  physiology_updated_at: string | null;
   available_training_days: TrainingDay[];
   running_days_per_week: RunningDaysPerWeek | null;
   preferred_long_run_day: TrainingDay | null;

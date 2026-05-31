@@ -8,6 +8,28 @@ import {
   resolveWorkoutPrescription,
 } from "../lib/training/workoutLibrary.ts";
 
+const emptyAdvancedTargets = {
+  heartRate: {
+    recovery: null,
+    easy: null,
+    steady: null,
+    threshold: null,
+    interval: null,
+    race_pace: null,
+  },
+  power: {
+    recovery: null,
+    easy: null,
+    steady: null,
+    threshold: null,
+    interval: null,
+    race_pace: null,
+  },
+  hasHeartRateTargets: false,
+  hasPowerTargets: false,
+  assumptions: [],
+};
+
 const baseContext = {
   subtype: "cruise_intervals",
   phase: "build",
@@ -35,6 +57,7 @@ const baseContext = {
     bridgeRacePaceSecPerKm: 350,
     goalRacePaceSecPerKm: 340,
   },
+  advancedTargets: emptyAdvancedTargets,
 };
 
 function context(overrides = {}) {
@@ -162,5 +185,37 @@ describe("workout library", () => {
         ),
       );
     }
+  });
+
+  it("adds advanced HR and power guidance without changing pace-based export steps", () => {
+    const workout = resolveWorkoutPrescription(
+      context({
+        advancedTargets: {
+          ...emptyAdvancedTargets,
+          heartRate: {
+            ...emptyAdvancedTargets.heartRate,
+            threshold: "Zone 4 (166-176 bpm)",
+          },
+          power: {
+            ...emptyAdvancedTargets.power,
+            threshold: "240-260 W",
+          },
+          hasHeartRateTargets: true,
+          hasPowerTargets: true,
+        },
+      }),
+    );
+
+    assert.equal(workout.targetHrZone, "Zone 4 (166-176 bpm)");
+    assert.match(workout.instructions, /HR Zone 4 \(166-176 bpm\)/);
+    assert.match(workout.instructions, /power 240-260 W/);
+    assert.equal(workout.structuredWorkout.version, 1);
+    assert.ok(
+      workout.structuredWorkout.steps.some(
+        (step) =>
+          step.targetType === "pace" ||
+          step.repeat?.steps.some((repeatStep) => repeatStep.targetType === "pace"),
+      ),
+    );
   });
 });

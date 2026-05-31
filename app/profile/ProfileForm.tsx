@@ -14,6 +14,7 @@ import {
 } from "@/lib/training/runningDays";
 import type {
   ExperienceLevel,
+  PhysiologyZoneSource,
   Profile,
   RecentTrainingWeekInput,
   Sex,
@@ -22,6 +23,8 @@ import type {
   TrainingDay,
   TypicalElevationProfile,
   TypicalSurface,
+  UserHeartRateZone,
+  UserPowerZone,
 } from "@/types/training";
 
 const dayOptions: { value: TrainingDay; label: string }[] = [
@@ -99,6 +102,16 @@ const elevationOptions: { value: TypicalElevationProfile; label: string }[] = [
   { value: "mixed", label: "Mixed" },
 ];
 
+const vo2maxSourceOptions: {
+  value: PhysiologyZoneSource | "estimate";
+  label: string;
+}[] = [
+  { value: "garmin", label: "Garmin" },
+  { value: "lab", label: "Lab" },
+  { value: "estimate", label: "Estimate" },
+  { value: "other", label: "Other" },
+];
+
 type ManualHistoryWeekForm = {
   week_start_date: string;
   week_end_date: string;
@@ -121,6 +134,17 @@ type FormState = {
   threshold_pace_min_per_km: string;
   max_heart_rate: string;
   resting_heart_rate: string;
+  lactate_threshold_heart_rate: string;
+  aerobic_threshold_heart_rate: string;
+  user_hr_zones_json: string;
+  aerobic_threshold_pace_min_per_km: string;
+  threshold_power_watts: string;
+  critical_power_watts: string;
+  easy_power_min_watts: string;
+  easy_power_max_watts: string;
+  user_power_zones_json: string;
+  vo2max: string;
+  vo2max_source: PhysiologyZoneSource | "estimate" | "";
   available_training_days: TrainingDay[];
   running_days_per_week: string;
   preferred_long_run_day: TrainingDay | "";
@@ -159,6 +183,17 @@ const emptyForm: FormState = {
   threshold_pace_min_per_km: "",
   max_heart_rate: "",
   resting_heart_rate: "",
+  lactate_threshold_heart_rate: "",
+  aerobic_threshold_heart_rate: "",
+  user_hr_zones_json: "",
+  aerobic_threshold_pace_min_per_km: "",
+  threshold_power_watts: "",
+  critical_power_watts: "",
+  easy_power_min_watts: "",
+  easy_power_max_watts: "",
+  user_power_zones_json: "",
+  vo2max: "",
+  vo2max_source: "",
   available_training_days: [],
   running_days_per_week: "",
   preferred_long_run_day: "",
@@ -225,6 +260,16 @@ function buildEmptyManualHistoryWeeks(): ManualHistoryWeekForm[] {
 
 function numberToInput(value: number | null | undefined): string {
   return value === null || value === undefined ? "" : String(value);
+}
+
+function zonesToJsonInput(
+  value: UserHeartRateZone[] | UserPowerZone[] | null | undefined,
+): string {
+  if (!Array.isArray(value) || value.length === 0) {
+    return "";
+  }
+
+  return JSON.stringify(value, null, 2);
 }
 
 function booleanToInput(value: boolean | null | undefined): boolean {
@@ -305,6 +350,23 @@ function profileToForm(profile: Profile): FormState {
     ),
     max_heart_rate: numberToInput(profile.max_heart_rate),
     resting_heart_rate: numberToInput(profile.resting_heart_rate),
+    lactate_threshold_heart_rate: numberToInput(
+      profile.lactate_threshold_heart_rate,
+    ),
+    aerobic_threshold_heart_rate: numberToInput(
+      profile.aerobic_threshold_heart_rate,
+    ),
+    user_hr_zones_json: zonesToJsonInput(profile.user_hr_zones),
+    aerobic_threshold_pace_min_per_km: secondsToPaceInput(
+      profile.aerobic_threshold_pace_sec_per_km,
+    ),
+    threshold_power_watts: numberToInput(profile.threshold_power_watts),
+    critical_power_watts: numberToInput(profile.critical_power_watts),
+    easy_power_min_watts: numberToInput(profile.easy_power_min_watts),
+    easy_power_max_watts: numberToInput(profile.easy_power_max_watts),
+    user_power_zones_json: zonesToJsonInput(profile.user_power_zones),
+    vo2max: numberToInput(profile.vo2max),
+    vo2max_source: profile.vo2max_source ?? "",
     available_training_days: profile.available_training_days,
     running_days_per_week: numberToInput(profile.running_days_per_week),
     preferred_long_run_day: profile.preferred_long_run_day ?? "",
@@ -484,6 +546,167 @@ function buildManualHistoryInput(
   });
 }
 
+function parseHeartRateZonesInput(value: string): UserHeartRateZone[] | null {
+  const parsedValue = parseOptionalZonesJson(value, "Heart-rate zones JSON");
+
+  if (parsedValue === null) {
+    return null;
+  }
+
+  return parsedValue.map((zone, index) => {
+    const lowerBpm = readZoneNumber(zone, "lower_bpm", index);
+    const upperBpm = readZoneNumber(zone, "upper_bpm", index);
+
+    if (lowerBpm > upperBpm) {
+      throw new Error(`Heart-rate zone ${index + 1} lower_bpm must be <= upper_bpm.`);
+    }
+
+    return {
+      zone: readOptionalZoneInteger(zone, "zone", index),
+      name: readZoneName(zone, index),
+      lower_bpm: lowerBpm,
+      upper_bpm: upperBpm,
+      source: readZoneSource(zone, index),
+      updated_at: readOptionalZoneText(zone, "updated_at", index),
+    };
+  });
+}
+
+function parsePowerZonesInput(value: string): UserPowerZone[] | null {
+  const parsedValue = parseOptionalZonesJson(value, "Power zones JSON");
+
+  if (parsedValue === null) {
+    return null;
+  }
+
+  return parsedValue.map((zone, index) => {
+    const lowerWatts = readZoneNumber(zone, "lower_watts", index);
+    const upperWatts = readZoneNumber(zone, "upper_watts", index);
+
+    if (lowerWatts > upperWatts) {
+      throw new Error(`Power zone ${index + 1} lower_watts must be <= upper_watts.`);
+    }
+
+    return {
+      zone: readOptionalZoneInteger(zone, "zone", index),
+      name: readZoneName(zone, index),
+      lower_watts: lowerWatts,
+      upper_watts: upperWatts,
+      source: readZoneSource(zone, index),
+      updated_at: readOptionalZoneText(zone, "updated_at", index),
+    };
+  });
+}
+
+function parseOptionalZonesJson(
+  value: string,
+  label: string,
+): Record<string, unknown>[] | null {
+  const trimmedValue = value.trim();
+
+  if (!trimmedValue) {
+    return null;
+  }
+
+  let parsedValue: unknown;
+
+  try {
+    parsedValue = JSON.parse(trimmedValue);
+  } catch {
+    throw new Error(`${label} must be valid JSON.`);
+  }
+
+  if (!Array.isArray(parsedValue)) {
+    throw new Error(`${label} must be an array.`);
+  }
+
+  return parsedValue.map((zone, index) => {
+    if (!zone || typeof zone !== "object" || Array.isArray(zone)) {
+      throw new Error(`${label} item ${index + 1} must be an object.`);
+    }
+
+    return zone as Record<string, unknown>;
+  });
+}
+
+function readZoneNumber(
+  zone: Record<string, unknown>,
+  key: string,
+  index: number,
+): number {
+  const value = zone[key];
+
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    throw new Error(`Zone ${index + 1} ${key} must be a positive number.`);
+  }
+
+  return Math.round(value);
+}
+
+function readOptionalZoneInteger(
+  zone: Record<string, unknown>,
+  key: string,
+  index: number,
+): number | null {
+  const value = zone[key];
+
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    throw new Error(`Zone ${index + 1} ${key} must be a positive whole number.`);
+  }
+
+  return value;
+}
+
+function readZoneName(zone: Record<string, unknown>, index: number): string {
+  const value = zone.name;
+
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`Zone ${index + 1} name is required.`);
+  }
+
+  return value.trim();
+}
+
+function readZoneSource(
+  zone: Record<string, unknown>,
+  index: number,
+): PhysiologyZoneSource {
+  const value = zone.source;
+
+  if (
+    value === "manual" ||
+    value === "garmin" ||
+    value === "lab" ||
+    value === "other"
+  ) {
+    return value;
+  }
+
+  throw new Error(`Zone ${index + 1} source must be manual, garmin, lab, or other.`);
+}
+
+function readOptionalZoneText(
+  zone: Record<string, unknown>,
+  key: string,
+  index: number,
+): string | null {
+  const value = zone[key];
+
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  if (typeof value !== "string") {
+    throw new Error(`Zone ${index + 1} ${key} must be text.`);
+  }
+
+  return value.trim() || null;
+}
+
 function buildProfileInput(form: FormState): SaveProfileInput {
   const username = form.username.trim();
   const displayName = form.display_name.trim();
@@ -504,6 +727,8 @@ function buildProfileInput(form: FormState): SaveProfileInput {
     training_aggressiveness: form.training_aggressiveness,
   });
   const manualHistory = buildManualHistoryInput(form.manual_six_week_history);
+  const userHrZones = parseHeartRateZonesInput(form.user_hr_zones_json);
+  const userPowerZones = parsePowerZonesInput(form.user_power_zones_json);
 
   if (form.available_training_days.length < effectiveRunningDaysPerWeek) {
     throw new Error(
@@ -511,7 +736,7 @@ function buildProfileInput(form: FormState): SaveProfileInput {
     );
   }
 
-  return {
+  const profileInput: SaveProfileInput = {
     username,
     display_name: displayName,
     birth_year: optionalInteger(form.birth_year, "Birth year"),
@@ -539,6 +764,40 @@ function buildProfileInput(form: FormState): SaveProfileInput {
       form.resting_heart_rate,
       "Resting heart rate",
     ),
+    lactate_threshold_heart_rate: optionalInteger(
+      form.lactate_threshold_heart_rate,
+      "Lactate-threshold heart rate",
+    ),
+    aerobic_threshold_heart_rate: optionalInteger(
+      form.aerobic_threshold_heart_rate,
+      "Aerobic-threshold heart rate",
+    ),
+    user_hr_zones: userHrZones,
+    aerobic_threshold_pace_sec_per_km: paceInputToSeconds(
+      form.aerobic_threshold_pace_min_per_km,
+      "Aerobic-threshold pace",
+    ),
+    threshold_power_watts: optionalInteger(
+      form.threshold_power_watts,
+      "Threshold power",
+    ),
+    critical_power_watts: optionalInteger(
+      form.critical_power_watts,
+      "Critical power",
+    ),
+    easy_power_min_watts: optionalInteger(
+      form.easy_power_min_watts,
+      "Easy power minimum",
+    ),
+    easy_power_max_watts: optionalInteger(
+      form.easy_power_max_watts,
+      "Easy power maximum",
+    ),
+    user_power_zones: userPowerZones,
+    vo2max: optionalDecimal(form.vo2max, "VO2max"),
+    vo2max_source: form.vo2max_source === "" ? null : form.vo2max_source,
+    zones_source_priority: null,
+    physiology_updated_at: null,
     available_training_days: form.available_training_days,
     running_days_per_week: runningDaysPerWeek,
     preferred_long_run_day:
@@ -576,6 +835,35 @@ function buildProfileInput(form: FormState): SaveProfileInput {
     manual_six_week_history: manualHistory,
     manual_six_week_history_updated_at: manualHistory ? new Date().toISOString() : null,
   };
+
+  if (
+    profileInput.easy_power_min_watts !== null &&
+    profileInput.easy_power_max_watts !== null &&
+    profileInput.easy_power_min_watts > profileInput.easy_power_max_watts
+  ) {
+    throw new Error("Easy power minimum must be less than or equal to easy power maximum.");
+  }
+
+  if (hasAdvancedPhysiologyInput(profileInput)) {
+    profileInput.physiology_updated_at = new Date().toISOString();
+  }
+
+  return profileInput;
+}
+
+function hasAdvancedPhysiologyInput(profile: SaveProfileInput): boolean {
+  return Boolean(
+    profile.lactate_threshold_heart_rate !== null ||
+      profile.aerobic_threshold_heart_rate !== null ||
+      profile.user_hr_zones !== null ||
+      profile.aerobic_threshold_pace_sec_per_km !== null ||
+      profile.threshold_power_watts !== null ||
+      profile.critical_power_watts !== null ||
+      profile.easy_power_min_watts !== null ||
+      profile.easy_power_max_watts !== null ||
+      profile.user_power_zones !== null ||
+      profile.vo2max !== null,
+  );
 }
 
 function toggleValue<T extends string>(values: T[], value: T): T[] {
@@ -891,6 +1179,21 @@ export function ProfileForm() {
               placeholder="5:20"
             />
           </label>
+
+          <label className={labelClass}>
+            Aerobic-threshold pace (min/km)
+            <input
+              className={inputClass}
+              value={form.aerobic_threshold_pace_min_per_km}
+              onChange={(event) =>
+                setForm({
+                  ...form,
+                  aerobic_threshold_pace_min_per_km: event.target.value,
+                })
+              }
+              placeholder="6:00"
+            />
+          </label>
         </div>
       </section>
 
@@ -924,7 +1227,165 @@ export function ProfileForm() {
               placeholder="55"
             />
           </label>
+
+          <label className={labelClass}>
+            Lactate-threshold heart rate
+            <input
+              className={inputClass}
+              type="number"
+              inputMode="numeric"
+              value={form.lactate_threshold_heart_rate}
+              onChange={(event) =>
+                setForm({
+                  ...form,
+                  lactate_threshold_heart_rate: event.target.value,
+                })
+              }
+              placeholder="172"
+            />
+          </label>
+
+          <label className={labelClass}>
+            Aerobic-threshold heart rate
+            <input
+              className={inputClass}
+              type="number"
+              inputMode="numeric"
+              value={form.aerobic_threshold_heart_rate}
+              onChange={(event) =>
+                setForm({
+                  ...form,
+                  aerobic_threshold_heart_rate: event.target.value,
+                })
+              }
+              placeholder="145"
+            />
+          </label>
         </div>
+
+        <label className="mt-4 block text-sm font-medium text-slate-800">
+          Heart-rate zones JSON
+          <textarea
+            className={`${inputClass} min-h-32 font-mono text-xs`}
+            value={form.user_hr_zones_json}
+            onChange={(event) =>
+              setForm({ ...form, user_hr_zones_json: event.target.value })
+            }
+            placeholder='[{"zone":1,"name":"Zone 1","lower_bpm":110,"upper_bpm":130,"source":"manual","updated_at":"2030-01-01T00:00:00.000Z"}]'
+          />
+        </label>
+      </section>
+
+      <section className="rounded-md border border-slate-200 bg-white p-6">
+        <h2 className="text-base font-medium text-slate-950">Power and VO2max</h2>
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <label className={labelClass}>
+            Threshold power (watts)
+            <input
+              className={inputClass}
+              type="number"
+              inputMode="numeric"
+              value={form.threshold_power_watts}
+              onChange={(event) =>
+                setForm({ ...form, threshold_power_watts: event.target.value })
+              }
+              placeholder="260"
+            />
+          </label>
+
+          <label className={labelClass}>
+            Critical power (watts)
+            <input
+              className={inputClass}
+              type="number"
+              inputMode="numeric"
+              value={form.critical_power_watts}
+              onChange={(event) =>
+                setForm({ ...form, critical_power_watts: event.target.value })
+              }
+              placeholder="275"
+            />
+          </label>
+
+          <label className={labelClass}>
+            Easy power min (watts)
+            <input
+              className={inputClass}
+              type="number"
+              inputMode="numeric"
+              value={form.easy_power_min_watts}
+              onChange={(event) =>
+                setForm({ ...form, easy_power_min_watts: event.target.value })
+              }
+              placeholder="170"
+            />
+          </label>
+
+          <label className={labelClass}>
+            Easy power max (watts)
+            <input
+              className={inputClass}
+              type="number"
+              inputMode="numeric"
+              value={form.easy_power_max_watts}
+              onChange={(event) =>
+                setForm({ ...form, easy_power_max_watts: event.target.value })
+              }
+              placeholder="210"
+            />
+          </label>
+
+          <label className={labelClass}>
+            VO2max
+            <input
+              className={inputClass}
+              type="number"
+              inputMode="decimal"
+              step="0.1"
+              value={form.vo2max}
+              onChange={(event) =>
+                setForm({ ...form, vo2max: event.target.value })
+              }
+              placeholder="48"
+            />
+          </label>
+
+          <label className={labelClass}>
+            VO2max source
+            <select
+              className={inputClass}
+              value={form.vo2max_source}
+              onChange={(event) =>
+                setForm({
+                  ...form,
+                  vo2max_source: event.target.value as
+                    | PhysiologyZoneSource
+                    | "estimate"
+                    | "",
+                })
+              }
+            >
+              <option value="">Not set</option>
+              {vo2maxSourceOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        <label className="mt-4 block text-sm font-medium text-slate-800">
+          Power zones JSON
+          <textarea
+            className={`${inputClass} min-h-32 font-mono text-xs`}
+            value={form.user_power_zones_json}
+            onChange={(event) =>
+              setForm({ ...form, user_power_zones_json: event.target.value })
+            }
+            placeholder='[{"zone":1,"name":"Easy","lower_watts":150,"upper_watts":210,"source":"manual","updated_at":"2030-01-01T00:00:00.000Z"}]'
+          />
+        </label>
       </section>
 
       <section className="rounded-md border border-slate-200 bg-white p-6">
