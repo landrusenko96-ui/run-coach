@@ -81,6 +81,7 @@ export async function generateAndSaveTrainingPlan(
       weekly_summaries: generatedPlan.trainingPlan.weekly_summaries,
       peak_summary: generatedPlan.trainingPlan.peak_summary,
       taper_summary: generatedPlan.trainingPlan.taper_summary,
+      fitness_anchor_summary: generatedPlan.trainingPlan.fitness_anchor_summary,
     };
 
     // Database write 1: insert the new training_plans row.

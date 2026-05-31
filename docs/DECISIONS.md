@@ -1,5 +1,29 @@
 # Decisions
 
+## 2026-05-31 — Recency-Weight Fitness Anchors, Not Weekly Load
+
+Decision:
+Select current-fitness anchors with a scored model that includes effort
+quality, source quality, data confidence, and recency inside the existing
+42-day history window.
+
+Reason:
+Recent race-like, near-max, hard-workout, PR, HR, power, and split evidence
+should represent current fitness more strongly than older comparable evidence.
+Raw six-week load, consistency, recent ramp, injury signals, availability, and
+terrain access should remain stable six-week inputs instead of being blindly
+recency-weighted.
+
+Status:
+A local migration adds nullable `training_plans.fitness_anchor_summary` JSONB
+metadata with an object-or-null check constraint. It has not been applied
+remotely in this turn.
+
+Implementation rule:
+Do not let recent easy or ordinary controlled runs become max anchors because
+of recency alone. Preserve the existing `generateTrainingPlan(profile,
+raceGoal, options)` API and structured workout/export contracts.
+
 ## 2026-05-31 — Merge Full-Window Strava Evidence Before Manual Fallback
 
 Decision:

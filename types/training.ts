@@ -514,6 +514,7 @@ export type TrainingPlan = {
   weekly_summaries: PlanGenerationWeeklySummary[];
   peak_summary: PlanGenerationPeakSummary | null;
   taper_summary: PlanGenerationTaperSummary | null;
+  fitness_anchor_summary: PlanGenerationFitnessAnchorSummary | null;
   created_at: string;
   updated_at: string;
 };
@@ -597,6 +598,25 @@ export type PlanGenerationTaperSummary = {
   end_week: number | null;
   race_week_volume_km: number;
   peak_to_race_week_reduction_percent: number;
+};
+
+export type PlanGenerationFitnessAnchorRecencyBucket =
+  | "0_14_days"
+  | "15_28_days"
+  | "29_42_days";
+
+export type PlanGenerationFitnessAnchorClassification =
+  | "race_time_trial"
+  | "possible_near_max"
+  | "hard_workout";
+
+export type PlanGenerationFitnessAnchorSummary = {
+  workout_id: string;
+  workout_date: string;
+  classification: PlanGenerationFitnessAnchorClassification;
+  recency_bucket: PlanGenerationFitnessAnchorRecencyBucket;
+  score: number;
+  recency_weighting_changed_selection: boolean;
 };
 
 export type PlannedWorkout = {

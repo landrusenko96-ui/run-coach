@@ -710,6 +710,48 @@ describe("generateTrainingPlan", () => {
     assert.equal(trainingPlan.peak_summary.volume_km, maxWeeklyVolume);
     assert.ok(trainingPlan.taper_summary.taper_weeks > 0);
     assert.ok(trainingPlan.taper_summary.race_week_volume_km > 0);
+    assert.equal(trainingPlan.fitness_anchor_summary, null);
+  });
+
+  it("records selected fitness-anchor recency metadata on generated plans", () => {
+    const generatedPlan = generateTrainingPlan(
+      makeProfile({
+        threshold_pace_sec_per_km: null,
+        max_heart_rate: 190,
+      }),
+      baseRaceGoal,
+      {
+        startDate: "2030-05-06",
+        recentHistory: makeRecentHistory([35, 36, 37, 38, 39, 40]),
+        recentHistoryWorkouts: [
+          makeLoggedWorkout({
+            id: "recent-near-max",
+            workout_date: "2030-04-01",
+            distance_km: 10,
+            avg_pace_sec_per_km: 300,
+            rpe: 9,
+            notes: "near max effort",
+          }),
+          makeLoggedWorkout({
+            id: "old-near-max",
+            workout_date: "2030-03-07",
+            distance_km: 10,
+            avg_pace_sec_per_km: 295,
+            rpe: 9,
+            notes: "near max effort",
+          }),
+        ],
+      },
+    );
+
+    assert.deepEqual(generatedPlan.trainingPlan.fitness_anchor_summary, {
+      workout_id: "recent-near-max",
+      workout_date: "2030-04-01",
+      classification: "possible_near_max",
+      recency_bucket: "0_14_days",
+      score: 0.58,
+      recency_weighting_changed_selection: true,
+    });
   });
 
   it("records weekly intensity distribution metadata and keeps work inside weekly caps", () => {

@@ -30,6 +30,7 @@ import type {
   GeneratedTrainingPlan,
   LoggedWorkout,
   PlanGenerationFeasibilityRating,
+  PlanGenerationFitnessAnchorSummary,
   PlanGenerationFitnessConfidence,
   PlanGenerationPeakSummary,
   PlanGenerationPhaseLabel,
@@ -152,6 +153,7 @@ type DerivedMetrics = {
   bridgeRacePaceSecPerKm: number;
   feasibilityRating: GoalFeasibilityRating;
   fitnessConfidence: FitnessConfidence;
+  fitnessAnchorSummary: PlanGenerationFitnessAnchorSummary | null;
   taperWeeks: number;
   cutbackIntervalWeeks: number;
   weeklyIncreaseCap: number;
@@ -348,6 +350,7 @@ export function generateTrainingPlan(
       weekly_summaries: generationMetadata.weekly_summaries,
       peak_summary: generationMetadata.peak_summary,
       taper_summary: generationMetadata.taper_summary,
+      fitness_anchor_summary: generationMetadata.fitness_anchor_summary,
       generated_by: "rule_based_v1",
     },
     plannedWorkouts,
@@ -826,6 +829,7 @@ function deriveMetrics(input: {
     ),
     feasibilityRating,
     fitnessConfidence,
+    fitnessAnchorSummary: input.input.history.fitnessAnchorSummary,
     taperWeeks,
     cutbackIntervalWeeks,
     weeklyIncreaseCap,
@@ -3774,6 +3778,7 @@ function buildPlanGenerationMetadata(input: {
   | "weekly_summaries"
   | "peak_summary"
   | "taper_summary"
+  | "fitness_anchor_summary"
 > {
   return {
     generator_version: "rule_based_v1",
@@ -3791,6 +3796,7 @@ function buildPlanGenerationMetadata(input: {
     })),
     peak_summary: buildPeakSummary(input.weekPlans),
     taper_summary: buildTaperSummary(input.weekPlans),
+    fitness_anchor_summary: input.metrics.fitnessAnchorSummary,
   };
 }
 

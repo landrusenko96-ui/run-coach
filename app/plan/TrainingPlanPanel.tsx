@@ -759,6 +759,7 @@ function PlanGenerationMetadataCard({ plan }: { plan: TrainingPlan }) {
   const weeklySummaries = plan.weekly_summaries ?? [];
   const peakSummary = plan.peak_summary ?? null;
   const taperSummary = plan.taper_summary ?? null;
+  const fitnessAnchorSummary = plan.fitness_anchor_summary ?? null;
   const generationWarnings = plan.generation_warnings ?? [];
   const generationAssumptions = plan.generation_assumptions ?? [];
 
@@ -818,6 +819,16 @@ function PlanGenerationMetadataCard({ plan }: { plan: TrainingPlan }) {
                   taperSummary.start_week,
                   taperSummary.end_week,
                 )}; race week ${taperSummary.race_week_volume_km} km; ${taperSummary.peak_to_race_week_reduction_percent}% reduction`
+              : "Not recorded"}
+          </dd>
+        </div>
+        <div className="rounded-md border border-slate-200 p-3">
+          <dt className="font-medium text-slate-700">Fitness anchor</dt>
+          <dd className="mt-1 text-slate-600">
+            {fitnessAnchorSummary
+              ? `${fitnessAnchorSummary.workout_date}: ${formatLabel(
+                  fitnessAnchorSummary.classification,
+                )}, ${formatLabel(fitnessAnchorSummary.recency_bucket)}`
               : "Not recorded"}
           </dd>
         </div>

@@ -610,6 +610,8 @@ export async function POST(request: Request) {
         weekly_summaries: generatedPlan.trainingPlan.weekly_summaries,
         peak_summary: generatedPlan.trainingPlan.peak_summary,
         taper_summary: generatedPlan.trainingPlan.taper_summary,
+        fitness_anchor_summary:
+          generatedPlan.trainingPlan.fitness_anchor_summary,
       },
       dbOptions,
     );

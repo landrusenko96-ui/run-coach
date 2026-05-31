@@ -444,13 +444,37 @@ Durability affects:
 Threshold pace source priority:
 
 1. saved threshold pace;
-2. race/time-trial anchor;
-3. near-max effort anchor;
-4. hard-workout anchor;
+2. recency-weighted race/time-trial, near-max, or hard-workout anchor;
 5. easy-pace estimate;
 6. missing.
 
-Anchor adjustments:
+Performance anchors are scored only inside the same 42-day history window used
+for plan history. Weekly load, median load, consistency, recent ramp, injury
+signals, availability, and terrain access are not recency-weighted.
+
+Anchor scoring uses:
+
+```text
+anchor_score =
+  effort_quality_score
+  × source_quality_score
+  × recency_weight
+  × data_confidence_score
+```
+
+Recency weights:
+
+| Anchor age | Weight |
+|---:|---:|
+| 0-14 days | 1.00 |
+| 15-28 days | 0.85 |
+| 29-42 days | 0.70 |
+
+Effort quality keeps race/time-trial evidence strongest, then near-max, then
+hard workout. Controlled and easy runs can support fallback pace context but do
+not become max anchors just because they are recent.
+
+Anchor conversions:
 
 - race/time-trial pace is converted to threshold with a small slowdown;
 - near-max effort receives a larger adjustment;
@@ -458,6 +482,10 @@ Anchor adjustments:
 - easy pace estimates threshold at roughly 88% of easy pace speed;
 - if saved easy pace is missing but easy/controlled recent workouts exist,
   median recent easy/controlled pace can support an easy-pace estimate.
+
+Generated plan metadata stores the selected anchor date, classification,
+recency bucket, anchor score, and whether recency weighting changed the selected
+anchor.
 
 Fitness confidence:
 
@@ -985,6 +1013,7 @@ Structured patterns:
 - weekly summaries;
 - peak summary;
 - taper summary;
+- fitness anchor summary;
 - `generated_by = rule_based_v1`.
 
 `planned_workouts` receives:

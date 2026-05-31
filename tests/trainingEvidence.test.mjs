@@ -488,6 +488,137 @@ describe("training evidence analyzer", () => {
     assert.equal(evidence.powerDataAvailability, "most");
   });
 
+  it("uses recency weighting so a 10-day near-max anchor beats a similar 35-day one", () => {
+    const evidence = analyzeTrainingEvidence({
+      runnerProfile: makeProfile({ threshold_pace_sec_per_km: null }),
+      raceGoal: makeRaceGoal(),
+      selectedRunningDaysPerWeek: 4,
+      recentHistory: makeWeeks([35, 36, 37, 38, 39, 40]),
+      recentHistoryWorkouts: [
+        makeWorkout({
+          id: "old-near-max",
+          workout_date: "2030-03-07",
+          distance_km: 10,
+          avg_pace_sec_per_km: 295,
+          rpe: 9,
+          notes: "near max effort",
+        }),
+        makeWorkout({
+          id: "recent-near-max",
+          workout_date: "2030-04-01",
+          distance_km: 10,
+          avg_pace_sec_per_km: 300,
+          rpe: 9,
+          notes: "near max effort",
+        }),
+      ],
+    });
+
+    assert.equal(evidence.fitnessAnchorWorkoutId, "recent-near-max");
+    assert.equal(evidence.thresholdEstimateSource, "near_max_effort");
+    assert.equal(evidence.thresholdEstimateSecPerKm, 312);
+    assert.equal(evidence.fitnessAnchorSummary?.recency_bucket, "0_14_days");
+    assert.equal(
+      evidence.fitnessAnchorSummary?.recency_weighting_changed_selection,
+      true,
+    );
+  });
+
+  it("keeps a 35-day race/time-trial anchor ahead of a 10-day controlled run", () => {
+    const evidence = analyzeTrainingEvidence({
+      runnerProfile: makeProfile({ threshold_pace_sec_per_km: null }),
+      raceGoal: makeRaceGoal(),
+      selectedRunningDaysPerWeek: 4,
+      recentHistory: makeWeeks([35, 36, 37, 38, 39, 40]),
+      recentHistoryWorkouts: [
+        makeWorkout({
+          id: "old-race",
+          workout_date: "2030-03-07",
+          distance_km: 10,
+          avg_pace_sec_per_km: 300,
+          rpe: 9,
+          notes: "10K race effort",
+        }),
+        makeWorkout({
+          id: "recent-controlled",
+          workout_date: "2030-04-01",
+          distance_km: 10,
+          avg_pace_sec_per_km: 290,
+          rpe: 5,
+          notes: "controlled steady run",
+        }),
+      ],
+    });
+
+    assert.equal(evidence.fitnessAnchorWorkoutId, "old-race");
+    assert.equal(evidence.thresholdEstimateSource, "race_time_trial");
+    assert.equal(evidence.fitnessAnchorSummary?.classification, "race_time_trial");
+    assert.equal(evidence.fitnessAnchorSummary?.recency_bucket, "29_42_days");
+  });
+
+  it("does not make a recent fast easy run a max anchor because of recency", () => {
+    const evidence = analyzeTrainingEvidence({
+      runnerProfile: makeProfile({ threshold_pace_sec_per_km: null }),
+      raceGoal: makeRaceGoal(),
+      selectedRunningDaysPerWeek: 4,
+      recentHistory: makeWeeks([35, 36, 37, 38, 39, 40]),
+      recentHistoryWorkouts: [
+        makeWorkout({
+          id: "recent-fast-easy",
+          workout_date: "2030-04-01",
+          source: "strava",
+          source_activity_id: "activity-fast-easy",
+          distance_km: 10,
+          avg_pace_sec_per_km: 290,
+          rpe: null,
+          notes: null,
+        }),
+      ],
+      stravaActivityEvidence: [
+        makeStravaEvidence({
+          stravaActivityId: "activity-fast-easy",
+          classificationHint: "easy_non_limit",
+        }),
+      ],
+    });
+
+    assert.equal(evidence.fastestRunUsedAsFitnessAnchor, false);
+    assert.equal(evidence.thresholdEstimateSource, "easy_pace_estimate");
+    assert.equal(evidence.fitnessAnchorSummary, null);
+  });
+
+  it("does not downgrade from an older near-max anchor for a recent worse controlled run", () => {
+    const evidence = analyzeTrainingEvidence({
+      runnerProfile: makeProfile({ threshold_pace_sec_per_km: null }),
+      raceGoal: makeRaceGoal(),
+      selectedRunningDaysPerWeek: 4,
+      recentHistory: makeWeeks([35, 36, 37, 38, 39, 40]),
+      recentHistoryWorkouts: [
+        makeWorkout({
+          id: "old-near-max",
+          workout_date: "2030-03-07",
+          distance_km: 10,
+          avg_pace_sec_per_km: 300,
+          rpe: 9,
+          notes: "near max effort",
+        }),
+        makeWorkout({
+          id: "recent-controlled",
+          workout_date: "2030-04-01",
+          distance_km: 10,
+          avg_pace_sec_per_km: 360,
+          rpe: 5,
+          notes: "controlled run on hills",
+        }),
+      ],
+    });
+
+    assert.equal(evidence.fitnessAnchorWorkoutId, "old-near-max");
+    assert.equal(evidence.thresholdEstimateSource, "near_max_effort");
+    assert.equal(evidence.thresholdEstimateSecPerKm, 312);
+    assert.equal(evidence.fitnessAnchorSummary?.recency_bucket, "29_42_days");
+  });
+
   it("uses Strava HR, power, and elevation evidence as support when logged fields are sparse", () => {
     const evidence = analyzeTrainingEvidence({
       runnerProfile: makeProfile(),

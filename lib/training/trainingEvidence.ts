@@ -1,5 +1,7 @@
 import type {
   LoggedWorkout,
+  PlanGenerationFitnessAnchorRecencyBucket,
+  PlanGenerationFitnessAnchorSummary,
   RaceDistance,
   RaceGoal,
   RecentTrainingWeekInput,
@@ -88,6 +90,7 @@ export type TrainingEvidence = {
   fitnessAnchorWorkoutId: string | null;
   fitnessAnchorDistanceKm: number | null;
   fitnessAnchorDurationSec: number | null;
+  fitnessAnchorSummary: PlanGenerationFitnessAnchorSummary | null;
   thresholdEstimateSecPerKm: number | null;
   thresholdEstimateSource: ThresholdEstimateSource;
   fitnessConfidence: TrainingEvidenceConfidence;
@@ -104,6 +107,23 @@ type AnalyzeTrainingEvidenceInput = {
   recentHistoryWorkouts?: LoggedWorkout[];
   stravaActivityEvidence?: StravaActivityEvidence[];
   evidenceWarnings?: string[];
+};
+
+type FitnessAnchorCandidate = {
+  workout: LoggedWorkout;
+  classification: WorkoutEffortClassification;
+  source: Exclude<
+    ThresholdEstimateSource,
+    "saved_threshold" | "easy_pace_estimate" | "missing"
+  >;
+  multiplier: number;
+  recencyBucket: PlanGenerationFitnessAnchorRecencyBucket;
+  recencyWeight: number;
+  effortQualityScore: number;
+  sourceQualityScore: number;
+  dataConfidenceScore: number;
+  weightedScore: number;
+  unweightedScore: number;
 };
 
 const distanceKmByRace: Record<RaceDistance, number> = {
@@ -141,10 +161,16 @@ export function analyzeTrainingEvidence(
     workouts: filteredWorkouts,
     stravaEvidenceByActivityId,
   });
+  const anchorReferenceDate = getFitnessAnchorReferenceDate({
+    sixWeekHistory,
+    workouts: filteredWorkouts,
+  });
   const thresholdEstimate = estimateThresholdPace({
     runnerProfile: input.runnerProfile,
     effortClassifications,
     workouts: filteredWorkouts,
+    stravaEvidenceByActivityId,
+    anchorReferenceDate,
   });
   const fitnessConfidence = getFitnessConfidence({
     runnerProfile: input.runnerProfile,
@@ -191,6 +217,7 @@ export function analyzeTrainingEvidence(
     durabilityMetrics,
     thresholdEstimateSource: thresholdEstimate.source,
     fitnessConfidence,
+    fitnessAnchorSummary: thresholdEstimate.anchorSummary,
     fastestWorkout,
     fastestRunUsedAsFitnessAnchor,
     stravaEvidenceActivityCount: input.stravaActivityEvidence?.length ?? 0,
@@ -212,6 +239,7 @@ export function analyzeTrainingEvidence(
     fitnessAnchorWorkoutId: thresholdEstimate.anchorWorkoutId,
     fitnessAnchorDistanceKm: thresholdAnchorWorkout?.distance_km ?? null,
     fitnessAnchorDurationSec: thresholdAnchorWorkout?.duration_sec ?? null,
+    fitnessAnchorSummary: thresholdEstimate.anchorSummary,
     thresholdEstimateSecPerKm: thresholdEstimate.secPerKm,
     thresholdEstimateSource: thresholdEstimate.source,
     fitnessConfidence,
@@ -602,58 +630,53 @@ function estimateThresholdPace(input: {
   runnerProfile: RunnerProfile;
   effortClassifications: WorkoutEffortClassification[];
   workouts: LoggedWorkout[];
+  stravaEvidenceByActivityId: Map<string, StravaActivityEvidence>;
+  anchorReferenceDate: string | null;
 }): {
   secPerKm: number | null;
   source: ThresholdEstimateSource;
   anchorWorkoutId: string | null;
+  anchorSummary: PlanGenerationFitnessAnchorSummary | null;
 } {
   if (input.runnerProfile.threshold_pace_sec_per_km !== null) {
     return {
       secPerKm: input.runnerProfile.threshold_pace_sec_per_km,
       source: "saved_threshold",
       anchorWorkoutId: null,
+      anchorSummary: null,
     };
   }
 
-  const raceTimeTrialAnchor = getFastestWorkoutByQuality(
-    input.workouts,
-    input.effortClassifications,
-    "race_time_trial",
-  );
+  const anchorSelection = selectFitnessAnchor({
+    workouts: input.workouts,
+    effortClassifications: input.effortClassifications,
+    stravaEvidenceByActivityId: input.stravaEvidenceByActivityId,
+    anchorReferenceDate: input.anchorReferenceDate,
+  });
 
-  if (raceTimeTrialAnchor?.avg_pace_sec_per_km) {
+  if (
+    anchorSelection.selected &&
+    anchorSelection.selected.workout.avg_pace_sec_per_km !== null
+  ) {
+    const selected = anchorSelection.selected;
+    const selectedPaceSecPerKm = selected.workout.avg_pace_sec_per_km ?? 0;
+
     return {
-      secPerKm: Math.round(raceTimeTrialAnchor.avg_pace_sec_per_km * 1.02),
-      source: "race_time_trial",
-      anchorWorkoutId: raceTimeTrialAnchor.id,
-    };
-  }
-
-  const nearMaxAnchor = getFastestWorkoutByQuality(
-    input.workouts,
-    input.effortClassifications,
-    "possible_near_max",
-  );
-
-  if (nearMaxAnchor?.avg_pace_sec_per_km) {
-    return {
-      secPerKm: Math.round(nearMaxAnchor.avg_pace_sec_per_km * 1.04),
-      source: "near_max_effort",
-      anchorWorkoutId: nearMaxAnchor.id,
-    };
-  }
-
-  const hardAnchor = getFastestWorkoutByQuality(
-    input.workouts,
-    input.effortClassifications,
-    "hard_workout",
-  );
-
-  if (hardAnchor?.avg_pace_sec_per_km) {
-    return {
-      secPerKm: Math.round(hardAnchor.avg_pace_sec_per_km * 1.08),
-      source: "hard_workout",
-      anchorWorkoutId: hardAnchor.id,
+      secPerKm: Math.round(
+        selectedPaceSecPerKm * selected.multiplier,
+      ),
+      source: selected.source,
+      anchorWorkoutId: selected.workout.id,
+      anchorSummary: {
+        workout_id: selected.workout.id,
+        workout_date: selected.workout.workout_date,
+        classification: selected.classification.quality as
+          PlanGenerationFitnessAnchorSummary["classification"],
+        recency_bucket: selected.recencyBucket,
+        score: selected.weightedScore,
+        recency_weighting_changed_selection:
+          anchorSelection.recencyWeightingChangedSelection,
+      },
     };
   }
 
@@ -662,6 +685,7 @@ function estimateThresholdPace(input: {
       secPerKm: Math.round(input.runnerProfile.easy_pace_sec_per_km * 0.88),
       source: "easy_pace_estimate",
       anchorWorkoutId: null,
+      anchorSummary: null,
     };
   }
 
@@ -675,6 +699,7 @@ function estimateThresholdPace(input: {
       secPerKm: Math.round(easyPaceFromHistory * 0.9),
       source: "easy_pace_estimate",
       anchorWorkoutId: null,
+      anchorSummary: null,
     };
   }
 
@@ -682,6 +707,7 @@ function estimateThresholdPace(input: {
     secPerKm: null,
     source: "missing",
     anchorWorkoutId: null,
+    anchorSummary: null,
   };
 }
 
@@ -755,6 +781,7 @@ function addEvidenceMessages(input: {
   durabilityMetrics: ReturnType<typeof buildDurabilityMetrics>;
   thresholdEstimateSource: ThresholdEstimateSource;
   fitnessConfidence: TrainingEvidenceConfidence;
+  fitnessAnchorSummary: PlanGenerationFitnessAnchorSummary | null;
   fastestWorkout: LoggedWorkout | null;
   fastestRunUsedAsFitnessAnchor: boolean;
   stravaEvidenceActivityCount: number;
@@ -790,19 +817,25 @@ function addEvidenceMessages(input: {
 
   if (input.thresholdEstimateSource === "near_max_effort") {
     input.assumptions.push(
-      "A recent near-max effort is used as a cautious fitness anchor because effort evidence supports it.",
+      "A near-max effort is used as a cautious fitness anchor because effort evidence supports it.",
     );
   }
 
   if (input.thresholdEstimateSource === "race_time_trial") {
     input.assumptions.push(
-      "A recent race or time-trial effort is used as the strongest current fitness anchor because effort evidence supports it.",
+      "A race or time-trial effort is used as the strongest current fitness anchor because effort evidence supports it.",
     );
   }
 
   if (input.thresholdEstimateSource === "hard_workout") {
     input.assumptions.push(
-      "A recent hard workout is used only as a cautious fitness anchor because no saved threshold pace exists.",
+      "A hard workout is used only as a cautious fitness anchor because no saved threshold pace exists.",
+    );
+  }
+
+  if (input.fitnessAnchorSummary?.recency_weighting_changed_selection) {
+    input.assumptions.push(
+      "Fitness-anchor recency weighting changed the selected current-fitness anchor.",
     );
   }
 
@@ -995,6 +1028,296 @@ function getMatchedStravaEvidenceItems(input: {
   return evidenceItems;
 }
 
+function getFitnessAnchorReferenceDate(input: {
+  sixWeekHistory: RecentTrainingWeekInput[] | null;
+  workouts: LoggedWorkout[];
+}): string | null {
+  if (input.sixWeekHistory && input.sixWeekHistory.length > 0) {
+    return input.sixWeekHistory[input.sixWeekHistory.length - 1].week_end_date;
+  }
+
+  return input.workouts.reduce<string | null>(
+    (latestDate, workout) =>
+      latestDate === null || workout.workout_date > latestDate
+        ? workout.workout_date
+        : latestDate,
+    null,
+  );
+}
+
+function selectFitnessAnchor(input: {
+  workouts: LoggedWorkout[];
+  effortClassifications: WorkoutEffortClassification[];
+  stravaEvidenceByActivityId: Map<string, StravaActivityEvidence>;
+  anchorReferenceDate: string | null;
+}): {
+  selected: FitnessAnchorCandidate | null;
+  recencyWeightingChangedSelection: boolean;
+} {
+  const candidates = buildFitnessAnchorCandidates(input);
+  const selected = getBestFitnessAnchorCandidate(candidates, true);
+  const unweightedSelected = getBestFitnessAnchorCandidate(candidates, false);
+
+  return {
+    selected,
+    recencyWeightingChangedSelection:
+      Boolean(selected && unweightedSelected) &&
+      selected?.workout.id !== unweightedSelected?.workout.id,
+  };
+}
+
+function buildFitnessAnchorCandidates(input: {
+  workouts: LoggedWorkout[];
+  effortClassifications: WorkoutEffortClassification[];
+  stravaEvidenceByActivityId: Map<string, StravaActivityEvidence>;
+  anchorReferenceDate: string | null;
+}): FitnessAnchorCandidate[] {
+  const workoutsById = new Map(
+    input.workouts.map((workout) => [workout.id, workout]),
+  );
+  const candidates: FitnessAnchorCandidate[] = [];
+
+  for (const classification of input.effortClassifications) {
+    const workout = workoutsById.get(classification.loggedWorkoutId) ?? null;
+    const anchorSource = getThresholdSourceForAnchorQuality(classification.quality);
+
+    if (
+      !workout ||
+      !anchorSource ||
+      workout.avg_pace_sec_per_km === null ||
+      !isLongEnoughForFitnessAnchor(workout)
+    ) {
+      continue;
+    }
+
+    const stravaEvidence = getMatchingStravaEvidence(
+      workout,
+      input.stravaEvidenceByActivityId,
+    );
+    const recency = getFitnessAnchorRecency({
+      workoutDate: workout.workout_date,
+      referenceDate: input.anchorReferenceDate,
+    });
+    const effortQualityScore = getEffortQualityScore(classification.quality);
+    const sourceQualityScore = getSourceQualityScore({
+      workout,
+      classification,
+      stravaEvidence,
+    });
+    const dataConfidenceScore = getDataConfidenceScore({
+      workout,
+      stravaEvidence,
+    });
+    const unweightedScore = roundToHundredth(
+      effortQualityScore * sourceQualityScore * dataConfidenceScore,
+    );
+    const weightedScore = roundToHundredth(
+      unweightedScore * recency.weight,
+    );
+
+    candidates.push({
+      workout,
+      classification,
+      source: anchorSource.source,
+      multiplier: anchorSource.multiplier,
+      recencyBucket: recency.bucket,
+      recencyWeight: recency.weight,
+      effortQualityScore,
+      sourceQualityScore,
+      dataConfidenceScore,
+      weightedScore,
+      unweightedScore,
+    });
+  }
+
+  return candidates;
+}
+
+function getBestFitnessAnchorCandidate(
+  candidates: FitnessAnchorCandidate[],
+  useRecencyWeight: boolean,
+): FitnessAnchorCandidate | null {
+  return candidates.reduce<FitnessAnchorCandidate | null>((best, candidate) => {
+    if (!best) {
+      return candidate;
+    }
+
+    return compareFitnessAnchorCandidates(
+      candidate,
+      best,
+      useRecencyWeight,
+    ) > 0
+      ? candidate
+      : best;
+  }, null);
+}
+
+function compareFitnessAnchorCandidates(
+  left: FitnessAnchorCandidate,
+  right: FitnessAnchorCandidate,
+  useRecencyWeight: boolean,
+): number {
+  const leftScore = useRecencyWeight ? left.weightedScore : left.unweightedScore;
+  const rightScore = useRecencyWeight ? right.weightedScore : right.unweightedScore;
+
+  if (leftScore !== rightScore) {
+    return leftScore - rightScore;
+  }
+
+  const qualityDifference =
+    getEffortQualityScore(left.classification.quality) -
+    getEffortQualityScore(right.classification.quality);
+
+  if (qualityDifference !== 0) {
+    return qualityDifference;
+  }
+
+  const leftPace = left.workout.avg_pace_sec_per_km ?? Number.MAX_SAFE_INTEGER;
+  const rightPace = right.workout.avg_pace_sec_per_km ?? Number.MAX_SAFE_INTEGER;
+
+  if (leftPace !== rightPace) {
+    return rightPace - leftPace;
+  }
+
+  if (left.recencyWeight !== right.recencyWeight) {
+    return left.recencyWeight - right.recencyWeight;
+  }
+
+  return left.workout.workout_date.localeCompare(right.workout.workout_date);
+}
+
+function getThresholdSourceForAnchorQuality(
+  quality: EffortQuality,
+): { source: FitnessAnchorCandidate["source"]; multiplier: number } | null {
+  if (quality === "race_time_trial") {
+    return { source: "race_time_trial", multiplier: 1.02 };
+  }
+
+  if (quality === "possible_near_max") {
+    return { source: "near_max_effort", multiplier: 1.04 };
+  }
+
+  if (quality === "hard_workout") {
+    return { source: "hard_workout", multiplier: 1.08 };
+  }
+
+  return null;
+}
+
+function getFitnessAnchorRecency(input: {
+  workoutDate: string;
+  referenceDate: string | null;
+}): {
+  bucket: PlanGenerationFitnessAnchorRecencyBucket;
+  weight: number;
+} {
+  const ageDays =
+    input.referenceDate !== null
+      ? Math.max(0, getDateDiffDays(input.workoutDate, input.referenceDate))
+      : 0;
+
+  if (ageDays <= 14) {
+    return { bucket: "0_14_days", weight: 1 };
+  }
+
+  if (ageDays <= 28) {
+    return { bucket: "15_28_days", weight: 0.85 };
+  }
+
+  return { bucket: "29_42_days", weight: 0.7 };
+}
+
+function getEffortQualityScore(quality: EffortQuality): number {
+  if (quality === "race_time_trial") {
+    return 1;
+  }
+
+  if (quality === "possible_near_max") {
+    return 0.88;
+  }
+
+  if (quality === "hard_workout") {
+    return 0.74;
+  }
+
+  if (quality === "controlled") {
+    return 0.52;
+  }
+
+  return 0.2;
+}
+
+function getSourceQualityScore(input: {
+  workout: LoggedWorkout;
+  classification: WorkoutEffortClassification;
+  stravaEvidence: StravaActivityEvidence | null;
+}): number {
+  if (
+    input.classification.quality === "race_time_trial" &&
+    input.classification.evidence.some((evidence) =>
+      evidence.includes("race/time-trial effort signal"),
+    )
+  ) {
+    return 1;
+  }
+
+  if (input.stravaEvidence?.hasDetail && input.stravaEvidence.hasStreams) {
+    return 0.95;
+  }
+
+  if (input.stravaEvidence?.hasDetail || input.stravaEvidence?.hasStreams) {
+    return 0.9;
+  }
+
+  if (input.workout.source === "strava" || input.stravaEvidence) {
+    return 0.82;
+  }
+
+  if (input.classification.evidence.length > 0) {
+    return 0.78;
+  }
+
+  return 0.7;
+}
+
+function getDataConfidenceScore(input: {
+  workout: LoggedWorkout;
+  stravaEvidence: StravaActivityEvidence | null;
+}): number {
+  let score = 0.85;
+
+  if (
+    input.workout.avg_heart_rate !== null ||
+    input.workout.max_heart_rate !== null ||
+    input.stravaEvidence?.hasHeartRateStream
+  ) {
+    score += 0.08;
+  }
+
+  if (input.stravaEvidence?.hasPowerStream) {
+    score += 0.08;
+  }
+
+  if (
+    input.stravaEvidence?.paceFadePercent != null ||
+    input.stravaEvidence?.heartRateDriftPercent != null ||
+    input.stravaEvidence?.negativeSplit != null ||
+    input.stravaEvidence?.splitPaceVariationPercent != null
+  ) {
+    score += 0.08;
+  }
+
+  if (
+    (input.stravaEvidence?.prCount ?? 0) > 0 ||
+    (input.stravaEvidence?.bestEffortCount ?? 0) > 0 ||
+    (input.stravaEvidence?.achievementCount ?? 0) > 0
+  ) {
+    score += 0.1;
+  }
+
+  return roundToHundredth(clamp(score, 0.85, 1.15));
+}
+
 function getDurabilityTrend(input: {
   maxLongRunShare6w: number | null;
   paceFadeValues: number[];
@@ -1093,27 +1416,6 @@ function getFastestWorkout(workouts: LoggedWorkout[]): LoggedWorkout | null {
   }, null);
 }
 
-function getFastestWorkoutByQuality(
-  workouts: LoggedWorkout[],
-  classifications: WorkoutEffortClassification[],
-  quality: EffortQuality,
-): LoggedWorkout | null {
-  const matchingWorkoutIds = new Set(
-    classifications
-      .filter((classification) => classification.quality === quality)
-      .map((classification) => classification.loggedWorkoutId),
-  );
-
-  return getFastestWorkout(
-    workouts.filter(
-      (workout) =>
-        matchingWorkoutIds.has(workout.id) &&
-        workout.avg_pace_sec_per_km !== null &&
-        isLongEnoughForFitnessAnchor(workout),
-    ),
-  );
-}
-
 function getMedianPaceForQualities(
   classifications: WorkoutEffortClassification[],
   qualities: EffortQuality[],
@@ -1162,6 +1464,21 @@ function hasHardWorkoutNote(notes: string): boolean {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
+}
+
+function getDateDiffDays(startDateText: string, endDateText: string): number {
+  const millisecondsPerDay = 24 * 60 * 60 * 1000;
+
+  return Math.round(
+    (parseDateOnly(endDateText).getTime() - parseDateOnly(startDateText).getTime()) /
+      millisecondsPerDay,
+  );
+}
+
+function parseDateOnly(dateText: string): Date {
+  const [year, month, day] = dateText.split("-").map(Number);
+
+  return new Date(year, month - 1, day);
 }
 
 function roundDistance(distanceKm: number): number {
