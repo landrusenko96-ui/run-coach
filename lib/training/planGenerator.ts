@@ -29,6 +29,7 @@ import type {
   GeneratedPlannedWorkout,
   GeneratedTrainingPlan,
   LoggedWorkout,
+  PlanGenerationAerobicEfficiencySummary,
   PlanGenerationFeasibilityRating,
   PlanGenerationFitnessAnchorSummary,
   PlanGenerationFitnessConfidence,
@@ -154,6 +155,7 @@ type DerivedMetrics = {
   feasibilityRating: GoalFeasibilityRating;
   fitnessConfidence: FitnessConfidence;
   fitnessAnchorSummary: PlanGenerationFitnessAnchorSummary | null;
+  aerobicEfficiencySummary: PlanGenerationAerobicEfficiencySummary;
   taperWeeks: number;
   cutbackIntervalWeeks: number;
   weeklyIncreaseCap: number;
@@ -351,6 +353,8 @@ export function generateTrainingPlan(
       peak_summary: generationMetadata.peak_summary,
       taper_summary: generationMetadata.taper_summary,
       fitness_anchor_summary: generationMetadata.fitness_anchor_summary,
+      aerobic_efficiency_summary:
+        generationMetadata.aerobic_efficiency_summary,
       generated_by: "rule_based_v1",
     },
     plannedWorkouts,
@@ -706,13 +710,15 @@ function deriveMetrics(input: {
   );
   const easySecPerKm = getEasyPace(input.input);
   const thresholdSecPerKm = getThresholdPace(input.input, easySecPerKm);
+  const raceProjectionFitnessConfidence =
+    getFitnessConfidenceBeforeAerobicEfficiency(input.input.history);
   const currentRacePaceSecPerKm = getCurrentRacePace({
     raceDistance: input.input.goal.raceType,
     thresholdSecPerKm,
     history: input.input.history,
     volumeCategory,
     frequencyCategory,
-    fitnessConfidence: input.input.history.fitnessConfidence,
+    fitnessConfidence: raceProjectionFitnessConfidence,
   });
   const goalRacePaceSecPerKm = input.input.goal.targetFinishTimeSec
     ? Math.round(
@@ -775,6 +781,7 @@ function deriveMetrics(input: {
     weightKg: input.input.athlete.weightKg,
     avgKm6w: input.input.history.avgKm6w,
     durabilityTrend: input.input.history.durabilityTrend,
+    aerobicEfficiencySummary: input.input.history.aerobicEfficiencySummary,
   });
   const peakLongRunKm = getPeakLongRunKm({
     raceDistance: input.input.goal.raceType,
@@ -830,6 +837,7 @@ function deriveMetrics(input: {
     feasibilityRating,
     fitnessConfidence,
     fitnessAnchorSummary: input.input.history.fitnessAnchorSummary,
+    aerobicEfficiencySummary: input.input.history.aerobicEfficiencySummary,
     taperWeeks,
     cutbackIntervalWeeks,
     weeklyIncreaseCap,
@@ -1158,6 +1166,12 @@ function getFitnessConfidence(input: NormalizedPlanInput): FitnessConfidence {
   return input.history.fitnessConfidence;
 }
 
+function getFitnessConfidenceBeforeAerobicEfficiency(
+  history: RecentTrainingHistory,
+): FitnessConfidence {
+  return history.aerobicEfficiencySummary.fitness_confidence_adjustment.from;
+}
+
 function getStartLoadKm(input: NormalizedPlanInput): number {
   const consistencyMultiplier = input.history.loadConsistency < 0.75 ? 0.85 : 1;
   const rampMultiplier =
@@ -1449,6 +1463,7 @@ function getWeeklyIncreaseCap(input: {
   weightKg: number | null;
   avgKm6w: number;
   durabilityTrend: RecentTrainingHistory["durabilityTrend"];
+  aerobicEfficiencySummary: PlanGenerationAerobicEfficiencySummary;
 }): number {
   const baseCaps: Record<VolumeCategory, number> = {
     low_base: isAggressivePlanMode(input.planMode) ? 0.05 : 0.04,
@@ -1495,6 +1510,24 @@ function getWeeklyIncreaseCap(input: {
     }) < 1
   ) {
     cap = Math.min(cap, 0.05);
+  }
+
+  if (
+    input.aerobicEfficiencySummary.trend === "declining" &&
+    input.aerobicEfficiencySummary.method !== "pace_only" &&
+    input.aerobicEfficiencySummary.method !== "unknown" &&
+    (input.aerobicEfficiencySummary.confidence === "medium" ||
+      input.aerobicEfficiencySummary.confidence === "high")
+  ) {
+    cap = Math.min(cap, 0.055);
+  }
+
+  if (
+    input.aerobicEfficiencySummary.fitness_confidence_adjustment.direction ===
+      "upgraded" &&
+    !isAggressivePlanMode(input.planMode)
+  ) {
+    cap = Math.min(cap + 0.005, 0.09);
   }
 
   return cap;
@@ -3779,6 +3812,7 @@ function buildPlanGenerationMetadata(input: {
   | "peak_summary"
   | "taper_summary"
   | "fitness_anchor_summary"
+  | "aerobic_efficiency_summary"
 > {
   return {
     generator_version: "rule_based_v1",
@@ -3797,6 +3831,7 @@ function buildPlanGenerationMetadata(input: {
     peak_summary: buildPeakSummary(input.weekPlans),
     taper_summary: buildTaperSummary(input.weekPlans),
     fitness_anchor_summary: input.metrics.fitnessAnchorSummary,
+    aerobic_efficiency_summary: input.metrics.aerobicEfficiencySummary,
   };
 }
 

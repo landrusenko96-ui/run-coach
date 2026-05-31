@@ -1,7 +1,13 @@
 import type {
   LoggedWorkout,
+  PlanGenerationAerobicEfficiencyBlockLabel,
+  PlanGenerationAerobicEfficiencyConfidence,
+  PlanGenerationAerobicEfficiencyMethod,
+  PlanGenerationAerobicEfficiencySummary,
+  PlanGenerationAerobicEfficiencyTrend,
   PlanGenerationFitnessAnchorRecencyBucket,
   PlanGenerationFitnessAnchorSummary,
+  PlanGenerationFitnessConfidenceAdjustment,
   RaceDistance,
   RaceGoal,
   RecentTrainingWeekInput,
@@ -91,6 +97,7 @@ export type TrainingEvidence = {
   fitnessAnchorDistanceKm: number | null;
   fitnessAnchorDurationSec: number | null;
   fitnessAnchorSummary: PlanGenerationFitnessAnchorSummary | null;
+  aerobicEfficiencySummary: PlanGenerationAerobicEfficiencySummary;
   thresholdEstimateSecPerKm: number | null;
   thresholdEstimateSource: ThresholdEstimateSource;
   fitnessConfidence: TrainingEvidenceConfidence;
@@ -126,10 +133,44 @@ type FitnessAnchorCandidate = {
   unweightedScore: number;
 };
 
+type AerobicEfficiencyCandidate = {
+  workout: LoggedWorkout;
+  block: PlanGenerationAerobicEfficiencyBlockLabel;
+  paceSecPerKm: number;
+  speedMps: number;
+  avgHeartRate: number | null;
+  avgPowerWatts: number | null;
+  hrEligible: boolean;
+  powerEligible: boolean;
+  paceEligible: boolean;
+};
+
+type AerobicEfficiencyMetricCandidate = AerobicEfficiencyCandidate & {
+  metricValue: number | null;
+  efficiency: number;
+};
+
+type AerobicEfficiencyTrendResult = Omit<
+  PlanGenerationAerobicEfficiencySummary,
+  "fitness_confidence_adjustment"
+>;
+
 const distanceKmByRace: Record<RaceDistance, number> = {
   marathon: 42.2,
   half_marathon: 21.1,
 };
+
+const aerobicEfficiencyThresholdPercent = 2.5;
+
+const aerobicEfficiencyBlocks: {
+  block: PlanGenerationAerobicEfficiencyBlockLabel;
+  minAgeDays: number;
+  maxAgeDays: number;
+}[] = [
+  { block: "29_42_days", minAgeDays: 29, maxAgeDays: 42 },
+  { block: "15_28_days", minAgeDays: 15, maxAgeDays: 28 },
+  { block: "0_14_days", minAgeDays: 0, maxAgeDays: 14 },
+];
 
 export function analyzeTrainingEvidence(
   input: AnalyzeTrainingEvidenceInput,
@@ -172,7 +213,7 @@ export function analyzeTrainingEvidence(
     stravaEvidenceByActivityId,
     anchorReferenceDate,
   });
-  const fitnessConfidence = getFitnessConfidence({
+  const baseFitnessConfidence = getFitnessConfidence({
     runnerProfile: input.runnerProfile,
     historySource: historyMetrics.source,
     completedWeeks6w: historyMetrics.completedWeeks6w,
@@ -180,6 +221,20 @@ export function analyzeTrainingEvidence(
     powerDataAvailability: durabilityMetrics.powerDataAvailability,
     thresholdEstimateSource: thresholdEstimate.source,
   });
+  const aerobicEfficiencySummary = buildAerobicEfficiencySummary({
+    runnerProfile: input.runnerProfile,
+    raceGoal: input.raceGoal,
+    workouts: filteredWorkouts,
+    effortClassifications,
+    stravaEvidenceByActivityId,
+    referenceDate: anchorReferenceDate,
+    historyMetrics,
+    durabilityMetrics,
+    thresholdEstimateSource: thresholdEstimate.source,
+    baseFitnessConfidence,
+  });
+  const fitnessConfidence =
+    aerobicEfficiencySummary.fitness_confidence_adjustment.to;
   const hardWorkoutCount6w = effortClassifications.filter(
     (classification) =>
       classification.quality === "race_time_trial" ||
@@ -218,6 +273,7 @@ export function analyzeTrainingEvidence(
     thresholdEstimateSource: thresholdEstimate.source,
     fitnessConfidence,
     fitnessAnchorSummary: thresholdEstimate.anchorSummary,
+    aerobicEfficiencySummary,
     fastestWorkout,
     fastestRunUsedAsFitnessAnchor,
     stravaEvidenceActivityCount: input.stravaActivityEvidence?.length ?? 0,
@@ -240,6 +296,7 @@ export function analyzeTrainingEvidence(
     fitnessAnchorDistanceKm: thresholdAnchorWorkout?.distance_km ?? null,
     fitnessAnchorDurationSec: thresholdAnchorWorkout?.duration_sec ?? null,
     fitnessAnchorSummary: thresholdEstimate.anchorSummary,
+    aerobicEfficiencySummary,
     thresholdEstimateSecPerKm: thresholdEstimate.secPerKm,
     thresholdEstimateSource: thresholdEstimate.source,
     fitnessConfidence,
@@ -782,6 +839,7 @@ function addEvidenceMessages(input: {
   thresholdEstimateSource: ThresholdEstimateSource;
   fitnessConfidence: TrainingEvidenceConfidence;
   fitnessAnchorSummary: PlanGenerationFitnessAnchorSummary | null;
+  aerobicEfficiencySummary: PlanGenerationAerobicEfficiencySummary;
   fastestWorkout: LoggedWorkout | null;
   fastestRunUsedAsFitnessAnchor: boolean;
   stravaEvidenceActivityCount: number;
@@ -836,6 +894,38 @@ function addEvidenceMessages(input: {
   if (input.fitnessAnchorSummary?.recency_weighting_changed_selection) {
     input.assumptions.push(
       "Fitness-anchor recency weighting changed the selected current-fitness anchor.",
+    );
+  }
+
+  if (
+    input.aerobicEfficiencySummary.fitness_confidence_adjustment.direction ===
+    "upgraded"
+  ) {
+    input.assumptions.push(
+      "Aerobic-efficiency trend modestly improves fitness confidence, but does not override durability, injury, or goal-feasibility rules.",
+    );
+  }
+
+  if (
+    input.aerobicEfficiencySummary.fitness_confidence_adjustment.direction ===
+    "downgraded"
+  ) {
+    input.warnings.push(
+      "Recent aerobic-efficiency trend is declining, so fitness confidence is reduced by one level.",
+    );
+  } else if (input.aerobicEfficiencySummary.trend === "declining") {
+    input.warnings.push(
+      "Recent aerobic-efficiency trend is declining, so progression should stay conservative.",
+    );
+  }
+
+  if (
+    (input.aerobicEfficiencySummary.trend === "noisy" ||
+      input.aerobicEfficiencySummary.trend === "unknown") &&
+    hasAggressiveGoalSignal(input.runnerProfile, input.raceGoal)
+  ) {
+    input.assumptions.push(
+      "Aerobic-efficiency trend is unclear, so aggressive progression is not increased from this signal.",
     );
   }
 
@@ -1026,6 +1116,583 @@ function getMatchedStravaEvidenceItems(input: {
   }
 
   return evidenceItems;
+}
+
+function buildAerobicEfficiencySummary(input: {
+  runnerProfile: RunnerProfile;
+  raceGoal: RaceGoal;
+  workouts: LoggedWorkout[];
+  effortClassifications: WorkoutEffortClassification[];
+  stravaEvidenceByActivityId: Map<string, StravaActivityEvidence>;
+  referenceDate: string | null;
+  historyMetrics: ReturnType<typeof buildHistoryMetricsFromWeeks> | ReturnType<typeof buildFallbackHistoryMetrics>;
+  durabilityMetrics: ReturnType<typeof buildDurabilityMetrics>;
+  thresholdEstimateSource: ThresholdEstimateSource;
+  baseFitnessConfidence: TrainingEvidenceConfidence;
+}): PlanGenerationAerobicEfficiencySummary {
+  const trendResult = buildAerobicEfficiencyTrendResult({
+    workouts: input.workouts,
+    effortClassifications: input.effortClassifications,
+    stravaEvidenceByActivityId: input.stravaEvidenceByActivityId,
+    referenceDate: input.referenceDate,
+  });
+  const fitnessConfidenceAdjustment = getAerobicEfficiencyFitnessAdjustment({
+    summary: trendResult,
+    baseFitnessConfidence: input.baseFitnessConfidence,
+    runnerProfile: input.runnerProfile,
+    raceGoal: input.raceGoal,
+    historyMetrics: input.historyMetrics,
+    durabilityMetrics: input.durabilityMetrics,
+    thresholdEstimateSource: input.thresholdEstimateSource,
+  });
+
+  return {
+    ...trendResult,
+    fitness_confidence_adjustment: fitnessConfidenceAdjustment,
+  };
+}
+
+function buildAerobicEfficiencyTrendResult(input: {
+  workouts: LoggedWorkout[];
+  effortClassifications: WorkoutEffortClassification[];
+  stravaEvidenceByActivityId: Map<string, StravaActivityEvidence>;
+  referenceDate: string | null;
+}): AerobicEfficiencyTrendResult {
+  const referenceDate = input.referenceDate;
+
+  if (!referenceDate) {
+    return buildUnknownAerobicEfficiencyTrendResult(null);
+  }
+
+  const candidates = buildAerobicEfficiencyCandidates({
+    workouts: input.workouts,
+    effortClassifications: input.effortClassifications,
+    stravaEvidenceByActivityId: input.stravaEvidenceByActivityId,
+    referenceDate,
+  });
+
+  return (
+    buildAerobicEfficiencyTrendForMethod({
+      method: "heart_rate",
+      candidates: candidates.filter((candidate) => candidate.hrEligible),
+      referenceDate,
+    }) ??
+    buildAerobicEfficiencyTrendForMethod({
+      method: "power",
+      candidates: candidates.filter((candidate) => candidate.powerEligible),
+      referenceDate,
+    }) ??
+    buildAerobicEfficiencyTrendForMethod({
+      method: "pace_only",
+      candidates: candidates.filter((candidate) => candidate.paceEligible),
+      referenceDate,
+    }) ??
+    buildUnknownAerobicEfficiencyTrendResult(referenceDate)
+  );
+}
+
+function buildAerobicEfficiencyCandidates(input: {
+  workouts: LoggedWorkout[];
+  effortClassifications: WorkoutEffortClassification[];
+  stravaEvidenceByActivityId: Map<string, StravaActivityEvidence>;
+  referenceDate: string;
+}): AerobicEfficiencyCandidate[] {
+  const classificationByWorkoutId = new Map(
+    input.effortClassifications.map((classification) => [
+      classification.loggedWorkoutId,
+      classification,
+    ]),
+  );
+  const candidates: AerobicEfficiencyCandidate[] = [];
+
+  for (const workout of input.workouts) {
+    const classification = classificationByWorkoutId.get(workout.id) ?? null;
+
+    if (
+      !classification ||
+      (classification.quality !== "easy_non_limit" &&
+        classification.quality !== "controlled")
+    ) {
+      continue;
+    }
+
+    const stravaEvidence = getMatchingStravaEvidence(
+      workout,
+      input.stravaEvidenceByActivityId,
+    );
+    const candidate = buildAerobicEfficiencyCandidate({
+      workout,
+      stravaEvidence,
+      referenceDate: input.referenceDate,
+    });
+
+    if (candidate) {
+      candidates.push(candidate);
+    }
+  }
+
+  return candidates;
+}
+
+function buildAerobicEfficiencyCandidate(input: {
+  workout: LoggedWorkout;
+  stravaEvidence: StravaActivityEvidence | null;
+  referenceDate: string;
+}): AerobicEfficiencyCandidate | null {
+  const { workout, stravaEvidence } = input;
+  const block = getAerobicEfficiencyBlock({
+    workoutDate: workout.workout_date,
+    referenceDate: input.referenceDate,
+  });
+  const distanceKm = workout.distance_km ?? stravaEvidence?.distanceKm ?? null;
+  const durationSec = workout.duration_sec ?? stravaEvidence?.durationSec ?? null;
+  const paceSecPerKm =
+    workout.avg_pace_sec_per_km ??
+    stravaEvidence?.avgPaceSecPerKm ??
+    (distanceKm !== null && durationSec !== null && distanceKm > 0
+      ? Math.round(durationSec / distanceKm)
+      : null);
+
+  if (
+    !block ||
+    distanceKm === null ||
+    durationSec === null ||
+    paceSecPerKm === null ||
+    distanceKm < 3 ||
+    durationSec < 15 * 60 ||
+    !isReliableAerobicPace(paceSecPerKm) ||
+    hasWorkoutContextSignal(workout.notes ?? "")
+  ) {
+    return null;
+  }
+
+  const avgHeartRate =
+    workout.avg_heart_rate ?? stravaEvidence?.averageHeartRate ?? null;
+  const avgPowerWatts =
+    stravaEvidence?.weightedAveragePowerWatts ??
+    stravaEvidence?.averagePowerWatts ??
+    null;
+  const elevationGainM =
+    workout.elevation_gain_m ?? stravaEvidence?.elevationGainM ?? null;
+  const isVeryHilly =
+    (elevationGainM !== null && elevationGainM / distanceKm > 20) ||
+    (stravaEvidence?.altitudeRangeM !== null &&
+      stravaEvidence?.altitudeRangeM !== undefined &&
+      stravaEvidence.altitudeRangeM > 120) ||
+    (stravaEvidence?.gradeRangePercent !== null &&
+      stravaEvidence?.gradeRangePercent !== undefined &&
+      stravaEvidence.gradeRangePercent > 8);
+  const hasValidPower = isValidAerobicPower(avgPowerWatts);
+
+  if (isVeryHilly && !hasValidPower) {
+    return null;
+  }
+
+  return {
+    workout,
+    block,
+    paceSecPerKm,
+    speedMps: 1000 / paceSecPerKm,
+    avgHeartRate,
+    avgPowerWatts,
+    hrEligible: isValidAerobicHeartRate(avgHeartRate) && !isVeryHilly,
+    powerEligible: hasValidPower,
+    paceEligible: !isVeryHilly,
+  };
+}
+
+function buildAerobicEfficiencyTrendForMethod(input: {
+  method: Exclude<PlanGenerationAerobicEfficiencyMethod, "unknown">;
+  candidates: AerobicEfficiencyCandidate[];
+  referenceDate: string;
+}): AerobicEfficiencyTrendResult | null {
+  const metricCandidates = getComparableAerobicEfficiencyCandidates(input);
+
+  if (!hasEnoughAerobicEfficiencyBlocks(metricCandidates)) {
+    return null;
+  }
+
+  const blockSummaries = buildAerobicEfficiencyBlockSummaries({
+    candidates: metricCandidates,
+    referenceDate: input.referenceDate,
+  });
+  const trend = classifyAerobicEfficiencyTrend(blockSummaries);
+
+  return {
+    trend,
+    confidence: getAerobicEfficiencyConfidence({
+      method: input.method,
+      trend,
+      blockSummaries,
+    }),
+    method: input.method,
+    block_summaries: blockSummaries,
+    recent_vs_old_percent: getAerobicEfficiencyBlockComparison(
+      blockSummaries,
+      "0_14_days",
+      "29_42_days",
+    ),
+    recent_vs_middle_percent: getAerobicEfficiencyBlockComparison(
+      blockSummaries,
+      "0_14_days",
+      "15_28_days",
+    ),
+  };
+}
+
+function getComparableAerobicEfficiencyCandidates(input: {
+  method: Exclude<PlanGenerationAerobicEfficiencyMethod, "unknown">;
+  candidates: AerobicEfficiencyCandidate[];
+}): AerobicEfficiencyMetricCandidate[] {
+  if (input.method === "pace_only") {
+    return input.candidates.map((candidate) => ({
+      ...candidate,
+      metricValue: null,
+      efficiency: candidate.speedMps,
+    }));
+  }
+
+  const metricValues = input.candidates
+    .map((candidate) =>
+      input.method === "heart_rate"
+        ? candidate.avgHeartRate
+        : candidate.avgPowerWatts,
+    )
+    .filter(isFiniteNumber)
+    .sort((a, b) => a - b);
+
+  if (metricValues.length === 0) {
+    return [];
+  }
+
+  const referenceMetric = getMedian(metricValues);
+  const tolerance =
+    input.method === "heart_rate"
+      ? Math.max(8, referenceMetric * 0.06)
+      : Math.max(20, referenceMetric * 0.1);
+
+  return input.candidates
+    .map((candidate): AerobicEfficiencyMetricCandidate | null => {
+      const metricValue =
+        input.method === "heart_rate"
+          ? candidate.avgHeartRate
+          : candidate.avgPowerWatts;
+
+      if (
+        metricValue === null ||
+        !Number.isFinite(metricValue) ||
+        Math.abs(metricValue - referenceMetric) > tolerance
+      ) {
+        return null;
+      }
+
+      return {
+        ...candidate,
+        metricValue,
+        efficiency: candidate.speedMps * (referenceMetric / metricValue),
+      };
+    })
+    .filter(
+      (candidate): candidate is AerobicEfficiencyMetricCandidate =>
+        candidate !== null,
+    );
+}
+
+function hasEnoughAerobicEfficiencyBlocks(
+  candidates: AerobicEfficiencyMetricCandidate[],
+): boolean {
+  const blocks = new Set(candidates.map((candidate) => candidate.block));
+
+  return blocks.has("0_14_days") && blocks.size >= 2;
+}
+
+function buildAerobicEfficiencyBlockSummaries(input: {
+  candidates: AerobicEfficiencyMetricCandidate[];
+  referenceDate: string;
+}): PlanGenerationAerobicEfficiencySummary["block_summaries"] {
+  return aerobicEfficiencyBlocks.map((blockDefinition) => {
+    const candidates = input.candidates.filter(
+      (candidate) => candidate.block === blockDefinition.block,
+    );
+    const efficiencies = candidates.map((candidate) => candidate.efficiency);
+    const paces = candidates.map((candidate) => candidate.paceSecPerKm);
+    const heartRates = candidates
+      .map((candidate) => candidate.avgHeartRate)
+      .filter(isFiniteNumber);
+    const powers = candidates
+      .map((candidate) => candidate.avgPowerWatts)
+      .filter(isFiniteNumber);
+
+    return {
+      block: blockDefinition.block,
+      start_date: addDaysToDateText(input.referenceDate, -blockDefinition.maxAgeDays),
+      end_date: addDaysToDateText(input.referenceDate, -blockDefinition.minAgeDays),
+      sample_count: candidates.length,
+      efficiency:
+        efficiencies.length > 0 ? roundToThousandth(mean(efficiencies)) : null,
+      avg_pace_sec_per_km: paces.length > 0 ? Math.round(mean(paces)) : null,
+      avg_heart_rate:
+        heartRates.length > 0 ? Math.round(mean(heartRates)) : null,
+      avg_power_watts: powers.length > 0 ? Math.round(mean(powers)) : null,
+    };
+  });
+}
+
+function classifyAerobicEfficiencyTrend(
+  blockSummaries: PlanGenerationAerobicEfficiencySummary["block_summaries"],
+): PlanGenerationAerobicEfficiencyTrend {
+  const oldComparison = getAerobicEfficiencyBlockComparison(
+    blockSummaries,
+    "0_14_days",
+    "29_42_days",
+  );
+  const middleComparison = getAerobicEfficiencyBlockComparison(
+    blockSummaries,
+    "0_14_days",
+    "15_28_days",
+  );
+  const oldToMiddleComparison = getAerobicEfficiencyBlockComparison(
+    blockSummaries,
+    "15_28_days",
+    "29_42_days",
+  );
+  const priorComparisons = [oldComparison, middleComparison].filter(
+    isFiniteNumber,
+  );
+
+  if (priorComparisons.length === 0) {
+    return "unknown";
+  }
+
+  if (oldComparison !== null && middleComparison !== null) {
+    if (
+      (oldComparison > aerobicEfficiencyThresholdPercent &&
+        middleComparison >= -aerobicEfficiencyThresholdPercent) ||
+      (oldToMiddleComparison !== null &&
+        oldToMiddleComparison > aerobicEfficiencyThresholdPercent &&
+        middleComparison > aerobicEfficiencyThresholdPercent)
+    ) {
+      return "improving";
+    }
+
+    if (
+      (oldComparison < -aerobicEfficiencyThresholdPercent &&
+        middleComparison < -aerobicEfficiencyThresholdPercent) ||
+      (oldToMiddleComparison !== null &&
+        oldToMiddleComparison < -aerobicEfficiencyThresholdPercent &&
+        middleComparison < -aerobicEfficiencyThresholdPercent)
+    ) {
+      return "declining";
+    }
+
+    if (
+      Math.abs(oldComparison) <= aerobicEfficiencyThresholdPercent &&
+      Math.abs(middleComparison) <= aerobicEfficiencyThresholdPercent
+    ) {
+      return "stable";
+    }
+
+    return "noisy";
+  }
+
+  const comparison = priorComparisons[0];
+
+  if (comparison > aerobicEfficiencyThresholdPercent) {
+    return "improving";
+  }
+
+  if (comparison < -aerobicEfficiencyThresholdPercent) {
+    return "declining";
+  }
+
+  return "stable";
+}
+
+function getAerobicEfficiencyConfidence(input: {
+  method: Exclude<PlanGenerationAerobicEfficiencyMethod, "unknown">;
+  trend: PlanGenerationAerobicEfficiencyTrend;
+  blockSummaries: PlanGenerationAerobicEfficiencySummary["block_summaries"];
+}): PlanGenerationAerobicEfficiencyConfidence {
+  if (input.trend === "unknown") {
+    return "unknown";
+  }
+
+  if (input.method === "pace_only") {
+    return "low";
+  }
+
+  const sampledBlocks = input.blockSummaries.filter(
+    (summary) => summary.sample_count > 0,
+  );
+  const blocksWithTwoSamples = sampledBlocks.filter(
+    (summary) => summary.sample_count >= 2,
+  );
+
+  if (
+    blocksWithTwoSamples.length >= 2 &&
+    blocksWithTwoSamples.some((summary) => summary.block === "0_14_days")
+  ) {
+    return "high";
+  }
+
+  return "medium";
+}
+
+function getAerobicEfficiencyBlockComparison(
+  blockSummaries: PlanGenerationAerobicEfficiencySummary["block_summaries"],
+  newerBlock: PlanGenerationAerobicEfficiencyBlockLabel,
+  olderBlock: PlanGenerationAerobicEfficiencyBlockLabel,
+): number | null {
+  const newer = blockSummaries.find((summary) => summary.block === newerBlock);
+  const older = blockSummaries.find((summary) => summary.block === olderBlock);
+
+  if (
+    !newer?.efficiency ||
+    !older?.efficiency ||
+    older.efficiency <= 0
+  ) {
+    return null;
+  }
+
+  return roundToTenth(((newer.efficiency - older.efficiency) / older.efficiency) * 100);
+}
+
+function buildUnknownAerobicEfficiencyTrendResult(
+  referenceDate: string | null,
+): AerobicEfficiencyTrendResult {
+  return {
+    trend: "unknown",
+    confidence: "unknown",
+    method: "unknown",
+    block_summaries: referenceDate
+      ? buildAerobicEfficiencyBlockSummaries({
+          candidates: [],
+          referenceDate,
+        })
+      : [],
+    recent_vs_old_percent: null,
+    recent_vs_middle_percent: null,
+  };
+}
+
+function getAerobicEfficiencyFitnessAdjustment(input: {
+  summary: AerobicEfficiencyTrendResult;
+  baseFitnessConfidence: TrainingEvidenceConfidence;
+  runnerProfile: RunnerProfile;
+  raceGoal: RaceGoal;
+  historyMetrics: ReturnType<typeof buildHistoryMetricsFromWeeks> | ReturnType<typeof buildFallbackHistoryMetrics>;
+  durabilityMetrics: ReturnType<typeof buildDurabilityMetrics>;
+  thresholdEstimateSource: ThresholdEstimateSource;
+}): PlanGenerationFitnessConfidenceAdjustment {
+  const noChange = (
+    reason: string | null = null,
+  ): PlanGenerationFitnessConfidenceAdjustment => ({
+    direction: "none",
+    from: input.baseFitnessConfidence,
+    to: input.baseFitnessConfidence,
+    reason,
+  });
+
+  if (
+    input.summary.method === "pace_only" ||
+    input.summary.method === "unknown" ||
+    input.summary.confidence === "low" ||
+    input.summary.confidence === "unknown"
+  ) {
+    return noChange();
+  }
+
+  if (input.summary.trend === "improving") {
+    if (
+      input.baseFitnessConfidence === "high" ||
+      !canUpgradeFitnessConfidenceFromAerobicTrend(input)
+    ) {
+      return noChange();
+    }
+
+    return {
+      direction: "upgraded",
+      from: input.baseFitnessConfidence,
+      to: upgradeFitnessConfidence(input.baseFitnessConfidence),
+      reason: "Improving HR/power-normalized aerobic efficiency with strong guardrails.",
+    };
+  }
+
+  if (input.summary.trend === "declining") {
+    if (
+      input.baseFitnessConfidence === "low" ||
+      input.thresholdEstimateSource === "race_time_trial"
+    ) {
+      return noChange();
+    }
+
+    return {
+      direction: "downgraded",
+      from: input.baseFitnessConfidence,
+      to: downgradeFitnessConfidence(input.baseFitnessConfidence),
+      reason: "Declining HR/power-normalized aerobic efficiency.",
+    };
+  }
+
+  return noChange();
+}
+
+function canUpgradeFitnessConfidenceFromAerobicTrend(input: {
+  runnerProfile: RunnerProfile;
+  raceGoal: RaceGoal;
+  historyMetrics: ReturnType<typeof buildHistoryMetricsFromWeeks> | ReturnType<typeof buildFallbackHistoryMetrics>;
+  durabilityMetrics: ReturnType<typeof buildDurabilityMetrics>;
+  thresholdEstimateSource: ThresholdEstimateSource;
+}): boolean {
+  return (
+    input.historyMetrics.completedWeeks6w >= 6 &&
+    input.historyMetrics.loadConsistency >= 0.75 &&
+    input.durabilityMetrics.durabilityTrend === "stable" &&
+    !input.runnerProfile.current_pain_or_injury &&
+    !input.runnerProfile.serious_recent_injury &&
+    input.thresholdEstimateSource !== "missing" &&
+    !hasLowTrainingBaseForRace(input.historyMetrics.avgKm6w, input.raceGoal.distance)
+  );
+}
+
+function upgradeFitnessConfidence(
+  confidence: TrainingEvidenceConfidence,
+): TrainingEvidenceConfidence {
+  if (confidence === "low") {
+    return "medium";
+  }
+
+  return "high";
+}
+
+function downgradeFitnessConfidence(
+  confidence: TrainingEvidenceConfidence,
+): TrainingEvidenceConfidence {
+  if (confidence === "high") {
+    return "medium";
+  }
+
+  return "low";
+}
+
+function hasLowTrainingBaseForRace(
+  avgKm6w: number,
+  raceDistance: RaceDistance,
+): boolean {
+  return raceDistance === "marathon" ? avgKm6w < 30 : avgKm6w < 20;
+}
+
+function getAerobicEfficiencyBlock(input: {
+  workoutDate: string;
+  referenceDate: string;
+}): PlanGenerationAerobicEfficiencyBlockLabel | null {
+  const ageDays = getDateDiffDays(input.workoutDate, input.referenceDate);
+
+  return (
+    aerobicEfficiencyBlocks.find(
+      (block) => ageDays >= block.minAgeDays && ageDays <= block.maxAgeDays,
+    )?.block ?? null
+  );
 }
 
 function getFitnessAnchorReferenceDate(input: {
@@ -1462,8 +2129,43 @@ function hasHardWorkoutNote(notes: string): boolean {
   return /\b(tempo|threshold|interval|workout|hard|progression)\b/.test(notes);
 }
 
+function hasWorkoutContextSignal(notes: string): boolean {
+  return /\b(race|time trial|tt|all out|max effort|near max|pr|pb|tempo|threshold|interval|workout|hard|progression|fartlek)\b/i.test(notes);
+}
+
+function hasAggressiveGoalSignal(
+  runnerProfile: RunnerProfile,
+  raceGoal: RaceGoal,
+): boolean {
+  return (
+    runnerProfile.training_aggressiveness === "aggressive" ||
+    runnerProfile.training_aggressiveness === "very_aggressive" ||
+    raceGoal.target_priority === "aggressive" ||
+    (raceGoal.race_priority === "A" && raceGoal.target_finish_time_sec !== null)
+  );
+}
+
+function isReliableAerobicPace(paceSecPerKm: number): boolean {
+  return Number.isFinite(paceSecPerKm) && paceSecPerKm >= 180 && paceSecPerKm <= 900;
+}
+
+function isValidAerobicHeartRate(heartRate: number | null): heartRate is number {
+  return heartRate !== null && heartRate >= 80 && heartRate <= 210;
+}
+
+function isValidAerobicPower(powerWatts: number | null): powerWatts is number {
+  return powerWatts !== null && powerWatts >= 50 && powerWatts <= 700;
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
+}
+
+function addDaysToDateText(dateText: string, days: number): string {
+  const date = parseDateOnly(dateText);
+  date.setDate(date.getDate() + days);
+
+  return formatDateOnly(date);
 }
 
 function getDateDiffDays(startDateText: string, endDateText: string): number {
@@ -1481,12 +2183,36 @@ function parseDateOnly(dateText: string): Date {
   return new Date(year, month - 1, day);
 }
 
+function formatDateOnly(date: Date): string {
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0"),
+  ].join("-");
+}
+
 function roundDistance(distanceKm: number): number {
   return Math.round(distanceKm * 10) / 10;
 }
 
 function roundToTenth(value: number): number {
   return Math.round(value * 10) / 10;
+}
+
+function roundToThousandth(value: number): number {
+  return Math.round(value * 1000) / 1000;
+}
+
+function mean(values: number[]): number {
+  return values.reduce((total, value) => total + value, 0) / values.length;
+}
+
+function getMedian(values: number[]): number {
+  const middleIndex = Math.floor(values.length / 2);
+
+  return values.length % 2 === 0
+    ? (values[middleIndex - 1] + values[middleIndex]) / 2
+    : values[middleIndex];
 }
 
 function averageOrNull(values: number[]): number | null {

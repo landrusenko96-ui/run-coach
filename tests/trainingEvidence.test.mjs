@@ -171,6 +171,50 @@ function makeStravaEvidence(overrides = {}) {
   };
 }
 
+function makeAerobicTrendWorkout(blockPrefix, index, overrides = {}) {
+  return makeWorkout({
+    id: `${blockPrefix}-${index}`,
+    workout_date: overrides.workout_date,
+    distance_km: overrides.distance_km ?? 8,
+    avg_pace_sec_per_km: overrides.avg_pace_sec_per_km ?? 360,
+    avg_heart_rate: overrides.avg_heart_rate ?? 140,
+    rpe: overrides.rpe ?? 2,
+    notes: overrides.notes ?? "easy run",
+    source: overrides.source ?? "manual",
+    source_activity_id: overrides.source_activity_id ?? null,
+    elevation_gain_m: overrides.elevation_gain_m ?? 40,
+  });
+}
+
+function makeAerobicTrendWorkouts(blockPaces) {
+  return [
+    makeAerobicTrendWorkout("old", 1, {
+      workout_date: "2030-03-01",
+      avg_pace_sec_per_km: blockPaces.old[0],
+    }),
+    makeAerobicTrendWorkout("old", 2, {
+      workout_date: "2030-03-05",
+      avg_pace_sec_per_km: blockPaces.old[1],
+    }),
+    makeAerobicTrendWorkout("middle", 1, {
+      workout_date: "2030-03-18",
+      avg_pace_sec_per_km: blockPaces.middle[0],
+    }),
+    makeAerobicTrendWorkout("middle", 2, {
+      workout_date: "2030-03-21",
+      avg_pace_sec_per_km: blockPaces.middle[1],
+    }),
+    makeAerobicTrendWorkout("recent", 1, {
+      workout_date: "2030-04-01",
+      avg_pace_sec_per_km: blockPaces.recent[0],
+    }),
+    makeAerobicTrendWorkout("recent", 2, {
+      workout_date: "2030-04-04",
+      avg_pace_sec_per_km: blockPaces.recent[1],
+    }),
+  ];
+}
+
 describe("training evidence analyzer", () => {
   it("computes six-week load metrics and recent ramp from weekly summaries", () => {
     const evidence = analyzeTrainingEvidence({
@@ -777,5 +821,169 @@ describe("training evidence analyzer", () => {
     assert.equal(evidence.heartRateDriftAvgPercent, null);
     assert.equal(evidence.negativeSplitCount6w, 0);
     assert.equal(evidence.durabilityTrend, "unknown");
+  });
+
+  it("classifies an improving aerobic-efficiency trend across three HR-comparable blocks", () => {
+    const evidence = analyzeTrainingEvidence({
+      runnerProfile: makeProfile({ threshold_pace_sec_per_km: null }),
+      raceGoal: makeRaceGoal(),
+      selectedRunningDaysPerWeek: 4,
+      recentHistory: makeWeeks([35, 36, 37, 38, 39, 40]),
+      recentHistoryWorkouts: makeAerobicTrendWorkouts({
+        old: [362, 360],
+        middle: [352, 350],
+        recent: [342, 340],
+      }),
+    });
+
+    assert.equal(evidence.aerobicEfficiencySummary.trend, "improving");
+    assert.equal(evidence.aerobicEfficiencySummary.confidence, "high");
+    assert.equal(evidence.aerobicEfficiencySummary.method, "heart_rate");
+    assert.equal(
+      evidence.aerobicEfficiencySummary.fitness_confidence_adjustment.direction,
+      "upgraded",
+    );
+    assert.equal(evidence.fitnessConfidence, "high");
+  });
+
+  it("classifies a declining aerobic-efficiency trend across three HR-comparable blocks", () => {
+    const evidence = analyzeTrainingEvidence({
+      runnerProfile: makeProfile({ threshold_pace_sec_per_km: null }),
+      raceGoal: makeRaceGoal(),
+      selectedRunningDaysPerWeek: 4,
+      recentHistory: makeWeeks([35, 36, 37, 38, 39, 40]),
+      recentHistoryWorkouts: makeAerobicTrendWorkouts({
+        old: [340, 342],
+        middle: [350, 352],
+        recent: [360, 362],
+      }),
+    });
+
+    assert.equal(evidence.aerobicEfficiencySummary.trend, "declining");
+    assert.equal(evidence.aerobicEfficiencySummary.confidence, "high");
+    assert.equal(
+      evidence.aerobicEfficiencySummary.fitness_confidence_adjustment.direction,
+      "downgraded",
+    );
+    assert.equal(evidence.fitnessConfidence, "low");
+  });
+
+  it("classifies a stable aerobic-efficiency trend across three HR-comparable blocks", () => {
+    const evidence = analyzeTrainingEvidence({
+      runnerProfile: makeProfile({ threshold_pace_sec_per_km: null }),
+      raceGoal: makeRaceGoal(),
+      selectedRunningDaysPerWeek: 4,
+      recentHistory: makeWeeks([35, 36, 37, 38, 39, 40]),
+      recentHistoryWorkouts: makeAerobicTrendWorkouts({
+        old: [360, 361],
+        middle: [358, 360],
+        recent: [359, 361],
+      }),
+    });
+
+    assert.equal(evidence.aerobicEfficiencySummary.trend, "stable");
+    assert.equal(evidence.aerobicEfficiencySummary.confidence, "high");
+    assert.equal(
+      evidence.aerobicEfficiencySummary.fitness_confidence_adjustment.direction,
+      "none",
+    );
+  });
+
+  it("classifies aerobic-efficiency trend as noisy when blocks conflict", () => {
+    const evidence = analyzeTrainingEvidence({
+      runnerProfile: makeProfile({ threshold_pace_sec_per_km: null }),
+      raceGoal: makeRaceGoal(),
+      selectedRunningDaysPerWeek: 4,
+      recentHistory: makeWeeks([35, 36, 37, 38, 39, 40]),
+      recentHistoryWorkouts: makeAerobicTrendWorkouts({
+        old: [360, 362],
+        middle: [330, 332],
+        recent: [354, 356],
+      }),
+    });
+
+    assert.equal(evidence.aerobicEfficiencySummary.trend, "noisy");
+    assert.equal(evidence.aerobicEfficiencySummary.confidence, "high");
+    assert.equal(
+      evidence.aerobicEfficiencySummary.fitness_confidence_adjustment.direction,
+      "none",
+    );
+  });
+
+  it("keeps aerobic-efficiency trend unknown with insufficient comparable easy data", () => {
+    const evidence = analyzeTrainingEvidence({
+      runnerProfile: makeProfile({ threshold_pace_sec_per_km: null }),
+      raceGoal: makeRaceGoal(),
+      selectedRunningDaysPerWeek: 4,
+      recentHistory: makeWeeks([35, 36, 37, 38, 39, 40]),
+      recentHistoryWorkouts: [
+        makeAerobicTrendWorkout("old", 1, {
+          workout_date: "2030-03-01",
+          avg_pace_sec_per_km: 360,
+        }),
+      ],
+    });
+
+    assert.equal(evidence.aerobicEfficiencySummary.trend, "unknown");
+    assert.equal(evidence.aerobicEfficiencySummary.confidence, "unknown");
+    assert.equal(evidence.aerobicEfficiencySummary.method, "unknown");
+  });
+
+  it("does not use hard workouts or races for aerobic-efficiency trend", () => {
+    const evidence = analyzeTrainingEvidence({
+      runnerProfile: makeProfile({ threshold_pace_sec_per_km: null }),
+      raceGoal: makeRaceGoal(),
+      selectedRunningDaysPerWeek: 4,
+      recentHistory: makeWeeks([35, 36, 37, 38, 39, 40]),
+      recentHistoryWorkouts: [
+        makeAerobicTrendWorkout("old", 1, {
+          workout_date: "2030-03-01",
+          avg_pace_sec_per_km: 340,
+          rpe: 9,
+          notes: "race effort",
+        }),
+        makeAerobicTrendWorkout("middle", 1, {
+          workout_date: "2030-03-18",
+          avg_pace_sec_per_km: 330,
+          rpe: 7,
+          notes: "tempo workout",
+        }),
+        makeAerobicTrendWorkout("recent", 1, {
+          workout_date: "2030-04-01",
+          avg_pace_sec_per_km: 320,
+          rpe: 9,
+          notes: "near max effort",
+        }),
+      ],
+    });
+
+    assert.equal(evidence.aerobicEfficiencySummary.trend, "unknown");
+    assert.equal(evidence.aerobicEfficiencySummary.method, "unknown");
+  });
+
+  it("uses pace-only fallback at low confidence without adjusting fitness confidence", () => {
+    const evidence = analyzeTrainingEvidence({
+      runnerProfile: makeProfile({ threshold_pace_sec_per_km: null }),
+      raceGoal: makeRaceGoal(),
+      selectedRunningDaysPerWeek: 4,
+      recentHistory: makeWeeks([35, 36, 37, 38, 39, 40]),
+      recentHistoryWorkouts: makeAerobicTrendWorkouts({
+        old: [362, 360],
+        middle: [352, 350],
+        recent: [342, 340],
+      }).map((workout) => ({
+        ...workout,
+        avg_heart_rate: null,
+      })),
+    });
+
+    assert.equal(evidence.aerobicEfficiencySummary.trend, "improving");
+    assert.equal(evidence.aerobicEfficiencySummary.confidence, "low");
+    assert.equal(evidence.aerobicEfficiencySummary.method, "pace_only");
+    assert.equal(
+      evidence.aerobicEfficiencySummary.fitness_confidence_adjustment.direction,
+      "none",
+    );
+    assert.equal(evidence.fitnessConfidence, "low");
   });
 });

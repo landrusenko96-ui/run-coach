@@ -760,6 +760,7 @@ function PlanGenerationMetadataCard({ plan }: { plan: TrainingPlan }) {
   const peakSummary = plan.peak_summary ?? null;
   const taperSummary = plan.taper_summary ?? null;
   const fitnessAnchorSummary = plan.fitness_anchor_summary ?? null;
+  const aerobicEfficiencySummary = plan.aerobic_efficiency_summary ?? null;
   const generationWarnings = plan.generation_warnings ?? [];
   const generationAssumptions = plan.generation_assumptions ?? [];
 
@@ -832,7 +833,87 @@ function PlanGenerationMetadataCard({ plan }: { plan: TrainingPlan }) {
               : "Not recorded"}
           </dd>
         </div>
+        <div className="rounded-md border border-slate-200 p-3">
+          <dt className="font-medium text-slate-700">Aerobic trend</dt>
+          <dd className="mt-1 text-slate-600">
+            {aerobicEfficiencySummary
+              ? `${formatLabel(aerobicEfficiencySummary.trend)} (${formatLabel(
+                  aerobicEfficiencySummary.confidence,
+                )}, ${formatLabel(aerobicEfficiencySummary.method)})`
+              : "Not recorded"}
+          </dd>
+          {aerobicEfficiencySummary &&
+          aerobicEfficiencySummary.fitness_confidence_adjustment.direction !==
+            "none" ? (
+            <dd className="mt-1 text-xs text-slate-500">
+              Confidence{" "}
+              {formatLabel(
+                aerobicEfficiencySummary.fitness_confidence_adjustment.direction,
+              )}{" "}
+              from{" "}
+              {formatLabel(
+                aerobicEfficiencySummary.fitness_confidence_adjustment.from,
+              )}{" "}
+              to{" "}
+              {formatLabel(
+                aerobicEfficiencySummary.fitness_confidence_adjustment.to,
+              )}
+            </dd>
+          ) : null}
+        </div>
       </dl>
+
+      {aerobicEfficiencySummary?.block_summaries.length ? (
+        <details className="mt-4 rounded-md border border-slate-200 p-3 text-sm text-slate-700">
+          <summary className="cursor-pointer font-medium text-slate-900">
+            Aerobic-efficiency blocks
+          </summary>
+          <div className="mt-3 max-h-64 overflow-auto">
+            <table className="w-full min-w-[560px] text-left text-sm">
+              <thead className="border-b border-slate-200 text-xs uppercase text-slate-500">
+                <tr>
+                  <th className="py-2 pr-3">Block</th>
+                  <th className="py-2 pr-3">Samples</th>
+                  <th className="py-2 pr-3">Efficiency</th>
+                  <th className="py-2 pr-3">Pace</th>
+                  <th className="py-2 pr-3">HR</th>
+                  <th className="py-2 pr-3">Power</th>
+                </tr>
+              </thead>
+              <tbody>
+                {aerobicEfficiencySummary.block_summaries.map((block) => (
+                  <tr className="border-b border-slate-100" key={block.block}>
+                    <td className="py-2 pr-3">
+                      {formatLabel(block.block)}
+                    </td>
+                    <td className="py-2 pr-3">{block.sample_count}</td>
+                    <td className="py-2 pr-3">
+                      {block.efficiency !== null
+                        ? block.efficiency.toFixed(3)
+                        : "n/a"}
+                    </td>
+                    <td className="py-2 pr-3">
+                      {block.avg_pace_sec_per_km !== null
+                        ? formatPace(block.avg_pace_sec_per_km)
+                        : "n/a"}
+                    </td>
+                    <td className="py-2 pr-3">
+                      {block.avg_heart_rate !== null
+                        ? `${block.avg_heart_rate} bpm`
+                        : "n/a"}
+                    </td>
+                    <td className="py-2 pr-3">
+                      {block.avg_power_watts !== null
+                        ? `${block.avg_power_watts} W`
+                        : "n/a"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      ) : null}
 
       {phaseSummaries.length > 0 ? (
         <details className="mt-4 rounded-md border border-slate-200 p-3 text-sm text-slate-700">

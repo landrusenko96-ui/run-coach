@@ -495,6 +495,21 @@ Fitness confidence:
 - low: weak history, easy-only estimate without physiology evidence, or
   missing anchors.
 
+Aerobic-efficiency trend:
+
+- uses the same 42-day history window split into 29-42, 15-28, and 0-14 day
+  blocks;
+- includes only easy/non-limit and controlled runs with reliable pace and
+  comparable HR or power, with pace-only fallback marked low confidence;
+- excludes race/time-trial, near-max, hard workout, interval/workout-context,
+  invalid, and very hilly runs unless power evidence is available;
+- classifies the trend as improving, stable, declining, noisy, or unknown using
+  a 2.5% meaningful-change threshold;
+- can adjust displayed fitness confidence by one level only when HR/power
+  evidence is medium/high confidence and guardrails pass;
+- never changes threshold pace, selected fitness anchor, race/time-trial
+  evidence, goal feasibility, workout types, or export contracts.
+
 Current race pace estimate:
 
 - starts from threshold pace;
@@ -1014,6 +1029,7 @@ Structured patterns:
 - peak summary;
 - taper summary;
 - fitness anchor summary;
+- aerobic-efficiency summary;
 - `generated_by = rule_based_v1`.
 
 `planned_workouts` receives:
@@ -1100,6 +1116,7 @@ row. It asserts:
 - flat-course terrain bias;
 - fastest Strava run not used as a max anchor without evidence;
 - manual physiology targets do not break pace-safe structured workout exports;
+- aerobic-efficiency trend metadata is present on generated plans;
 - suggested goal behavior for not-credible targets.
 
 ## Current Conformance Estimate
@@ -1122,10 +1139,10 @@ Approximate rubric:
 
 Tolerated remaining gaps:
 
-- full aerobic-efficiency trend modeling;
 - automatic Garmin/Strava zone import;
 - detailed weather modeling;
 - persisted fueling/nutrition strategy;
+- goal-readiness reverse-engineering for peak-phase construction;
 - true double-run scheduling;
 - adjustment logic understanding rich workout subtypes and weekly caps;
 - richer race-history parsing.

@@ -515,6 +515,7 @@ export type TrainingPlan = {
   peak_summary: PlanGenerationPeakSummary | null;
   taper_summary: PlanGenerationTaperSummary | null;
   fitness_anchor_summary: PlanGenerationFitnessAnchorSummary | null;
+  aerobic_efficiency_summary: PlanGenerationAerobicEfficiencySummary | null;
   created_at: string;
   updated_at: string;
 };
@@ -539,6 +540,58 @@ export type PlanGenerationFeasibilityRating =
   | "not_credible";
 
 export type PlanGenerationFitnessConfidence = "low" | "medium" | "high";
+
+export type PlanGenerationAerobicEfficiencyTrend =
+  | "improving"
+  | "stable"
+  | "declining"
+  | "noisy"
+  | "unknown";
+
+export type PlanGenerationAerobicEfficiencyConfidence =
+  | "high"
+  | "medium"
+  | "low"
+  | "unknown";
+
+export type PlanGenerationAerobicEfficiencyMethod =
+  | "heart_rate"
+  | "power"
+  | "pace_only"
+  | "unknown";
+
+export type PlanGenerationAerobicEfficiencyBlockLabel =
+  | "29_42_days"
+  | "15_28_days"
+  | "0_14_days";
+
+export type PlanGenerationFitnessConfidenceAdjustment = {
+  direction: "upgraded" | "downgraded" | "none";
+  from: PlanGenerationFitnessConfidence;
+  to: PlanGenerationFitnessConfidence;
+  reason: string | null;
+};
+
+export type PlanGenerationAerobicEfficiencyBlockSummary = {
+  block: PlanGenerationAerobicEfficiencyBlockLabel;
+  start_date: string;
+  end_date: string;
+  sample_count: number;
+  efficiency: number | null;
+  avg_pace_sec_per_km: number | null;
+  avg_heart_rate: number | null;
+  avg_power_watts: number | null;
+};
+
+export type PlanGenerationAerobicEfficiencySummary = {
+  trend: PlanGenerationAerobicEfficiencyTrend;
+  confidence: PlanGenerationAerobicEfficiencyConfidence;
+  method: PlanGenerationAerobicEfficiencyMethod;
+  block_summaries: PlanGenerationAerobicEfficiencyBlockSummary[];
+  recent_vs_old_percent: number | null;
+  recent_vs_middle_percent: number | null;
+  fitness_confidence_adjustment: PlanGenerationFitnessConfidenceAdjustment;
+};
 
 export type PlanGenerationPhaseLabel =
   | "base"

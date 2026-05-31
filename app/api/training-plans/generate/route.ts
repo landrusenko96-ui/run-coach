@@ -612,6 +612,8 @@ export async function POST(request: Request) {
         taper_summary: generatedPlan.trainingPlan.taper_summary,
         fitness_anchor_summary:
           generatedPlan.trainingPlan.fitness_anchor_summary,
+        aerobic_efficiency_summary:
+          generatedPlan.trainingPlan.aerobic_efficiency_summary,
       },
       dbOptions,
     );

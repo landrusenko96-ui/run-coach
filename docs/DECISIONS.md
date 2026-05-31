@@ -1,5 +1,30 @@
 # Decisions
 
+## 2026-05-31 — Aerobic-Efficiency Trend Is A Mild Confidence Signal
+
+Decision:
+Add a 42-day aerobic-efficiency trend from easy/non-limit and controlled runs,
+using HR-normalized efficiency first, power-normalized efficiency second, and
+pace-only fallback at low confidence.
+
+Reason:
+Easy and controlled running can show whether aerobic support is improving,
+stable, declining, or too noisy to trust. This should shape confidence and
+progression slightly, but it is not race-prediction evidence and must not
+override races, time trials, goal feasibility, durability, injury, or export
+contracts.
+
+Status:
+A local migration adds nullable
+`training_plans.aerobic_efficiency_summary` JSONB metadata with an
+object-or-null check constraint. It has not been applied remotely in this turn.
+
+Implementation rule:
+Only medium/high-confidence HR or power trends may adjust displayed
+`fitness_confidence` by one level. Pace-only, noisy, stable, and unknown trends
+do not adjust confidence. Preserve `generateTrainingPlan(profile, raceGoal,
+options)`, DB-safe workout types, and structured workout version.
+
 ## 2026-05-31 — Recency-Weight Fitness Anchors, Not Weekly Load
 
 Decision:
@@ -15,9 +40,9 @@ terrain access should remain stable six-week inputs instead of being blindly
 recency-weighted.
 
 Status:
-A local migration adds nullable `training_plans.fitness_anchor_summary` JSONB
-metadata with an object-or-null check constraint. It has not been applied
-remotely in this turn.
+The migration adds nullable `training_plans.fitness_anchor_summary` JSONB
+metadata with an object-or-null check constraint. It was applied remotely on
+2026-05-31.
 
 Implementation rule:
 Do not let recent easy or ordinary controlled runs become max anchors because
@@ -64,8 +89,8 @@ logic that treats HR and power as supporting guidance while preserving pace
 targets for Intervals.icu and Garmin compatibility.
 
 Status:
-A local migration adds nullable physiology columns and validation constraints to
-`profiles`. It has not been applied remotely in the same turn it was created.
+The migration adds nullable physiology columns and validation constraints to
+`profiles`. It was applied remotely on 2026-05-31.
 The generator now derives optional HR/power guidance and uses saved physiology
 signals for effort classification. VO2max is saved as context but does not
 override pace/history evidence or make aggressive goals credible by itself.
@@ -94,9 +119,9 @@ Status:
 Milestone 12L adds `tests/planGeneratorConformance.test.mjs` and documents the
 full generator architecture in `docs/PLAN_GENERATOR_LOGIC.md`. The conformance
 estimate is about 88%, with remaining gaps intentionally deferred because they
-require larger product changes: full aerobic-efficiency modeling, true
-power-zone modeling, detailed weather modeling, persisted fueling/nutrition,
-true double-run scheduling, and adaptive adjustment understanding the richer
+require larger product changes: goal-readiness modeling, true power-zone
+modeling, detailed weather modeling, persisted fueling/nutrition, true
+double-run scheduling, and adaptive adjustment understanding the richer
 prescriptions.
 
 Implementation rule:

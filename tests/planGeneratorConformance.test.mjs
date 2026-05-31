@@ -582,6 +582,12 @@ function assertPlanConforms(scenario, generatedPlan) {
   assert.equal(summary.week2RunCount, scenario.runDays);
   assert.ok(summary.allStructuredRunsExportSafe);
   assert.ok(summary.allRunRowsHavePaceTargets);
+  assert.ok(generatedPlan.trainingPlan.aerobic_efficiency_summary);
+  assert.ok(
+    ["improving", "stable", "declining", "noisy", "unknown"].includes(
+      generatedPlan.trainingPlan.aerobic_efficiency_summary.trend,
+    ),
+  );
   assert.equal(summary.workoutTypes.includes("calibration"), false);
   assert.ok(summary.workoutTypes.every((type) => allowedWorkoutTypes.has(type)));
   assertIntensityDistribution(scenario, summary);
