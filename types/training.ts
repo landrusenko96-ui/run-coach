@@ -516,6 +516,7 @@ export type TrainingPlan = {
   taper_summary: PlanGenerationTaperSummary | null;
   fitness_anchor_summary: PlanGenerationFitnessAnchorSummary | null;
   aerobic_efficiency_summary: PlanGenerationAerobicEfficiencySummary | null;
+  goal_readiness_summary: PlanGenerationGoalReadinessSummary | null;
   created_at: string;
   updated_at: string;
 };
@@ -591,6 +592,49 @@ export type PlanGenerationAerobicEfficiencySummary = {
   recent_vs_old_percent: number | null;
   recent_vs_middle_percent: number | null;
   fitness_confidence_adjustment: PlanGenerationFitnessConfidenceAdjustment;
+};
+
+export type PlanGenerationGoalReadinessRating =
+  | "high"
+  | "medium"
+  | "low"
+  | "constrained";
+
+export type PlanGenerationGoalPaceStrategy =
+  | "finish_only"
+  | "goal_pace_in_specific_peak"
+  | "bridge_pace_until_supported"
+  | "current_fitness_pace_only";
+
+export type PlanGenerationGoalReadinessScore = {
+  volume_readiness: PlanGenerationGoalReadinessRating;
+  long_run_readiness: PlanGenerationGoalReadinessRating;
+  threshold_readiness: PlanGenerationGoalReadinessRating;
+  race_pace_readiness: PlanGenerationGoalReadinessRating;
+  frequency_readiness: PlanGenerationGoalReadinessRating;
+  terrain_readiness: PlanGenerationGoalReadinessRating;
+  taper_readiness: PlanGenerationGoalReadinessRating;
+  overall_goal_readiness: PlanGenerationGoalReadinessRating;
+};
+
+export type PlanGenerationGoalReadinessPeakPhaseSummary = {
+  peak_week_number: number | null;
+  peak_volume_km: number | null;
+  peak_long_run_km: number | null;
+  threshold_workout_count: number;
+  race_pace_workout_count: number;
+  race_specific_long_run_count: number;
+  medium_long_workout_count: number;
+  terrain_specific_workout_count: number;
+  taper_week_count: number;
+};
+
+export type PlanGenerationGoalReadinessSummary = {
+  goal_readiness_score: PlanGenerationGoalReadinessScore;
+  peak_phase_summary: PlanGenerationGoalReadinessPeakPhaseSummary;
+  key_constraints: string[];
+  plan_revised_for_readiness: boolean;
+  goal_pace_strategy: PlanGenerationGoalPaceStrategy;
 };
 
 export type PlanGenerationPhaseLabel =

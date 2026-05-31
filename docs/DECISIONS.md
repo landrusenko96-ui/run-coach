@@ -1,5 +1,28 @@
 # Decisions
 
+## 2026-05-31 — Goal Readiness Guides Construction But Safety Wins
+
+Decision:
+Add a conservative goal-readiness model that evaluates and, when safe, improves
+peak/specific/taper training signals for target-time marathon and half-marathon
+plans.
+
+Reason:
+Initial plans should not only progress volume generically. A feasible goal
+should be backed by appropriate peak volume, long-run durability, threshold
+work, race-pace exposure, frequency, terrain specificity, and taper readiness.
+
+Status:
+A local migration adds nullable `training_plans.goal_readiness_summary` JSONB
+metadata with an object-or-null check constraint. It has not been applied
+remotely in this turn.
+
+Implementation rule:
+The readiness pass may upgrade existing run drafts only before the existing
+spacing, intensity-cap, gray-zone, load-stacking, and duration-cap enforcement
+runs. It must not add extra run days, force goal pace for unsupported goals,
+override not-credible/low-confidence feasibility, or change export contracts.
+
 ## 2026-05-31 — Aerobic-Efficiency Trend Is A Mild Confidence Signal
 
 Decision:
@@ -15,9 +38,9 @@ override races, time trials, goal feasibility, durability, injury, or export
 contracts.
 
 Status:
-A local migration adds nullable
-`training_plans.aerobic_efficiency_summary` JSONB metadata with an
-object-or-null check constraint. It has not been applied remotely in this turn.
+The migration adds nullable `training_plans.aerobic_efficiency_summary` JSONB
+metadata with an object-or-null check constraint. It was applied remotely on
+2026-05-31.
 
 Implementation rule:
 Only medium/high-confidence HR or power trends may adjust displayed
@@ -117,12 +140,13 @@ conformance regression harness.
 
 Status:
 Milestone 12L adds `tests/planGeneratorConformance.test.mjs` and documents the
-full generator architecture in `docs/PLAN_GENERATOR_LOGIC.md`. The conformance
-estimate is about 88%, with remaining gaps intentionally deferred because they
-require larger product changes: goal-readiness modeling, true power-zone
-modeling, detailed weather modeling, persisted fueling/nutrition, true
-double-run scheduling, and adaptive adjustment understanding the richer
-prescriptions.
+full generator architecture in `docs/PLAN_GENERATOR_LOGIC.md`. At that point,
+the conformance estimate was about 88%, with several gaps intentionally
+deferred. Milestone 13 later closed the advanced physiology, merged history,
+recency-weighted anchor, aerobic-efficiency, and initial goal-readiness gaps.
+Remaining larger product changes include true power-zone modeling, detailed
+weather modeling, persisted fueling/nutrition, true double-run scheduling, and
+adaptive adjustment understanding the richer prescriptions.
 
 Implementation rule:
 Do not rewrite the initial generator again unless a specific spec regression or

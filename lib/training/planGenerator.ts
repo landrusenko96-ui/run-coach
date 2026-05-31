@@ -33,6 +33,9 @@ import type {
   PlanGenerationFeasibilityRating,
   PlanGenerationFitnessAnchorSummary,
   PlanGenerationFitnessConfidence,
+  PlanGenerationGoalPaceStrategy,
+  PlanGenerationGoalReadinessRating,
+  PlanGenerationGoalReadinessSummary,
   PlanGenerationPeakSummary,
   PlanGenerationPhaseLabel,
   PlanGenerationPhaseSummary,
@@ -230,6 +233,15 @@ type PlanIntensityAudit = {
   planSummary: ReturnType<typeof summarizePlanIntensity>;
 };
 
+type GoalReadinessCounts = {
+  thresholdWorkoutCount: number;
+  racePaceWorkoutCount: number;
+  raceSpecificLongRunCount: number;
+  mediumLongWorkoutCount: number;
+  terrainSpecificWorkoutCount: number;
+  taperWeekCount: number;
+};
+
 const dayOrder: TrainingDay[] = [
   "monday",
   "tuesday",
@@ -328,6 +340,7 @@ export function generateTrainingPlan(
     metrics: derivedMetrics,
     weekPlans,
     intensityAudit: prescriptionBuild.intensityAudit,
+    goalReadinessSummary: prescriptionBuild.goalReadinessSummary,
     assumptions: normalizedInput.assumptions,
     warnings: normalizedInput.warnings,
   });
@@ -355,6 +368,7 @@ export function generateTrainingPlan(
       fitness_anchor_summary: generationMetadata.fitness_anchor_summary,
       aerobic_efficiency_summary:
         generationMetadata.aerobic_efficiency_summary,
+      goal_readiness_summary: generationMetadata.goal_readiness_summary,
       generated_by: "rule_based_v1",
     },
     plannedWorkouts,
@@ -2132,6 +2146,7 @@ function buildWorkoutPrescriptions(input: {
 }): {
   prescriptions: WorkoutPrescription[];
   intensityAudit: PlanIntensityAudit;
+  goalReadinessSummary: PlanGenerationGoalReadinessSummary;
 } {
   const drafts: WeekWorkoutDraft[] = [];
 
@@ -2148,6 +2163,13 @@ function buildWorkoutPrescriptions(input: {
 
     drafts.push(...weekDrafts);
   }
+
+  const readinessAdjustment = applyGoalReadinessPass({
+    drafts,
+    input: input.input,
+    metrics: input.metrics,
+    weekPlans: input.weekPlans,
+  });
 
   softenUnsafeHardWorkoutSpacing(drafts);
   enforceIntensityDistributionAndLoadRisk({
@@ -2169,6 +2191,13 @@ function buildWorkoutPrescriptions(input: {
     intensityAudit: buildIntensityAudit({
       resolvedDrafts,
       weekPlans: input.weekPlans,
+    }),
+    goalReadinessSummary: buildGoalReadinessSummary({
+      input: input.input,
+      metrics: input.metrics,
+      weekPlans: input.weekPlans,
+      resolvedDrafts,
+      planRevisedForReadiness: readinessAdjustment.changed,
     }),
   };
 }
@@ -2820,6 +2849,445 @@ function assignOptionalSupportDraft(input: {
   }
 
   applyWorkoutSubtype(supportDraft, "strength_optional");
+}
+
+function applyGoalReadinessPass(input: {
+  drafts: WeekWorkoutDraft[];
+  input: NormalizedPlanInput;
+  metrics: DerivedMetrics;
+  weekPlans: WeekPlan[];
+}): { changed: boolean } {
+  if (!isGoalReadinessConstructionSupported(input)) {
+    return { changed: false };
+  }
+
+  let changed = false;
+
+  if (
+    ensureThresholdReadinessDraft({
+      ...input,
+      raceDistance: input.input.goal.raceType,
+    })
+  ) {
+    changed = true;
+  }
+
+  if (
+    ensureRacePaceReadinessDraft({
+      ...input,
+      raceDistance: input.input.goal.raceType,
+    })
+  ) {
+    changed = true;
+  }
+
+  if (ensureMediumLongReadinessDraft(input)) {
+    changed = true;
+  }
+
+  if (ensureTerrainReadinessDraft(input)) {
+    changed = true;
+  }
+
+  return { changed };
+}
+
+function isGoalReadinessConstructionSupported(input: {
+  input: NormalizedPlanInput;
+  metrics: DerivedMetrics;
+}): boolean {
+  return (
+    isGoalPaceFeasibilitySupported(input.metrics.feasibilityRating) &&
+    input.metrics.fitnessConfidence !== "low" &&
+    input.metrics.volumeCategory !== "low_base" &&
+    input.input.athlete.injurySignal !== "current_or_serious" &&
+    input.input.history.recentRamp <= 1.35 &&
+    !hasWeakLongRunDurability(input.input.history)
+  );
+}
+
+function isGoalPaceFeasibilitySupported(
+  feasibilityRating: GoalFeasibilityRating,
+): boolean {
+  return (
+    feasibilityRating === "realistic" ||
+    feasibilityRating === "ambitious" ||
+    feasibilityRating === "very_ambitious"
+  );
+}
+
+function ensureThresholdReadinessDraft(input: {
+  drafts: WeekWorkoutDraft[];
+  input: NormalizedPlanInput;
+  metrics: DerivedMetrics;
+  weekPlans: WeekPlan[];
+  raceDistance: RaceDistance;
+}): boolean {
+  if (input.input.availability.selectedRunningDays.length < 3) {
+    return false;
+  }
+
+  const targetCount = getReadinessThresholdTargetCount({
+    raceDistance: input.raceDistance,
+    developmentWeekCount: getGoalReadinessDevelopmentWeeks(input.weekPlans).length,
+  });
+  const currentCount = countDraftsByRole(input.drafts, input.weekPlans, "threshold");
+
+  if (currentCount >= targetCount) {
+    return false;
+  }
+
+  const subtype: PlanWorkoutSubtype =
+    input.raceDistance === "half_marathon" ? "cruise_intervals" : "broken_tempo";
+  const candidate = findReadinessUpgradeCandidate({
+    drafts: input.drafts,
+    weekPlans: input.weekPlans,
+    candidateRoles: ["steady", "easy"],
+    targetSubtype: subtype,
+    preferLatest: false,
+  });
+
+  if (!candidate) {
+    return false;
+  }
+
+  applyWorkoutSubtype(candidate, subtype);
+  return true;
+}
+
+function ensureRacePaceReadinessDraft(input: {
+  drafts: WeekWorkoutDraft[];
+  input: NormalizedPlanInput;
+  metrics: DerivedMetrics;
+  weekPlans: WeekPlan[];
+  raceDistance: RaceDistance;
+}): boolean {
+  if (input.input.availability.selectedRunningDays.length < 4) {
+    return false;
+  }
+
+  const developmentWeekCount = getGoalReadinessDevelopmentWeeks(input.weekPlans).length;
+  const targetCount = getReadinessRacePaceTargetCount({
+    raceDistance: input.raceDistance,
+    developmentWeekCount,
+  });
+  const currentCount =
+    countDraftsByRole(input.drafts, input.weekPlans, "race_pace") +
+    countDraftsByRole(input.drafts, input.weekPlans, "long_race_specific");
+
+  if (currentCount >= targetCount) {
+    return false;
+  }
+
+  const racePaceSubtype: PlanWorkoutSubtype =
+    input.raceDistance === "half_marathon" ? "hm_pace_blocks" : "mp_steady";
+  const racePaceCandidate = findReadinessUpgradeCandidate({
+    drafts: input.drafts,
+    weekPlans: input.weekPlans,
+    candidateRoles: ["steady", "threshold", "easy"],
+    targetSubtype: racePaceSubtype,
+    preferLatest: true,
+  });
+
+  if (racePaceCandidate) {
+    applyWorkoutSubtype(racePaceCandidate, racePaceSubtype);
+    return true;
+  }
+
+  if (input.raceDistance !== "marathon") {
+    return false;
+  }
+
+  const longRunCandidate = findRaceSpecificLongRunCandidate({
+    drafts: input.drafts,
+    weekPlans: input.weekPlans,
+    metrics: input.metrics,
+  });
+
+  if (!longRunCandidate) {
+    return false;
+  }
+
+  applyWorkoutSubtype(longRunCandidate, "long_mp_blocks");
+  return true;
+}
+
+function ensureMediumLongReadinessDraft(input: {
+  drafts: WeekWorkoutDraft[];
+  input: NormalizedPlanInput;
+  metrics: DerivedMetrics;
+  weekPlans: WeekPlan[];
+}): boolean {
+  if (input.input.availability.selectedRunningDays.length < 5) {
+    return false;
+  }
+
+  if (countDraftsByRole(input.drafts, input.weekPlans, "medium_long") > 0) {
+    return false;
+  }
+
+  const subtype: PlanWorkoutSubtype =
+    input.metrics.fitnessConfidence === "high" ? "medium_long_steady" : "medium_long_easy";
+  const candidate = findReadinessUpgradeCandidate({
+    drafts: input.drafts,
+    weekPlans: input.weekPlans,
+    candidateRoles: ["easy"],
+    targetSubtype: subtype,
+    preferLatest: false,
+  });
+
+  if (!candidate) {
+    return false;
+  }
+
+  applyWorkoutSubtype(candidate, subtype);
+  return true;
+}
+
+function ensureTerrainReadinessDraft(input: {
+  drafts: WeekWorkoutDraft[];
+  input: NormalizedPlanInput;
+  metrics: DerivedMetrics;
+  weekPlans: WeekPlan[];
+}): boolean {
+  if (
+    !input.input.environment.raceCourseLooksHilly ||
+    !input.input.environment.hillsAvailable ||
+    countDraftsBySubtype(input.drafts, input.weekPlans, [
+      "hill_strides",
+      "hill_repeats",
+    ]) > 0
+  ) {
+    return false;
+  }
+
+  const hillExposureSupport = getHillExposureSupport({
+    input: input.input,
+    metrics: input.metrics,
+    weekPlan: getLastGoalReadinessDevelopmentWeek(input.weekPlans),
+    runningExperienceLevel: input.input.athlete.runningExperienceLevel,
+    fitnessConfidence: input.metrics.fitnessConfidence,
+  });
+
+  if (hillExposureSupport === "none") {
+    return false;
+  }
+
+  const candidate = findReadinessUpgradeCandidate({
+    drafts: input.drafts,
+    weekPlans: input.weekPlans,
+    candidateRoles: ["easy"],
+    targetSubtype: "hill_strides",
+    preferLatest: false,
+  });
+
+  if (!candidate) {
+    return false;
+  }
+
+  applyWorkoutSubtype(candidate, "hill_strides");
+  return true;
+}
+
+function findReadinessUpgradeCandidate(input: {
+  drafts: WeekWorkoutDraft[];
+  weekPlans: WeekPlan[];
+  candidateRoles: WeekWorkoutDraft["role"][];
+  targetSubtype: PlanWorkoutSubtype;
+  preferLatest: boolean;
+}): WeekWorkoutDraft | null {
+  const targetStress = getStressForSubtype(input.targetSubtype);
+  const targetRole = getRoleForSubtype(input.targetSubtype);
+  const developmentWeekNumbers = new Set(
+    getGoalReadinessDevelopmentWeeks(input.weekPlans).map((weekPlan) => weekPlan.weekNumber),
+  );
+  const candidates = input.drafts
+    .filter((draft) => {
+      if (!developmentWeekNumbers.has(draft.day.weekNumber)) {
+        return false;
+      }
+
+      if (!input.candidateRoles.includes(draft.role)) {
+        return false;
+      }
+
+      if (draft.role === "race_day" || draft.subtype === input.targetSubtype) {
+        return false;
+      }
+
+      if (!runWorkoutTypes.has(draft.workoutType)) {
+        return false;
+      }
+
+      if (targetStress === "hard" && hasAdjacentHardDraft(draft, input.drafts)) {
+        return false;
+      }
+
+      if (
+        targetStress === "hard" &&
+        (targetRole === "threshold" || targetRole === "race_pace") &&
+        isTooCloseToLongRun(draft, input.drafts)
+      ) {
+        return false;
+      }
+
+      return true;
+    })
+    .sort((first, second) =>
+      input.preferLatest
+        ? second.day.date.getTime() - first.day.date.getTime()
+        : first.day.date.getTime() - second.day.date.getTime(),
+    );
+
+  return candidates[0] ?? null;
+}
+
+function findRaceSpecificLongRunCandidate(input: {
+  drafts: WeekWorkoutDraft[];
+  weekPlans: WeekPlan[];
+  metrics: DerivedMetrics;
+}): WeekWorkoutDraft | null {
+  const developmentWeekNumbers = new Set(
+    getGoalReadinessDevelopmentWeeks(input.weekPlans).map((weekPlan) => weekPlan.weekNumber),
+  );
+
+  return (
+    input.drafts
+      .filter((draft) => {
+        const weekPlan = input.weekPlans[draft.day.weekNumber - 1];
+
+        return (
+          weekPlan !== undefined &&
+          developmentWeekNumbers.has(draft.day.weekNumber) &&
+          draft.role !== "race_day" &&
+          (draft.subtype === "long_easy" || draft.subtype === "long_steady_finish") &&
+          weekPlan.longRunKm >= input.metrics.peakLongRunKm * 0.62 &&
+          !hasAdjacentHardDraft(draft, input.drafts)
+        );
+      })
+      .sort((first, second) => second.day.date.getTime() - first.day.date.getTime())[0] ??
+    null
+  );
+}
+
+function countDraftsByRole(
+  drafts: WeekWorkoutDraft[],
+  weekPlans: WeekPlan[],
+  role: WeekWorkoutDraft["role"],
+): number {
+  const developmentWeekNumbers = new Set(
+    getGoalReadinessDevelopmentWeeks(weekPlans).map((weekPlan) => weekPlan.weekNumber),
+  );
+
+  return drafts.filter(
+    (draft) =>
+      developmentWeekNumbers.has(draft.day.weekNumber) &&
+      draft.role === role &&
+      draft.role !== "race_day",
+  ).length;
+}
+
+function countDraftsBySubtype(
+  drafts: WeekWorkoutDraft[],
+  weekPlans: WeekPlan[],
+  subtypes: PlanWorkoutSubtype[],
+): number {
+  const developmentWeekNumbers = new Set(
+    getGoalReadinessDevelopmentWeeks(weekPlans).map((weekPlan) => weekPlan.weekNumber),
+  );
+
+  return drafts.filter(
+    (draft) =>
+      developmentWeekNumbers.has(draft.day.weekNumber) &&
+      subtypes.includes(draft.subtype),
+  ).length;
+}
+
+function getGoalReadinessDevelopmentWeeks(weekPlans: WeekPlan[]): WeekPlan[] {
+  const specificPeakWeeks = weekPlans.filter(
+    (weekPlan) =>
+      !weekPlan.isRaceWeek &&
+      !weekPlan.isTaper &&
+      (weekPlan.phase === "specific" || weekPlan.phase === "peak"),
+  );
+
+  if (specificPeakWeeks.length > 0) {
+    return specificPeakWeeks;
+  }
+
+  return weekPlans.filter(
+    (weekPlan) =>
+      !weekPlan.isRaceWeek &&
+      !weekPlan.isTaper &&
+      (weekPlan.phase === "race_prep" || weekPlan.phase === "build"),
+  );
+}
+
+function getLastGoalReadinessDevelopmentWeek(weekPlans: WeekPlan[]): WeekPlan {
+  const developmentWeeks = getGoalReadinessDevelopmentWeeks(weekPlans);
+  const fallbackWeek = weekPlans[0];
+
+  if (!fallbackWeek) {
+    throw new Error("Cannot build goal-readiness metadata without any plan weeks.");
+  }
+
+  return developmentWeeks[developmentWeeks.length - 1] ?? fallbackWeek;
+}
+
+function getReadinessThresholdTargetCount(input: {
+  raceDistance: RaceDistance;
+  developmentWeekCount: number;
+}): number {
+  if (input.raceDistance === "half_marathon") {
+    return input.developmentWeekCount >= 6 ? 3 : 2;
+  }
+
+  return input.developmentWeekCount >= 6 ? 2 : 1;
+}
+
+function getReadinessRacePaceTargetCount(input: {
+  raceDistance: RaceDistance;
+  developmentWeekCount: number;
+}): number {
+  if (input.raceDistance === "half_marathon") {
+    return input.developmentWeekCount >= 4 ? 2 : 1;
+  }
+
+  return input.developmentWeekCount >= 6 ? 2 : 1;
+}
+
+function hasAdjacentHardDraft(
+  candidateDraft: WeekWorkoutDraft,
+  drafts: WeekWorkoutDraft[],
+): boolean {
+  return drafts.some(
+    (draft) =>
+      draft !== candidateDraft &&
+      draft.stress === "hard" &&
+      Math.abs(daysBetween(draft.day.date, candidateDraft.day.date)) <= 1,
+  );
+}
+
+function isTooCloseToLongRun(
+  candidateDraft: WeekWorkoutDraft,
+  drafts: WeekWorkoutDraft[],
+): boolean {
+  const sameWeekLongRun = drafts.find(
+    (draft) =>
+      draft.day.weekNumber === candidateDraft.day.weekNumber &&
+      (draft.role === "long_easy" ||
+        draft.role === "long_steady" ||
+        draft.role === "long_race_specific" ||
+        draft.role === "race_day"),
+  );
+
+  if (!sameWeekLongRun) {
+    return false;
+  }
+
+  const daysUntilLongRun = daysBetween(candidateDraft.day.date, sameWeekLongRun.day.date);
+
+  return daysUntilLongRun > 0 && daysUntilLongRun <= 2;
 }
 
 function isSuitableOptionalSupportDay(
@@ -3794,10 +4262,562 @@ function addPlanSummaryWarnings(input: {
   }
 }
 
+function buildGoalReadinessSummary(input: {
+  input: NormalizedPlanInput;
+  metrics: DerivedMetrics;
+  weekPlans: WeekPlan[];
+  resolvedDrafts: ResolvedWorkoutDraft[];
+  planRevisedForReadiness: boolean;
+}): PlanGenerationGoalReadinessSummary {
+  const counts = getGoalReadinessCounts({
+    input: input.input,
+    weekPlans: input.weekPlans,
+    resolvedDrafts: input.resolvedDrafts,
+  });
+  const peakSummary = buildPeakSummary(input.weekPlans);
+  const taperSummary = buildTaperSummary(input.weekPlans);
+  const goalPaceStrategy = getGoalPaceStrategy({
+    input: input.input,
+    metrics: input.metrics,
+    counts,
+  });
+  const scoreWithoutOverall = {
+    volume_readiness: rateVolumeReadiness(input),
+    long_run_readiness: rateLongRunReadiness(input),
+    threshold_readiness: rateThresholdReadiness({
+      input: input.input,
+      metrics: input.metrics,
+      weekPlans: input.weekPlans,
+      counts,
+    }),
+    race_pace_readiness: rateRacePaceReadiness({
+      input: input.input,
+      metrics: input.metrics,
+      weekPlans: input.weekPlans,
+      counts,
+    }),
+    frequency_readiness: rateFrequencyReadiness(input),
+    terrain_readiness: rateTerrainReadiness({
+      input: input.input,
+      counts,
+    }),
+    taper_readiness: rateTaperReadiness({
+      input: input.input,
+      weekPlans: input.weekPlans,
+      taperSummary,
+    }),
+  };
+  const goal_readiness_score = {
+    ...scoreWithoutOverall,
+    overall_goal_readiness: rateOverallGoalReadiness({
+      input: input.input,
+      metrics: input.metrics,
+      componentRatings: Object.values(scoreWithoutOverall),
+    }),
+  };
+  const keyConstraints = getGoalReadinessConstraints({
+    input: input.input,
+    metrics: input.metrics,
+    score: goal_readiness_score,
+    goalPaceStrategy,
+  });
+
+  if (
+    input.input.goal.targetFinishTimeSec !== null &&
+    goal_readiness_score.overall_goal_readiness === "constrained" &&
+    keyConstraints.length > 0
+  ) {
+    addUniqueWarning(
+      input.input.warnings,
+      `Goal readiness is constrained by ${keyConstraints
+        .slice(0, 2)
+        .join(" and ")}. The plan keeps safety caps instead of forcing unsupported workouts.`,
+    );
+  }
+
+  return {
+    goal_readiness_score,
+    peak_phase_summary: {
+      peak_week_number: peakSummary?.week_number ?? null,
+      peak_volume_km: peakSummary?.volume_km ?? null,
+      peak_long_run_km: peakSummary?.long_run_km ?? null,
+      threshold_workout_count: counts.thresholdWorkoutCount,
+      race_pace_workout_count: counts.racePaceWorkoutCount,
+      race_specific_long_run_count: counts.raceSpecificLongRunCount,
+      medium_long_workout_count: counts.mediumLongWorkoutCount,
+      terrain_specific_workout_count: counts.terrainSpecificWorkoutCount,
+      taper_week_count: counts.taperWeekCount,
+    },
+    key_constraints: keyConstraints,
+    plan_revised_for_readiness: input.planRevisedForReadiness,
+    goal_pace_strategy: goalPaceStrategy,
+  };
+}
+
+function getGoalReadinessCounts(input: {
+  input: NormalizedPlanInput;
+  weekPlans: WeekPlan[];
+  resolvedDrafts: ResolvedWorkoutDraft[];
+}): GoalReadinessCounts {
+  const developmentWeekNumbers = new Set(
+    getGoalReadinessDevelopmentWeeks(input.weekPlans).map((weekPlan) => weekPlan.weekNumber),
+  );
+  let thresholdWorkoutCount = 0;
+  let racePaceWorkoutCount = 0;
+  let raceSpecificLongRunCount = 0;
+  let mediumLongWorkoutCount = 0;
+  let terrainSpecificWorkoutCount = 0;
+
+  for (const resolvedDraft of input.resolvedDrafts) {
+    if (!developmentWeekNumbers.has(resolvedDraft.draft.day.weekNumber)) {
+      continue;
+    }
+
+    if (resolvedDraft.draft.role === "threshold") {
+      thresholdWorkoutCount += 1;
+    }
+
+    if (resolvedDraft.draft.role === "race_pace") {
+      racePaceWorkoutCount += 1;
+    }
+
+    if (resolvedDraft.draft.role === "long_race_specific") {
+      raceSpecificLongRunCount += 1;
+    }
+
+    if (resolvedDraft.draft.role === "medium_long") {
+      mediumLongWorkoutCount += 1;
+    }
+
+    if (
+      input.input.environment.raceCourseLooksHilly &&
+      (resolvedDraft.draft.subtype === "hill_strides" ||
+        resolvedDraft.draft.subtype === "hill_repeats" ||
+        resolvedDraft.prescription.terrain === "hills")
+    ) {
+      terrainSpecificWorkoutCount += 1;
+    }
+  }
+
+  return {
+    thresholdWorkoutCount,
+    racePaceWorkoutCount,
+    raceSpecificLongRunCount,
+    mediumLongWorkoutCount,
+    terrainSpecificWorkoutCount,
+    taperWeekCount: input.weekPlans.filter((weekPlan) => weekPlan.isTaper).length,
+  };
+}
+
+function rateVolumeReadiness(input: {
+  input: NormalizedPlanInput;
+  metrics: DerivedMetrics;
+  weekPlans: WeekPlan[];
+}): PlanGenerationGoalReadinessRating {
+  const peakSummary = buildPeakSummary(input.weekPlans);
+  const targetVolumeKm = getGoalReadinessPeakVolumeTarget(input);
+  const ratio =
+    targetVolumeKm > 0 && peakSummary !== null
+      ? peakSummary.volume_km / targetVolumeKm
+      : 0;
+
+  return rateGoalReadinessRatio({
+    ratio,
+    constrained: ratio < 0.8 && hasReadinessCapacityConstraint(input),
+  });
+}
+
+function rateLongRunReadiness(input: {
+  input: NormalizedPlanInput;
+  metrics: DerivedMetrics;
+  weekPlans: WeekPlan[];
+}): PlanGenerationGoalReadinessRating {
+  const peakSummary = buildPeakSummary(input.weekPlans);
+  const targetLongRunKm = getGoalReadinessLongRunTarget(input);
+  const ratio =
+    targetLongRunKm > 0 && peakSummary !== null
+      ? peakSummary.long_run_km / targetLongRunKm
+      : 0;
+
+  return rateGoalReadinessRatio({
+    ratio,
+    constrained: ratio < 0.8 && hasReadinessCapacityConstraint(input),
+  });
+}
+
+function rateThresholdReadiness(input: {
+  input: NormalizedPlanInput;
+  metrics: DerivedMetrics;
+  weekPlans: WeekPlan[];
+  counts: GoalReadinessCounts;
+}): PlanGenerationGoalReadinessRating {
+  const targetCount = getReadinessThresholdTargetCount({
+    raceDistance: input.input.goal.raceType,
+    developmentWeekCount: getGoalReadinessDevelopmentWeeks(input.weekPlans).length,
+  });
+
+  if (input.counts.thresholdWorkoutCount >= targetCount) {
+    return "high";
+  }
+
+  if (input.counts.thresholdWorkoutCount >= 1) {
+    return "medium";
+  }
+
+  return canSafelyCarryGoalReadinessQuality(input) ? "low" : "constrained";
+}
+
+function rateRacePaceReadiness(input: {
+  input: NormalizedPlanInput;
+  metrics: DerivedMetrics;
+  weekPlans: WeekPlan[];
+  counts: GoalReadinessCounts;
+}): PlanGenerationGoalReadinessRating {
+  if (
+    input.input.goal.targetFinishTimeSec === null ||
+    input.input.goal.goalFlexibility === "finish_only"
+  ) {
+    return "medium";
+  }
+
+  if (!isGoalPaceFeasibilitySupported(input.metrics.feasibilityRating)) {
+    return "constrained";
+  }
+
+  const targetCount = getReadinessRacePaceTargetCount({
+    raceDistance: input.input.goal.raceType,
+    developmentWeekCount: getGoalReadinessDevelopmentWeeks(input.weekPlans).length,
+  });
+  const raceSpecificCount =
+    input.counts.racePaceWorkoutCount + input.counts.raceSpecificLongRunCount;
+
+  if (raceSpecificCount >= targetCount) {
+    return "high";
+  }
+
+  if (raceSpecificCount >= 1) {
+    return "medium";
+  }
+
+  return canSafelyCarryGoalReadinessQuality(input) &&
+    input.input.availability.selectedRunningDays.length >= 4
+    ? "low"
+    : "constrained";
+}
+
+function rateFrequencyReadiness(input: {
+  input: NormalizedPlanInput;
+}): PlanGenerationGoalReadinessRating {
+  const runDays = input.input.availability.selectedRunningDays.length;
+  const isTargetGoal =
+    input.input.goal.targetFinishTimeSec !== null &&
+    input.input.goal.goalFlexibility !== "finish_only";
+
+  if (input.input.goal.raceType === "marathon") {
+    if (runDays >= 5) {
+      return "high";
+    }
+
+    if (runDays >= 4) {
+      return "medium";
+    }
+
+    return isTargetGoal ? "constrained" : "low";
+  }
+
+  if (runDays >= 4) {
+    return "high";
+  }
+
+  if (runDays >= 3) {
+    return "medium";
+  }
+
+  return isTargetGoal ? "constrained" : "low";
+}
+
+function rateTerrainReadiness(input: {
+  input: NormalizedPlanInput;
+  counts: GoalReadinessCounts;
+}): PlanGenerationGoalReadinessRating {
+  if (!input.input.environment.raceCourseLooksHilly) {
+    return "high";
+  }
+
+  if (!input.input.environment.hillsAvailable) {
+    return "constrained";
+  }
+
+  if (input.counts.terrainSpecificWorkoutCount > 0) {
+    return input.input.history.elevationTolerance === "low" ||
+      input.input.history.elevationTolerance === "unknown"
+      ? "medium"
+      : "high";
+  }
+
+  return input.input.history.elevationTolerance === "low" ||
+    input.input.history.elevationTolerance === "unknown"
+    ? "constrained"
+    : "low";
+}
+
+function rateTaperReadiness(input: {
+  input: NormalizedPlanInput;
+  weekPlans: WeekPlan[];
+  taperSummary: PlanGenerationTaperSummary;
+}): PlanGenerationGoalReadinessRating {
+  const expectedTaperWeeks = input.input.goal.raceType === "marathon" ? 2 : 1;
+
+  if (
+    input.taperSummary.taper_weeks >= expectedTaperWeeks &&
+    input.taperSummary.peak_to_race_week_reduction_percent >= 30
+  ) {
+    return "high";
+  }
+
+  if (
+    input.taperSummary.taper_weeks >= 1 &&
+    input.taperSummary.peak_to_race_week_reduction_percent >= 20
+  ) {
+    return "medium";
+  }
+
+  return input.weekPlans.length < (input.input.goal.raceType === "marathon" ? 8 : 6)
+    ? "constrained"
+    : "low";
+}
+
+function rateOverallGoalReadiness(input: {
+  input: NormalizedPlanInput;
+  metrics: DerivedMetrics;
+  componentRatings: PlanGenerationGoalReadinessRating[];
+}): PlanGenerationGoalReadinessRating {
+  if (
+    input.input.goal.targetFinishTimeSec !== null &&
+    input.input.goal.goalFlexibility !== "finish_only" &&
+    !isGoalPaceFeasibilitySupported(input.metrics.feasibilityRating)
+  ) {
+    return "constrained";
+  }
+
+  if (input.componentRatings.includes("constrained")) {
+    return "constrained";
+  }
+
+  const lowCount = input.componentRatings.filter((rating) => rating === "low").length;
+  const mediumCount = input.componentRatings.filter((rating) => rating === "medium").length;
+
+  if (lowCount >= 2) {
+    return "low";
+  }
+
+  if (lowCount === 1 || mediumCount >= 3) {
+    return "medium";
+  }
+
+  return "high";
+}
+
+function rateGoalReadinessRatio(input: {
+  ratio: number;
+  constrained: boolean;
+}): PlanGenerationGoalReadinessRating {
+  if (input.ratio >= 0.95) {
+    return "high";
+  }
+
+  if (input.ratio >= 0.8) {
+    return "medium";
+  }
+
+  return input.constrained ? "constrained" : "low";
+}
+
+function getGoalReadinessPeakVolumeTarget(input: {
+  input: NormalizedPlanInput;
+  metrics: DerivedMetrics;
+}): number {
+  const baselineTarget =
+    input.input.history.avgKm6w *
+    (input.input.goal.planMode === "relaxed"
+      ? 1.08
+      : isAggressivePlanMode(input.input.goal.planMode)
+        ? 1.25
+        : 1.16);
+  const timeBasedFloor = getGoalReadinessTimeBasedVolumeFloor(input.input.goal);
+  const availabilityCeiling =
+    input.input.goal.raceType === "marathon"
+      ? input.input.availability.selectedRunningDays.length * 14
+      : input.input.availability.selectedRunningDays.length * 11;
+
+  return roundDistance(
+    clamp(
+      Math.max(baselineTarget, timeBasedFloor),
+      input.input.goal.raceType === "marathon" ? 30 : 20,
+      Math.max(timeBasedFloor, availabilityCeiling),
+    ),
+  );
+}
+
+function getGoalReadinessTimeBasedVolumeFloor(goal: GoalProfile): number {
+  if (goal.raceType === "half_marathon") {
+    if (goal.targetFinishTimeSec !== null && goal.targetFinishTimeSec <= 5400) {
+      return 42;
+    }
+
+    if (goal.targetFinishTimeSec !== null && goal.targetFinishTimeSec <= 7200) {
+      return 34;
+    }
+
+    return 26;
+  }
+
+  if (goal.targetFinishTimeSec !== null && goal.targetFinishTimeSec <= 12600) {
+    return 58;
+  }
+
+  if (goal.targetFinishTimeSec !== null && goal.targetFinishTimeSec <= 14400) {
+    return 48;
+  }
+
+  if (goal.targetFinishTimeSec !== null && goal.targetFinishTimeSec <= 16200) {
+    return 42;
+  }
+
+  return 36;
+}
+
+function getGoalReadinessLongRunTarget(input: {
+  input: NormalizedPlanInput;
+  metrics: DerivedMetrics;
+}): number {
+  const raceDistanceKm = distanceKmByRace[input.input.goal.raceType];
+  const raceRatioTarget = input.input.goal.raceType === "marathon" ? 0.68 : 0.72;
+  const loadShareTarget = input.metrics.peakLoadKm * 0.42;
+  const cap = input.input.goal.raceType === "marathon" ? 32 : 18;
+  const floor = input.input.goal.raceType === "marathon" ? 23 : 13;
+
+  return roundDistance(
+    clamp(
+      Math.max(raceDistanceKm * raceRatioTarget, loadShareTarget, floor),
+      floor,
+      cap,
+    ),
+  );
+}
+
+function hasReadinessCapacityConstraint(input: {
+  input: NormalizedPlanInput;
+  metrics: DerivedMetrics;
+}): boolean {
+  return (
+    input.metrics.volumeCategory === "low_base" ||
+    input.input.availability.selectedRunningDays.length <= 3 ||
+    input.input.athlete.injurySignal === "current_or_serious" ||
+    input.metrics.fitnessConfidence === "low" ||
+    hasWeakLongRunDurability(input.input.history) ||
+    input.input.availability.maximumWeekdaySessionDurationMin !== null ||
+    input.input.availability.maximumWeekendSessionDurationMin !== null
+  );
+}
+
+function canSafelyCarryGoalReadinessQuality(input: {
+  input: NormalizedPlanInput;
+  metrics: DerivedMetrics;
+}): boolean {
+  return (
+    isGoalReadinessConstructionSupported(input) &&
+    input.input.availability.selectedRunningDays.length >= 3
+  );
+}
+
+function getGoalPaceStrategy(input: {
+  input: NormalizedPlanInput;
+  metrics: DerivedMetrics;
+  counts: GoalReadinessCounts;
+}): PlanGenerationGoalPaceStrategy {
+  if (
+    input.input.goal.targetFinishTimeSec === null ||
+    input.input.goal.goalFlexibility === "finish_only"
+  ) {
+    return "finish_only";
+  }
+
+  if (!isGoalPaceFeasibilitySupported(input.metrics.feasibilityRating)) {
+    return "bridge_pace_until_supported";
+  }
+
+  if (input.counts.racePaceWorkoutCount + input.counts.raceSpecificLongRunCount > 0) {
+    return "goal_pace_in_specific_peak";
+  }
+
+  return input.metrics.goalRacePaceSecPerKm === null
+    ? "current_fitness_pace_only"
+    : "bridge_pace_until_supported";
+}
+
+function getGoalReadinessConstraints(input: {
+  input: NormalizedPlanInput;
+  metrics: DerivedMetrics;
+  score: PlanGenerationGoalReadinessSummary["goal_readiness_score"];
+  goalPaceStrategy: PlanGenerationGoalPaceStrategy;
+}): string[] {
+  const constraints: string[] = [];
+  const addConstraint = (condition: boolean, text: string) => {
+    if (condition && !constraints.includes(text)) {
+      constraints.push(text);
+    }
+  };
+
+  addConstraint(
+    input.score.volume_readiness === "constrained" ||
+      input.score.volume_readiness === "low",
+    "peak volume is limited by current base, availability, or duration caps",
+  );
+  addConstraint(
+    input.score.long_run_readiness === "constrained" ||
+      input.score.long_run_readiness === "low",
+    "long-run durability cannot safely reach the ideal target yet",
+  );
+  addConstraint(
+    input.score.threshold_readiness === "constrained",
+    "threshold exposure is limited by confidence, injury, ramp, or spacing rules",
+  );
+  addConstraint(
+    input.score.race_pace_readiness === "constrained",
+    input.goalPaceStrategy === "bridge_pace_until_supported"
+      ? "goal pace is not supported yet, so bridge/current-fitness pace is used"
+      : "race-pace exposure is limited by safety or weekly layout",
+  );
+  addConstraint(
+    input.score.frequency_readiness === "constrained",
+    "available run frequency is too low for full target-specific readiness",
+  );
+  addConstraint(
+    input.score.terrain_readiness === "constrained",
+    "race terrain specificity is limited by terrain access or recent elevation tolerance",
+  );
+  addConstraint(
+    input.score.taper_readiness === "constrained",
+    "available weeks are too short for a full taper progression",
+  );
+  addConstraint(
+    input.input.athlete.injurySignal === "current_or_serious",
+    "current or serious recent injury signal keeps readiness conservative",
+  );
+  addConstraint(
+    input.metrics.volumeCategory === "low_base",
+    "low recent running base prevents forced target-specific training",
+  );
+
+  return constraints;
+}
+
 function buildPlanGenerationMetadata(input: {
   metrics: DerivedMetrics;
   weekPlans: WeekPlan[];
   intensityAudit: PlanIntensityAudit;
+  goalReadinessSummary: PlanGenerationGoalReadinessSummary;
   assumptions: string[];
   warnings: string[];
 }): Pick<
@@ -3813,6 +4833,7 @@ function buildPlanGenerationMetadata(input: {
   | "taper_summary"
   | "fitness_anchor_summary"
   | "aerobic_efficiency_summary"
+  | "goal_readiness_summary"
 > {
   return {
     generator_version: "rule_based_v1",
@@ -3832,6 +4853,7 @@ function buildPlanGenerationMetadata(input: {
     taper_summary: buildTaperSummary(input.weekPlans),
     fitness_anchor_summary: input.metrics.fitnessAnchorSummary,
     aerobic_efficiency_summary: input.metrics.aerobicEfficiencySummary,
+    goal_readiness_summary: input.goalReadinessSummary,
   };
 }
 

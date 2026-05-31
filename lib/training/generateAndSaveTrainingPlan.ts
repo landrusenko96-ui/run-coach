@@ -84,6 +84,8 @@ export async function generateAndSaveTrainingPlan(
       fitness_anchor_summary: generatedPlan.trainingPlan.fitness_anchor_summary,
       aerobic_efficiency_summary:
         generatedPlan.trainingPlan.aerobic_efficiency_summary,
+      goal_readiness_summary:
+        generatedPlan.trainingPlan.goal_readiness_summary,
     };
 
     // Database write 1: insert the new training_plans row.

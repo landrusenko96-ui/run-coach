@@ -755,6 +755,13 @@ describe("generateTrainingPlan", () => {
     assert.equal(trainingPlan.fitness_anchor_summary, null);
     assert.equal(trainingPlan.aerobic_efficiency_summary.trend, "unknown");
     assert.equal(trainingPlan.aerobic_efficiency_summary.confidence, "unknown");
+    assert.ok(trainingPlan.goal_readiness_summary);
+    assert.ok(
+      ["high", "medium", "low", "constrained"].includes(
+        trainingPlan.goal_readiness_summary.goal_readiness_score
+          .overall_goal_readiness,
+      ),
+    );
   });
 
   it("records selected fitness-anchor recency metadata on generated plans", () => {
@@ -899,6 +906,202 @@ describe("generateTrainingPlan", () => {
       "none",
     );
     assert.equal(generatedPlan.trainingPlan.fitness_confidence, "high");
+  });
+
+  it("records marathon goal-readiness signals for a supported realistic target", () => {
+    const generatedPlan = generateTrainingPlan(
+      makeProfile({
+        current_weekly_mileage_km: 70,
+        longest_recent_run_km: 30,
+        easy_pace_sec_per_km: 330,
+        threshold_pace_sec_per_km: 285,
+        available_training_days: [
+          "monday",
+          "tuesday",
+          "wednesday",
+          "thursday",
+          "friday",
+          "saturday",
+        ],
+        running_days_per_week: 6,
+        training_aggressiveness: "aggressive",
+        running_experience_level: "advanced",
+      }),
+      makeRaceGoal({
+        goal_flexibility: "fixed",
+        race_priority: "A",
+        target_priority: "moderate",
+        target_finish_time_sec: 15000,
+        race_course_profile: "flat",
+      }),
+      { startDate: "2030-05-06" },
+    );
+    const summary = generatedPlan.trainingPlan.goal_readiness_summary;
+
+    assert.equal(generatedPlan.trainingPlan.feasibility_rating, "realistic");
+    assert.equal(summary.goal_readiness_score.volume_readiness, "high");
+    assert.match(summary.goal_readiness_score.long_run_readiness, /high|medium/);
+    assert.equal(summary.goal_readiness_score.threshold_readiness, "high");
+    assert.equal(summary.goal_readiness_score.race_pace_readiness, "high");
+    assert.equal(summary.goal_readiness_score.frequency_readiness, "high");
+    assert.equal(summary.goal_pace_strategy, "goal_pace_in_specific_peak");
+    assert.ok(summary.peak_phase_summary.threshold_workout_count > 0);
+    assert.ok(
+      summary.peak_phase_summary.race_pace_workout_count +
+        summary.peak_phase_summary.race_specific_long_run_count >
+        0,
+    );
+    assert.ok(summary.peak_phase_summary.medium_long_workout_count > 0);
+  });
+
+  it("records half-marathon threshold and race-pace readiness for a supported target", () => {
+    const generatedPlan = generateTrainingPlan(
+      makeProfile({
+        current_weekly_mileage_km: 45,
+        longest_recent_run_km: 16,
+        easy_pace_sec_per_km: 330,
+        threshold_pace_sec_per_km: 285,
+        available_training_days: [
+          "monday",
+          "tuesday",
+          "wednesday",
+          "friday",
+          "saturday",
+        ],
+        running_days_per_week: 5,
+        running_experience_level: "advanced",
+      }),
+      makeRaceGoal({
+        race_name: "Spring Half",
+        race_date: "2030-09-15",
+        distance: "half_marathon",
+        goal_flexibility: "fixed",
+        race_priority: "A",
+        target_priority: "moderate",
+        target_finish_time_sec: 6600,
+        race_course_profile: "flat",
+      }),
+      { startDate: "2030-05-06" },
+    );
+    const summary = generatedPlan.trainingPlan.goal_readiness_summary;
+
+    assert.equal(generatedPlan.trainingPlan.feasibility_rating, "realistic");
+    assert.equal(summary.goal_readiness_score.threshold_readiness, "high");
+    assert.equal(summary.goal_readiness_score.race_pace_readiness, "high");
+    assert.equal(summary.goal_pace_strategy, "goal_pace_in_specific_peak");
+    assert.ok(summary.peak_phase_summary.threshold_workout_count > 0);
+    assert.ok(summary.peak_phase_summary.race_pace_workout_count > 0);
+  });
+
+  it("marks 3-day target readiness constrained without adding unsafe extra runs", () => {
+    const generatedPlan = generateTrainingPlan(
+      makeProfile({
+        available_training_days: ["tuesday", "thursday", "saturday"],
+        running_days_per_week: 3,
+        running_experience_level: "intermediate",
+      }),
+      makeRaceGoal({
+        goal_flexibility: "fixed",
+        race_priority: "A",
+        target_priority: "moderate",
+        target_finish_time_sec: 17000,
+        race_course_profile: "flat",
+      }),
+      { startDate: "2030-05-06" },
+    );
+    const summary = generatedPlan.trainingPlan.goal_readiness_summary;
+
+    assert.equal(generatedPlan.trainingPlan.feasibility_rating, "very_ambitious");
+    assert.equal(summary.goal_readiness_score.frequency_readiness, "constrained");
+    assert.equal(summary.goal_readiness_score.overall_goal_readiness, "constrained");
+    assert.equal(getRunningWorkouts(generatedPlan, 2).length, 3);
+    assert.ok(
+      summary.key_constraints.some((constraint) =>
+        constraint.includes("run frequency"),
+      ),
+    );
+  });
+
+  it("does not force race-pace readiness for a low-base not-credible goal", () => {
+    const generatedPlan = generateTrainingPlan(
+      makeProfile({
+        current_weekly_mileage_km: 16,
+        longest_recent_run_km: 6,
+        easy_pace_sec_per_km: 390,
+        threshold_pace_sec_per_km: 345,
+        available_training_days: ["tuesday", "thursday", "saturday"],
+        running_days_per_week: 3,
+        training_aggressiveness: "aggressive",
+        running_experience_level: "beginner",
+      }),
+      makeRaceGoal({
+        goal_flexibility: "fixed",
+        race_priority: "A",
+        target_priority: "aggressive",
+        target_finish_time_sec: 14400,
+        race_course_profile: "flat",
+      }),
+      { startDate: "2030-05-06" },
+    );
+    const summary = generatedPlan.trainingPlan.goal_readiness_summary;
+
+    assert.equal(generatedPlan.trainingPlan.feasibility_rating, "not_credible");
+    assert.equal(summary.goal_readiness_score.overall_goal_readiness, "constrained");
+    assert.equal(summary.peak_phase_summary.race_pace_workout_count, 0);
+    assert.equal(summary.peak_phase_summary.race_specific_long_run_count, 0);
+    assert.equal(summary.goal_pace_strategy, "bridge_pace_until_supported");
+    assert.equal(
+      generatedPlan.plannedWorkouts.some(
+        (workout) => workout.workout_type === "marathon_pace",
+      ),
+      false,
+    );
+  });
+
+  it("keeps readiness-adjusted plans inside intensity caps and hard-day spacing", () => {
+    const generatedPlan = generateTrainingPlan(
+      makeProfile({
+        current_weekly_mileage_km: 62,
+        longest_recent_run_km: 24,
+        easy_pace_sec_per_km: 335,
+        threshold_pace_sec_per_km: 292,
+        available_training_days: [
+          "monday",
+          "tuesday",
+          "wednesday",
+          "thursday",
+          "friday",
+          "saturday",
+        ],
+        running_days_per_week: 6,
+        terrain_available: ["flat", "hills"],
+        training_aggressiveness: "aggressive",
+        running_experience_level: "advanced",
+      }),
+      makeRaceGoal({
+        goal_flexibility: "fixed",
+        race_priority: "A",
+        target_priority: "moderate",
+        target_finish_time_sec: 15000,
+        race_course_profile: "flat",
+      }),
+      { startDate: "2030-05-06" },
+    );
+    const nonRaceWeeks = getNonRaceWeeklySummaries(generatedPlan);
+
+    assert.ok(generatedPlan.trainingPlan.goal_readiness_summary);
+    for (const summary of nonRaceWeeks) {
+      assertWeeklyIntensityCaps(summary);
+    }
+
+    for (let index = 1; index < generatedPlan.plannedWorkouts.length; index += 1) {
+      assert.ok(
+        !(
+          isHardWorkout(generatedPlan.plannedWorkouts[index - 1]) &&
+          isHardWorkout(generatedPlan.plannedWorkouts[index])
+        ),
+      );
+    }
   });
 
   it("records weekly intensity distribution metadata and keeps work inside weekly caps", () => {

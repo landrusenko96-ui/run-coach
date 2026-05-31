@@ -588,6 +588,13 @@ function assertPlanConforms(scenario, generatedPlan) {
       generatedPlan.trainingPlan.aerobic_efficiency_summary.trend,
     ),
   );
+  assert.ok(generatedPlan.trainingPlan.goal_readiness_summary);
+  assert.ok(
+    ["high", "medium", "low", "constrained"].includes(
+      generatedPlan.trainingPlan.goal_readiness_summary.goal_readiness_score
+        .overall_goal_readiness,
+    ),
+  );
   assert.equal(summary.workoutTypes.includes("calibration"), false);
   assert.ok(summary.workoutTypes.every((type) => allowedWorkoutTypes.has(type)));
   assertIntensityDistribution(scenario, summary);

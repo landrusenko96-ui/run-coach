@@ -761,6 +761,7 @@ function PlanGenerationMetadataCard({ plan }: { plan: TrainingPlan }) {
   const taperSummary = plan.taper_summary ?? null;
   const fitnessAnchorSummary = plan.fitness_anchor_summary ?? null;
   const aerobicEfficiencySummary = plan.aerobic_efficiency_summary ?? null;
+  const goalReadinessSummary = plan.goal_readiness_summary ?? null;
   const generationWarnings = plan.generation_warnings ?? [];
   const generationAssumptions = plan.generation_assumptions ?? [];
 
@@ -790,6 +791,17 @@ function PlanGenerationMetadataCard({ plan }: { plan: TrainingPlan }) {
           <dt className="font-medium text-slate-700">Fitness confidence</dt>
           <dd className="mt-1 text-slate-600">
             {formatOptionalLabel(plan.fitness_confidence)}
+          </dd>
+        </div>
+        <div className="rounded-md border border-slate-200 p-3">
+          <dt className="font-medium text-slate-700">Goal readiness</dt>
+          <dd className="mt-1 text-slate-600">
+            {goalReadinessSummary
+              ? formatLabel(
+                  goalReadinessSummary.goal_readiness_score
+                    .overall_goal_readiness,
+                )
+              : "Not recorded"}
           </dd>
         </div>
         <div className="rounded-md border border-slate-200 p-3">
@@ -912,6 +924,61 @@ function PlanGenerationMetadataCard({ plan }: { plan: TrainingPlan }) {
               </tbody>
             </table>
           </div>
+        </details>
+      ) : null}
+
+      {goalReadinessSummary ? (
+        <details className="mt-4 rounded-md border border-slate-200 p-3 text-sm text-slate-700">
+          <summary className="cursor-pointer font-medium text-slate-900">
+            Goal-readiness model
+          </summary>
+          <dl className="mt-3 grid gap-2 md:grid-cols-4">
+            {Object.entries(goalReadinessSummary.goal_readiness_score).map(
+              ([key, value]) => (
+                <div className="rounded-md border border-slate-200 p-3" key={key}>
+                  <dt className="text-xs font-medium uppercase text-slate-500">
+                    {formatLabel(key)}
+                  </dt>
+                  <dd className="mt-1 text-slate-900">{formatLabel(value)}</dd>
+                </div>
+              ),
+            )}
+          </dl>
+          <dl className="mt-3 grid gap-2 md:grid-cols-3">
+            <div className="rounded-md border border-slate-200 p-3">
+              <dt className="text-xs font-medium uppercase text-slate-500">
+                Peak week
+              </dt>
+              <dd className="mt-1 text-slate-900">
+                {goalReadinessSummary.peak_phase_summary.peak_week_number
+                  ? `Week ${goalReadinessSummary.peak_phase_summary.peak_week_number}`
+                  : "Not recorded"}
+              </dd>
+            </div>
+            <div className="rounded-md border border-slate-200 p-3">
+              <dt className="text-xs font-medium uppercase text-slate-500">
+                Revised
+              </dt>
+              <dd className="mt-1 text-slate-900">
+                {goalReadinessSummary.plan_revised_for_readiness ? "Yes" : "No"}
+              </dd>
+            </div>
+            <div className="rounded-md border border-slate-200 p-3">
+              <dt className="text-xs font-medium uppercase text-slate-500">
+                Goal pace
+              </dt>
+              <dd className="mt-1 text-slate-900">
+                {formatLabel(goalReadinessSummary.goal_pace_strategy)}
+              </dd>
+            </div>
+          </dl>
+          {goalReadinessSummary.key_constraints.length > 0 ? (
+            <ul className="mt-3 list-disc space-y-1 pl-5 text-slate-600">
+              {goalReadinessSummary.key_constraints.map((constraint) => (
+                <li key={constraint}>{constraint}</li>
+              ))}
+            </ul>
+          ) : null}
         </details>
       ) : null}
 

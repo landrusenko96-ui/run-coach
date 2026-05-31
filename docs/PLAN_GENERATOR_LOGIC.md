@@ -1,9 +1,9 @@
 # Plan Generator Logic Reference
 
 This document describes the current Run.B*tch.app initial plan generator as of
-Milestone 13 Step 1. It is written for external review and third-party analysis. It
-describes the deterministic rule engine, its data flow, assumptions, safety
-rules, known limits, and app contracts.
+Milestone 13 Change 5. It is written for external review and third-party
+analysis. It describes the deterministic rule engine, its data flow,
+assumptions, safety rules, known limits, and app contracts.
 
 The generator is treated as feature-complete for the current product state. It
 is not an AI generator. It is a deterministic, TypeScript rule engine designed
@@ -89,11 +89,12 @@ The generator follows this sequence:
 4. Derive fitness, load, durability, feasibility, and pace metrics.
 5. Build phase and weekly load targets.
 6. Select weekly run days and workout subtypes.
-7. Resolve each subtype into variable-based workout prescriptions.
-8. Enforce intensity caps, gray-zone limits, and load-stacking rules.
-9. Re-resolve softened workouts.
+7. Apply the goal-readiness pass to improve peak/specific signals when safe.
+8. Enforce hard-day spacing, intensity caps, gray-zone limits, and
+   load-stacking rules.
+9. Resolve each subtype into variable-based workout prescriptions.
 10. Build `planned_workouts` rows and structured workouts.
-11. Build persisted generation metadata.
+11. Build persisted generation metadata, including readiness metadata.
 12. Return warnings, assumptions, plan rows, and workout rows.
 
 ## Server Route Flow
@@ -563,6 +564,64 @@ Suggested target caps:
 - high-confidence, well-supported evidence can suggest the edge of very
   ambitious.
 
+## Goal Readiness Model
+
+Milestone 13 Change 5 adds a construction-time goal-readiness pass. It runs
+after initial weekly workout drafts are selected and before the existing safety
+passes. It never adds extra running days; it only upgrades existing run drafts
+when the goal, evidence, spacing, durability, and intensity rules support it.
+
+The model evaluates whether the generated peak/specific/taper phases create
+enough training signals for the selected goal:
+
+- peak weekly volume readiness;
+- long-run readiness;
+- threshold/stamina readiness;
+- race-pace readiness;
+- frequency/consistency readiness;
+- terrain/course specificity;
+- taper readiness.
+
+Ratings are:
+
+- `high`;
+- `medium`;
+- `low`;
+- `constrained`.
+
+Construction behavior:
+
+- realistic, ambitious, and very ambitious target-time goals may receive safer
+  readiness upgrades;
+- low-confidence, not-credible, finish-only, low-base, high-ramp,
+  current-injury, or weak-durability plans do not force target
+  workouts;
+- marathon plans emphasize long-run durability, threshold work, marathon-pace
+  exposure, and medium-long support on 5-6 day layouts;
+- half-marathon plans emphasize threshold and half-marathon-pace exposure with
+  a lower long-run burden;
+- hilly/rolling goals receive hill specificity only when hill access and recent
+  elevation tolerance support it.
+
+Safety behavior:
+
+- the readiness pass is followed by the existing hard-day spacing, weekly
+  intensity caps, gray-zone balance, and load-stacking enforcement;
+- if a readiness target cannot be reached safely, the plan remains conservative
+  and the component is marked `constrained`;
+- goal pace appears in specific/peak workouts only when feasibility and phase
+  support it; otherwise bridge/current-fitness pace remains the target.
+
+Persisted metadata stores:
+
+- `goal_readiness_score`;
+- component ratings;
+- peak-phase signal counts;
+- key constraints preventing higher readiness;
+- whether the readiness pass revised the draft plan;
+- whether goal pace, bridge pace, current-fitness pace, or finish-only strategy
+  was used.
+
 ## Load Categories And Progression
 
 Volume category depends on race distance and recent average weekly km.
@@ -1030,6 +1089,7 @@ Structured patterns:
 - taper summary;
 - fitness anchor summary;
 - aerobic-efficiency summary;
+- goal-readiness summary;
 - `generated_by = rule_based_v1`.
 
 `planned_workouts` receives:
@@ -1080,6 +1140,9 @@ Weekly summaries include:
 - Garmin zone import is not implemented in this milestone; manual profile input
   is the supported path for HR and power zones.
 - Weather notes are caution signals, not forecast simulation.
+- Goal readiness is a construction guide and metadata summary, not an
+  override for feasibility, durability, injury, spacing, intensity, or duration
+  caps.
 - The generator should be conservative with injury, fatigue, high ramp, poor
   durability, low frequency, and weak confidence.
 - The improved initial generator is separate from adaptive adjustment logic;
@@ -1117,24 +1180,26 @@ row. It asserts:
 - fastest Strava run not used as a max anchor without evidence;
 - manual physiology targets do not break pace-safe structured workout exports;
 - aerobic-efficiency trend metadata is present on generated plans;
+- goal-readiness metadata is present on generated plans;
 - suggested goal behavior for not-credible targets.
 
 ## Current Conformance Estimate
 
 Practical conformance to the external plan-generation spec is estimated at
-about 88% for the current product constraints.
+about 92% for the current product constraints.
 
 Approximate rubric:
 
 | Area | Fit |
 |---|---:|
-| Inputs/history | 85% |
-| Evidence/fitness | 82% |
-| Load/phase logic | 90% |
-| Workout library/prescriptions | 88% |
+| Inputs/history | 88% |
+| Evidence/fitness | 86% |
+| Load/phase logic | 92% |
+| Workout library/prescriptions | 91% |
 | Intensity/risk enforcement | 92% |
-| Terrain/durability specificity | 86% |
-| Metadata/explainability | 90% |
+| Terrain/durability specificity | 88% |
+| Goal-readiness construction | 86% |
+| Metadata/explainability | 94% |
 | App contract/export compatibility | 95% |
 
 Tolerated remaining gaps:
@@ -1142,7 +1207,6 @@ Tolerated remaining gaps:
 - automatic Garmin/Strava zone import;
 - detailed weather modeling;
 - persisted fueling/nutrition strategy;
-- goal-readiness reverse-engineering for peak-phase construction;
 - true double-run scheduling;
 - adjustment logic understanding rich workout subtypes and weekly caps;
 - richer race-history parsing.
